@@ -8,6 +8,7 @@
 //   （帧缓冲绑定 0、无表面），渲染线程下一笔清除落到 0 号帧缓冲报「没有绘制表面」+ 0x502，随后游戏客体代码读空指针崩
 #include "gl_int.h"
 #include "../nvn/nvn_fps.h"
+#include <math.h>
 #include <pthread.h>
 #include <time.h>
 const char gl_slice_egl = 1;   // 分片锚（gl_core.m 引用：静态链接时整片进来，见 gl_int.h「分片锚」）
@@ -23,15 +24,22 @@ void s2a_sleep_ns(int64_t ns);   // runtime/src/thread.c：按时睡
 void dm_guest_frame_tick(void); double nvn_be_presented_time(uint64_t n); void dm_perf_present(double iv_ms);
 
 #define NSURF 3
-typedef struct surface_t { uint32_t w, h, cur, interval, ext_w, ext_h, wid[NSURF], did; __strong id<MTLTexture> col[NSURF], depth; uint64_t serial[NSURF], ticket[NSURF]; double next_swap; int bound, dead, pbuffer, largest; struct surface_t *next; } surface_t;   // next_swap：下一拍（单调钟秒）；wid / did：宽屏核心贴图号（宽屏关 = 0）；w / h 是游戏看到的尺寸，贴图可能被放宽
-typedef struct context_t { gl_state st; int bound, dead; struct context_t *next; } context_t;   // bound：绑着它的线程数；dead：已 eglDestroy*、等最后一个线程松开再放
+typedef struct surface_t { uint32_t seq, w, h, cur, interval, ext_w, ext_h, wid[NSURF], did; __strong id<MTLTexture> col[NSURF], depth; uint64_t serial[NSURF], ticket[NSURF]; double next_swap; int bound, dead, pbuffer, largest; struct surface_t *next; } surface_t;   // seq：建立序号（即时存档按它认，见文件尾）；next_swap：下一拍（单调钟秒）；wid / did：宽屏核心贴图号（宽屏关 = 0）；w / h 是游戏看到的尺寸，贴图可能被放宽
+typedef struct context_t { gl_state st; int bound, dead; uint32_t seq; struct context_t *next; } context_t;   // seq：建立序号（即时存档按它认）；bound：绑着它的线程数；dead：已 eglDestroy*、等最后一个线程松开再放
 static __thread surface_t *g_draw;     // 本线程的当前绘制表面（MakeCurrent；无表面上下文 = NULL）
 static surface_t *g_surfaces;
 static context_t *g_contexts;
 static pthread_mutex_t g_egl_mu = PTHREAD_MUTEX_INITIALIZER;   // 护表面 / 上下文链表与 bound / dead（多线程各自建上下文、MakeCurrent）
 // 游戏自己要的帧率（开发浮层取，runtime/src/hud.c hud_target）：每次交换按交换间隔折算，0 = 交换间隔 0（游戏不锁垂直同步，只受 S2A_FPS 上限）；-1 = 还没交换过（本局不是 GL 款）
 static int g_gl_game_fps = -1;
+static uint32_t g_seq_surf, g_seq_ctx;   // 表面 / 上下文的建立序号（持 g_egl_mu）
+static void snap_ho(const void *p, const char *fmt, ...);   // 文件尾：交给游戏的句柄按身份登记（即时存档）
+static void snap_tb_note(void);
 int nvn_gl_game_fps(void) { return __atomic_load_n(&g_gl_game_fps, __ATOMIC_RELAXED); }
+// 只读计数（单测按事件判、不量墙钟，t_fps_limit）：交换锁自己时钟这一支（没有显示链接）的限帧决定。
+//   [0] 排过节拍的交换次数 [1] 最近一次的节拍周期（ns） [2] 帧比周期长、截止时刻多跨过的刻度累计 [3] 真睡了的次数 [4] 单次要睡的最长时长（ns）。只增不减（[1][4] 记最近 / 最大），不改行为
+static uint64_t g_gl_pace[5];
+void s2a_gl_pace_stats(uint64_t out[5]) { for (int i = 0; i < 5; i++) out[i] = __atomic_load_n(&g_gl_pace[i], __ATOMIC_RELAXED); }
 static __thread EGLenum g_api = EGL_OPENGL_ES_API;   // 当前 API 与错误码都按线程（EGL 1.5 §3.1 / §3.7）
 static __thread EGLint g_err = EGL_SUCCESS;
 static _Atomic int g_initialized;
@@ -84,7 +92,7 @@ GL(eglTerminate, EGLBoolean, EGLDisplay d) { if (d != (EGLDisplay)1) { g_err = E
 GL(eglGetError, EGLint, void) { EGLint e = g_err; g_err = EGL_SUCCESS; return e; }
 GL(eglBindAPI, EGLBoolean, EGLenum api) {
     if (api != EGL_OPENGL_ES_API && api != EGL_OPENGL_API) { g_err = EGL_BAD_PARAMETER; return 0; }
-    g_api = api; return 1;
+    g_api = api; snap_tb_note(); return 1;
 }
 GL(eglQueryAPI, EGLenum, void) { return g_api; }
 GL(eglQueryString, const char *, EGLDisplay d, EGLint name) {
@@ -94,7 +102,7 @@ GL(eglQueryString, const char *, EGLDisplay d, EGLint name) {
     switch (name) {
     case 0x3053: return "S2Arm";
     case 0x3054: return "1.5 S2Arm";
-    case 0x3055: return ""; // Do not advertise unimplemented KHR context attributes / sync extensions.
+    case 0x3055: return "EGL_KHR_create_context"; // 上下文属性（eglCreateContext 认的那几个）；同步等别的扩展没实现，不报
     case 0x308D: return "OpenGL OpenGL_ES";
     default: g_err = EGL_BAD_PARAMETER; return NULL;
     }
@@ -111,11 +119,8 @@ GL(eglChooseConfig, EGLBoolean, EGLDisplay d, const EGLint *attrib, EGLConfig *c
     (void)d; (void)attrib; if (num) *num = 1; if (cfg && size > 0) cfg[0] = (EGLConfig)1; return 1;
 }
 GL(eglGetConfigs, EGLBoolean, EGLDisplay d, EGLConfig *cfg, EGLint size, EGLint *num) { (void)d; if (num) *num = 1; if (cfg && size > 0) cfg[0] = (EGLConfig)1; return 1; }
-GLB(eglCreateWindowSurface, EGLSurface, EGLDisplay d, EGLConfig c, EGLNativeWindowType win, const EGLint *attrib) { @autoreleasepool {
-    (void)d; (void)c; (void)win; (void)attrib; gl_dev_init();
-    surface_t *s = calloc(1, sizeof *s); if (!s) die("[gl] 表面分配失败");
-    pthread_mutex_lock(&g_egl_mu); s->next = g_surfaces; g_surfaces = s; pthread_mutex_unlock(&g_egl_mu);
-    s->w = 1920; s->h = 1080; s->interval = 1;
+// 窗口表面的颜色轮换贴图与深度（建表面、即时存档恢复都走这里）
+static void surface_window_build(surface_t *s) {
     // 宽屏（gl_widen.inc）：表面贴图建的时候就知道是渲染目标，按核心给的宽建；游戏看到的仍是 s->w × s->h（关时一样宽）
     int wd = gl_wd_on() > 0; uint32_t tw = s->w, th = s->h;   // 窄屏加高：表面高按核心给的高（gl_widen.inc gl_wd_rt）
     @autoreleasepool {
@@ -131,6 +136,14 @@ GLB(eglCreateWindowSurface, EGLSurface, EGLDisplay d, EGLConfig c, EGLNativeWind
     }
     nvn_be_set_origin_lower_left(1);   // 存储按 GL 行序：上屏翻转
     GLOG("窗口表面 %ux%u，%d 张颜色贴图轮换%s", s->w, s->h, NSURF, tw != s->w || th != s->h ? [NSString stringWithFormat:@"（宽屏放宽到 %ux%u）", tw, th].UTF8String : "");
+}
+GLB(eglCreateWindowSurface, EGLSurface, EGLDisplay d, EGLConfig c, EGLNativeWindowType win, const EGLint *attrib) { @autoreleasepool {
+    (void)d; (void)c; (void)win; (void)attrib; gl_dev_init();
+    surface_t *s = calloc(1, sizeof *s); if (!s) die("[gl] 表面分配失败");
+    pthread_mutex_lock(&g_egl_mu); s->seq = ++g_seq_surf; s->next = g_surfaces; g_surfaces = s; pthread_mutex_unlock(&g_egl_mu);
+    s->w = 1920; s->h = 1080; s->interval = 1;
+    surface_window_build(s);
+    snap_ho(s, "gl:surf:%u", s->seq);
     return s;
 }}
 static void surface_unlink(surface_t *s) {   // 持 g_egl_mu
@@ -144,6 +157,22 @@ static void surface_free(surface_t *s, int wait) {   // 已摘链、没有线程
     }
     gl_wd_release_id(s->did); s->depth = nil;
     free(s);
+}
+// 离屏表面的颜色 / 深度（建表面、即时存档恢复都走这里）：largest 时放不下就逐次减半；0 = 分配失败
+//   Pbuffers have no present registration, widening IDs or swapchain. A legal
+//   zero-sized surface keeps minimal Metal backing while exposing size zero.
+static int surface_pbuffer_build(surface_t *s) {
+    for (;;) {
+        MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm width:MAX(s->w, 1u) height:MAX(s->h, 1u) mipmapped:NO];
+        td.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead; td.storageMode = MTLStorageModePrivate;
+        s->col[0] = [gl_dev newTextureWithDescriptor:td];
+        td.pixelFormat = MTLPixelFormatDepth32Float_Stencil8; td.usage = MTLTextureUsageRenderTarget;
+        s->depth = [gl_dev newTextureWithDescriptor:td];
+        if (s->col[0] && s->depth) return 1;
+        s->col[0] = nil; s->depth = nil;
+        if (!s->largest || (s->w <= 1 && s->h <= 1)) return 0;
+        if (s->w >= s->h && s->w > 1) s->w /= 2; else s->h /= 2;
+    }
 }
 GLB(eglCreatePbufferSurface, EGLSurface, EGLDisplay d, EGLConfig c, const EGLint *attrib) { @autoreleasepool {
     if (!display_ready(d)) return NULL;
@@ -170,20 +199,9 @@ GLB(eglCreatePbufferSurface, EGLSurface, EGLDisplay d, EGLConfig c, const EGLint
     surface_t *s = calloc(1, sizeof *s); if (!s) { g_err = EGL_BAD_ALLOC; return NULL; }
     s->pbuffer = 1; s->largest = largest; s->w = (uint32_t)w; s->h = (uint32_t)h;
     gl_dev_init();
-    // Pbuffers have no present registration, widening IDs or swapchain. A legal
-    // zero-sized surface keeps minimal Metal backing while exposing size zero.
-    for (;;) {
-        MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm width:MAX(s->w, 1u) height:MAX(s->h, 1u) mipmapped:NO];
-        td.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead; td.storageMode = MTLStorageModePrivate;
-        s->col[0] = [gl_dev newTextureWithDescriptor:td];
-        td.pixelFormat = MTLPixelFormatDepth32Float_Stencil8; td.usage = MTLTextureUsageRenderTarget;
-        s->depth = [gl_dev newTextureWithDescriptor:td];
-        if (s->col[0] && s->depth) break;
-        s->col[0] = nil; s->depth = nil;
-        if (!largest || (s->w <= 1 && s->h <= 1)) { surface_free(s, 0); g_err = EGL_BAD_ALLOC; return NULL; }
-        if (s->w >= s->h && s->w > 1) s->w /= 2; else s->h /= 2;
-    }
-    pthread_mutex_lock(&g_egl_mu); s->next = g_surfaces; g_surfaces = s; pthread_mutex_unlock(&g_egl_mu);
+    if (!surface_pbuffer_build(s)) { surface_free(s, 0); g_err = EGL_BAD_ALLOC; return NULL; }
+    pthread_mutex_lock(&g_egl_mu); s->seq = ++g_seq_surf; s->next = g_surfaces; g_surfaces = s; pthread_mutex_unlock(&g_egl_mu);
+    snap_ho(s, "gl:surf:%u", s->seq);
     return s;
 }}
 GLB(eglDestroySurface, EGLBoolean, EGLDisplay d, EGLSurface sf) { @autoreleasepool {
@@ -206,7 +224,21 @@ GL(eglQuerySurface, EGLBoolean, EGLDisplay d, EGLSurface sf, EGLint attr, EGLint
     return 1;
 }
 GL(eglCreateContext, EGLContext, EGLDisplay d, EGLConfig c, EGLContext share, const EGLint *attrib) {
-    (void)d; (void)c; (void)attrib;
+    (void)d; (void)c;
+    // 上下文属性（EGL 1.5 §3.7.1 / EGL_KHR_create_context）：每个上下文都是同一份实现（ES 3.2 / 桌面 4.5，同 eglQueryContext 0x3098），
+    //   版本要求不超出就建、超出回 EGL_BAD_MATCH；标志 / 配置档 / 重置策略只是提示，认得就接受；认不出的属性回 EGL_BAD_ATTRIBUTE。
+    //   #2057 王国保卫战：复仇：SDL 要 ES 3 上下文时先查显示的扩展名，没有 EGL_KHR_create_context 就报「context attributes are not supported」、不建上下文，游戏随即崩在开局
+    EGLint maj = 1, min = 0;
+    for (const EGLint *a = attrib; a && a[0] != EGL_NONE; a += 2) switch (a[0]) {
+        case 0x3098: maj = a[1]; break;   // EGL_CONTEXT_MAJOR_VERSION（= EGL_CONTEXT_CLIENT_VERSION）
+        case 0x30FB: min = a[1]; break;   // EGL_CONTEXT_MINOR_VERSION
+        case 0x30FC: if (a[1] & ~7) { g_err = EGL_BAD_ATTRIBUTE; return NULL; } break;   // EGL_CONTEXT_FLAGS_KHR：调试 1 / 向前兼容 2 / 鲁棒访问 4
+        case 0x30FD: if (g_api == EGL_OPENGL_API && (!a[1] || (a[1] & ~3))) { g_err = EGL_BAD_ATTRIBUTE; return NULL; } break;   // 配置档：核心 1 / 兼容 2，ES 上下文忽略（KHR 规定）
+        case 0x31B0: case 0x31B1: case 0x31B2: if (a[1] != 0 && a[1] != 1) { g_err = EGL_BAD_ATTRIBUTE; return NULL; } break;   // EGL 1.5 调试 / 向前兼容 / 鲁棒访问（布尔）
+        case 0x31BD: if (a[1] != 0x31BE && a[1] != 0x31BF) { g_err = EGL_BAD_ATTRIBUTE; return NULL; } break;   // 重置通知策略：不通知 / 丢上下文
+        default: g_err = EGL_BAD_ATTRIBUTE; return NULL;
+    }
+    if (g_api == EGL_OPENGL_ES_API ? maj > 3 || (maj == 3 && min > 2) : maj > 4 || (maj == 4 && min > 5)) { g_err = EGL_BAD_MATCH; return NULL; }
     if (share && ((context_t *)share)->dead) { g_err = EGL_BAD_CONTEXT; return NULL; }   // 共享组：对象名字表全进程一张（文件头），无须另建
     context_t *x = calloc(1, sizeof *x); if (!x) die("[gl] 上下文分配失败");
     x->st.api = g_api; x->st.depth_mask = 1; x->st.default_draw[0] = 0x0405; /* GL_BACK */
@@ -223,7 +255,8 @@ GL(eglCreateContext, EGLContext, EGLDisplay d, EGLConfig c, EGLContext share, co
     x->st.default_read = 0x0405; /* GL_BACK */ x->st.poly_mode = 0x1B02; /* GL_FILL */
     for (int i = 0; i < 16; i++) x->st.attr_cur[i][3] = 1;   // 当前通用顶点属性初值 (0, 0, 0, 1)
     x->st.dirty = ~0u;
-    pthread_mutex_lock(&g_egl_mu); x->next = g_contexts; g_contexts = x; pthread_mutex_unlock(&g_egl_mu);
+    pthread_mutex_lock(&g_egl_mu); x->seq = ++g_seq_ctx; x->next = g_contexts; g_contexts = x; pthread_mutex_unlock(&g_egl_mu);
+    snap_ho(x, "gl:ctx:%u", x->seq);
     return x;
 }
 static void context_unlink(context_t *c) {   // 持 g_egl_mu
@@ -260,6 +293,7 @@ static void bind_current(surface_t *draw, context_t *c) {
     if (os && !--os->bound && os->dead) { surface_unlink(os); fs = os; }
     pthread_mutex_unlock(&g_egl_mu);
     g_draw = draw; gl_cur = c ? &c->st : NULL;
+    snap_tb_note();
     if (fc) context_free(fc);
     if (fs) surface_free(fs, 1);
 }
@@ -274,6 +308,26 @@ GLB(eglMakeCurrent, EGLBoolean, EGLDisplay d, EGLSurface draw, EGLSurface read, 
     return 1;
 }}
 GL(eglGetCurrentContext, EGLContext, void) { return cur_context(); }
+// 当前显示 / 表面 / 上下文属性（EGL 1.5 §3.7.4 / §3.7.3；#1440 一款 GL 游戏开局就问，没实现时装载期未解析、一调即退）：
+//   只有一个显示（eglGetDisplay 回 1）、读写表面恒同一个（eglMakeCurrent 要求 read == draw）、一个配置（号 1）
+GL(eglGetCurrentDisplay, EGLDisplay, void) { return cur_context() ? (EGLDisplay)1 : NULL; }   // 没有当前上下文：EGL_NO_DISPLAY
+GL(eglGetCurrentSurface, EGLSurface, EGLint readdraw) {
+    if (readdraw != 0x3059 && readdraw != 0x305A) { g_err = EGL_BAD_PARAMETER; return NULL; }   // EGL_DRAW / EGL_READ
+    return cur_context() ? g_draw : NULL;   // 无表面上下文或没有当前上下文：EGL_NO_SURFACE
+}
+GL(eglQueryContext, EGLBoolean, EGLDisplay d, EGLContext c, EGLint attr, EGLint *v) {
+    if (!display_ready(d)) return 0;
+    context_t *x = c; if (!x || x->dead) { g_err = EGL_BAD_CONTEXT; return 0; }
+    if (!v) { g_err = EGL_BAD_PARAMETER; return 0; }
+    switch (attr) {
+    case 0x3028: *v = 1; break;                                            // EGL_CONFIG_ID：唯一的配置
+    case 0x3097: *v = (EGLint)x->st.api; break;                            // EGL_CONTEXT_CLIENT_TYPE
+    case 0x3098: *v = x->st.api == EGL_OPENGL_ES_API ? 3 : 4; break;      // EGL_CONTEXT_CLIENT_VERSION（= MAJOR_VERSION）：同 GL_MAJOR_VERSION（ES 3.2 / 桌面 4.5）
+    case 0x3086: *v = x == cur_context() && g_draw ? 0x3084 : 0x3038; break;   // EGL_RENDER_BUFFER：绑着表面是后缓冲，否则 EGL_NONE
+    default: g_err = EGL_BAD_ATTRIBUTE; return 0;
+    }
+    return 1;
+}
 GLB(eglWaitGL, EGLBoolean, void) { @autoreleasepool {
     // EGL 1.5 §3.8: waits the ES context, regardless of the currently bound API.
     // OpenGL and ES share the one current GL context slot in this frontend.
@@ -324,9 +378,16 @@ GLB(eglSwapBuffers, EGLBoolean, EGLDisplay d, EGLSurface sf) { @autoreleasepool 
     if (per > 0 && nvn_be_link_active()) nvn_be_link_wait_tick(s->interval ? (int)s->interval : nvn_fps_limit() > 60 ? 0 : 1, (uint64_t)(2e9 * per));
     else if (per > 0) {
         struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); double now = ts.tv_sec + ts.tv_nsec * 1e-9;
-        if (s->next_swap <= 0 || now - s->next_swap > per) s->next_swap = now;
-        s->next_swap += per;
+        __atomic_fetch_add(&g_gl_pace[0], 1, __ATOMIC_RELAXED); __atomic_store_n(&g_gl_pace[1], (uint64_t)(per * 1e9 + 0.5), __ATOMIC_RELAXED);
+        // 截止时刻按刻度走（真机垂直同步语义）：上次刻度 + k × 周期，k 取让它 ≥ 现在的最小值（≥ 1）。帧比周期长就落到下一个刻度、只等到那一刻，
+        //   不补发、也不再「从现在重新起拍再整睡一周期」（11-23 前的做法：12 ms 的帧在 8.3 ms 周期下被拖到约 24 ms，20 ms 的帧在 60 档被拖到 36.7 ms，真机是 16.7 / 33.3）。
+        //   首帧从现在起拍；停了很久回来同样落到 ≥ 现在的那个刻度，不会一口气补帧
+        if (s->next_swap <= 0) s->next_swap = now;
+        { double k = ceil((now - s->next_swap) / per); if (k < 1) k = 1;
+          if (k > 1) __atomic_fetch_add(&g_gl_pace[2], (uint64_t)(k - 1), __ATOMIC_RELAXED);
+          s->next_swap += k * per; }
         double wait = s->next_swap - now;
+        if (wait > 0) { uint64_t w = (uint64_t)(wait * 1e9); __atomic_fetch_add(&g_gl_pace[3], 1, __ATOMIC_RELAXED); if (w > __atomic_load_n(&g_gl_pace[4], __ATOMIC_RELAXED)) __atomic_store_n(&g_gl_pace[4], w, __ATOMIC_RELAXED); }
         if (wait > 0) s2a_sleep_ns((int64_t)(wait * 1e9));   // 不用 nanosleep：游戏线程 utility 下定时器余量放宽、多睡上百毫秒（同 Vulkan 层 vkAcquireNextImageKHR）
     }
     // 每 300 帧一行拆账（真机定位用，10-25 测试设备2 标题页 12–16 帧/秒）：两次交换之间的墙钟 = 游戏自己（含等 GPU）+ 交换里提交 + 等上屏 + 节拍等待
@@ -345,6 +406,181 @@ GLB(eglSwapBuffers, EGLBoolean, EGLDisplay d, EGLSurface sf) { @autoreleasepool 
     if (f > 9) { double a = nvn_be_presented_time(f - 8), b = nvn_be_presented_time(f - 9); dm_perf_present(a < 0 ? -1 : a > 0 && b > 0 ? (a - b) * 1e3 : 0); }   // 同 Vulkan 层：上屏序号即票号
     return 1;
 }}
-GL(eglGetProcAddress, void *, const char *name) { return gl_entry_or_stub(name); }   // 重活套切栈桩（gl_core.m）；没实现的核心名给安全空实现
+GL(eglGetProcAddress, void *, const char *name) { void *p = gl_entry_or_stub(name); if (p && name) snap_ho(p, "gl:proc:%s", name); return p; }   // 重活套切栈桩（gl_core.m）；没实现的核心名给安全空实现
 // 松开本线程的当前上下文与表面（EGL 1.5 §3.11：同 eglMakeCurrent 全空），错误码 / API 回初值；已删的此时才放
 GLB(eglReleaseThread, EGLBoolean, void) { @autoreleasepool { bind_current(NULL, NULL); g_api = EGL_OPENGL_ES_API; g_err = EGL_SUCCESS; return 1; }}
+
+// ---------- 即时存档（苹果端缺省开、S2A_SNAP_MODE=0 关，见 runtime/src/snapsw.c；恢复局 S2A_SNAP_RESTORE） ----------
+// 交给游戏的宿主指针：表面 / 上下文句柄（calloc 的地址）、eglGetProcAddress 交出的函数、glGetString 的串。游戏把它们拷进自己的内存，新进程里地址全变：
+//   建 / 交出时按身份登记（gl:surf:<序号>、gl:ctx:<序号>、gl:proc:<名字>、gl:str:…），恢复时快照引擎按身份问 gl_snap_resolve 要本进程的值、扫写回的页换掉。
+//   表面 / 上下文在那时先建空壳（序号同快照），gl_snap_restore 再按快照填内容、建贴图
+// 弱链接[nvntest]：s2a_snap_conv_get（runtime/src/snapshot.c 提供；GL 各片读整块存的结构时按布局转换表转，经 snapfmt.h snap_conv_get；同下）
+// 弱链接[nvntest]：s2a_snap_thread_self（runtime/src/thread.c 提供；图形单测不链宿主，链接行按这行放行未定义）
+void s2a_snap_handout_id(uint64_t v, const char *id) __attribute__((weak));
+int s2a_snap_mode(void) __attribute__((weak));
+uint64_t s2a_snap_thread_self(void) __attribute__((weak));
+static int snap_on(void) { return s2a_snap_mode && s2a_snap_mode() && s2a_snap_handout_id; }
+static void snap_ho(const void *p, const char *fmt, ...) {
+    if (!p || !snap_on()) return;
+    char id[128]; va_list ap; va_start(ap, fmt); vsnprintf(id, sizeof id, fmt, ap); va_end(ap);
+    s2a_snap_handout_id((uint64_t)(uintptr_t)p, id);
+}
+// 各游戏线程的当前上下文 / 表面 / API（线程本地变量存不进快照：按客体线程号记一张表，恢复时各线程就位就接回，见 gl_snap_thread_bind）
+typedef struct { uint64_t tid; uint32_t ctx, surf, api; } snap_tb;
+static snap_tb g_tb[64]; static int g_ntb;   // 持 g_egl_mu
+static void snap_tb_note(void) {
+    if (!snap_on() || !s2a_snap_thread_self) return;
+    uint64_t tid = s2a_snap_thread_self(); if (!tid) return;
+    context_t *c = cur_context();
+    pthread_mutex_lock(&g_egl_mu);
+    int i = 0; while (i < g_ntb && g_tb[i].tid != tid) i++;
+    if (i == g_ntb && g_ntb < 64) g_ntb++;
+    if (i < 64) g_tb[i] = (snap_tb){tid, c ? c->seq : 0, g_draw ? g_draw->seq : 0, g_api};
+    pthread_mutex_unlock(&g_egl_mu);
+}
+static surface_t *surf_by_seq(uint32_t k, int make) {   // 持 g_egl_mu
+    for (surface_t *s = g_surfaces; s; s = s->next) if (s->seq == k) return s;
+    if (!make) return NULL;
+    surface_t *s = calloc(1, sizeof *s); if (!s) return NULL; s->seq = k; s->next = g_surfaces; g_surfaces = s; if (k > g_seq_surf) g_seq_surf = k; return s;
+}
+static context_t *ctx_by_seq(uint32_t k, int make) {   // 持 g_egl_mu
+    for (context_t *c = g_contexts; c; c = c->next) if (c->seq == k) return c;
+    if (!make) return NULL;
+    context_t *c = calloc(1, sizeof *c); if (!c) return NULL; c->seq = k; c->next = g_contexts; g_contexts = c; if (k > g_seq_ctx) g_seq_ctx = k; return c;
+}
+// 快照引擎（runtime/src/snapshot.c handout_resolve）：身份 → 本进程的值；不认的回 0（引擎报红）
+uint64_t gl_snap_resolve(const char *id) {
+    if (!strncmp(id, "gl:surf:", 8) || !strncmp(id, "gl:ctx:", 7)) {
+        int surf = id[3] == 's'; uint32_t k = (uint32_t)strtoul(id + (surf ? 8 : 7), NULL, 10); if (!k) return 0;
+        pthread_mutex_lock(&g_egl_mu); void *o = surf ? (void *)surf_by_seq(k, 1) : (void *)ctx_by_seq(k, 1); pthread_mutex_unlock(&g_egl_mu);
+        return (uint64_t)(uintptr_t)o;
+    }
+    if (!strncmp(id, "gl:proc:", 8)) return (uint64_t)(uintptr_t)gl_entry_or_stub(id + 8);
+    if (!strncmp(id, "gl:str:", 7)) return (uint64_t)(uintptr_t)gl_snap_str(id + 7);
+    if (!strncmp(id, "gl:map:", 7)) return gl_buf_snap_map(id + 7);
+    return 0;
+}
+// 快照引擎写交出指针表之前调（冻结后）：只在存档那一刻才有意义的交出指针（映射着的缓冲）这时登记
+void gl_snap_handout_now(void) { if (snap_on()) gl_buf_snap_handout(); }
+int gl_snap_used(void) { pthread_mutex_lock(&g_egl_mu); int u = g_surfaces || g_contexts; pthread_mutex_unlock(&g_egl_mu); return u; }
+
+// 本文件的字段号（只增不改；删字段留空号）
+enum { GE_INIT = 1, GE_FPS, GE_SEQS, GE_SEQC,
+       GS_SEQ = 1, GS_W, GS_H, GS_INTERVAL, GS_PBUF, GS_LARGEST, GS_CUR, GS_DEAD,
+       GC_SEQ = 1, GC_DEAD, GC_API, GC_VAO, GC_PROG, GC_FBD, GC_FBR, GC_BUFB, GC_UNPACK_ALIGN, GC_UNPACK_ROW, GC_PACK_ALIGN, GC_RB, GC_POLY_F, GC_POLY_U, GC_LINEW, GC_POINTSZ,
+       GC_TEXU, GC_SMPU, GC_ACTIVE, GC_UBO, GC_UBO_OFF, GC_UBO_SIZE, GC_VP, GC_SC, GC_DRANGE, GC_ENABLE, GC_COLOR, GC_DDRAW, GC_DREAD, GC_POLYMODE, GC_ATTRCUR,
+       GC_DEPTHF, GC_CULL, GC_FRONT, GC_STF, GC_STOP, GC_STREF, GC_STMASK, GC_STWMASK, GC_DMASK, GC_BLENDC, GC_CLEARC, GC_CLEARD, GC_CLEARS, GC_ERR, GC_DVAO,
+       GT_TID = 1, GT_CTX, GT_SURF, GT_API };
+#define GL_STATE_FIELDS(X) X(GC_API, api) X(GC_VAO, vao) X(GC_PROG, prog) X(GC_FBD, fb_draw) X(GC_FBR, fb_read) X(GC_BUFB, buf_bound) X(GC_UNPACK_ALIGN, unpack_align) \
+    X(GC_UNPACK_ROW, unpack_row) X(GC_PACK_ALIGN, pack_align) X(GC_RB, rb_bound) X(GC_POLY_F, poly_factor) X(GC_POLY_U, poly_units) X(GC_LINEW, line_width) X(GC_POINTSZ, point_size) \
+    X(GC_TEXU, tex_unit) X(GC_SMPU, smp_unit) X(GC_ACTIVE, active_unit) X(GC_UBO, ubo) X(GC_UBO_OFF, ubo_off) X(GC_UBO_SIZE, ubo_size) X(GC_VP, vp) X(GC_SC, sc) X(GC_DRANGE, depth_range) \
+    X(GC_ENABLE, enable) X(GC_COLOR, color) X(GC_DDRAW, default_draw) X(GC_DREAD, default_read) X(GC_POLYMODE, poly_mode) X(GC_ATTRCUR, attr_cur) X(GC_DEPTHF, depth_func) X(GC_CULL, cull) \
+    X(GC_FRONT, front) X(GC_STF, stencil_func) X(GC_STOP, stencil_op) X(GC_STREF, stencil_ref) X(GC_STMASK, stencil_mask) X(GC_STWMASK, stencil_wmask) X(GC_DMASK, depth_mask) \
+    X(GC_BLENDC, blend_color) X(GC_CLEARC, clear_color) X(GC_CLEARD, clear_depth) X(GC_CLEARS, clear_stencil) X(GC_ERR, error) X(GC_DVAO, default_vao)
+
+// 存：调用方已冻结全部游戏线程。path = 快照目录里的 gfx_gl.bin
+int gl_snap_save(const char *path) {
+    if (!gl_snap_drain()) { GLOG("【红】 即时存档：GL 出图层排空超时"); return -1; }
+    FILE *f = fopen(path, "wb"); if (!f) return -1;
+    sfw w; int ns = 0, nc = 0;
+    pthread_mutex_lock(&g_egl_mu);
+    sfw_sec(&w, f, "gl.egl", 1); sfw_rec(&w);
+    { int in = atomic_load(&g_initialized); GLSF_W(&w, GE_INIT, in); } GLSF_W(&w, GE_FPS, g_gl_game_fps); GLSF_W(&w, GE_SEQS, g_seq_surf); GLSF_W(&w, GE_SEQC, g_seq_ctx);
+    sfw_end_rec(&w); int bad = sfw_end(&w);
+    sfw_sec(&w, f, "gl.surf", 1);
+    for (surface_t *s = g_surfaces; s; s = s->next) { sfw_rec(&w); GLSF_W(&w, GS_SEQ, s->seq); GLSF_W(&w, GS_W, s->w); GLSF_W(&w, GS_H, s->h); GLSF_W(&w, GS_INTERVAL, s->interval);
+        GLSF_W(&w, GS_PBUF, s->pbuffer); GLSF_W(&w, GS_LARGEST, s->largest); GLSF_W(&w, GS_CUR, s->cur); GLSF_W(&w, GS_DEAD, s->dead); sfw_end_rec(&w); ns++; }
+    bad |= sfw_end(&w);
+    sfw_sec(&w, f, "gl.ctx", 1);
+    for (context_t *c = g_contexts; c; c = c->next) { sfw_rec(&w); GLSF_W(&w, GC_SEQ, c->seq); GLSF_W(&w, GC_DEAD, c->dead);
+        #define X(id, fld) GLSF_W(&w, id, c->st.fld);
+        GL_STATE_FIELDS(X)
+        #undef X
+        sfw_end_rec(&w); nc++; }
+    bad |= sfw_end(&w);
+    sfw_sec(&w, f, "gl.thr", 1);
+    for (int i = 0; i < g_ntb; i++) { sfw_rec(&w); GLSF_W(&w, GT_TID, g_tb[i].tid); GLSF_W(&w, GT_CTX, g_tb[i].ctx); GLSF_W(&w, GT_SURF, g_tb[i].surf); GLSF_W(&w, GT_API, g_tb[i].api); sfw_end_rec(&w); }
+    bad |= sfw_end(&w);
+    // 各上下文的默认纹理（上下文私有、不在名字表里）：按上下文链表顺序、每个 4 个
+    uint32_t n = (uint32_t)nc; bad |= fwrite(&n, 4, 1, f) != 1;
+    for (context_t *c = g_contexts; c && !bad; c = c->next) { bad |= fwrite(&c->seq, 4, 1, f) != 1; for (int k = 0; k < 4 && !bad; k++) bad |= gl_tex_snap_one_save(f, c->st.default_tex[k]) < 0; }
+    pthread_mutex_unlock(&g_egl_mu);
+    bad |= gl_buf_snap_save(f) || gl_tex_snap_save(f) || gl_prog_snap_save(f) || gl_fb_snap_save(f) || gl_draw_snap_save(f);
+    bad |= fclose(f) != 0;
+    GLOG("%s即时存档：GL 出图层 表面 %d 个、上下文 %d 个、绑定线程 %d 条", bad ? "【红】 " : "", ns, nc, g_ntb);
+    return bad ? -1 : 0;
+}
+
+// 取：新进程，游戏线程未起；快照引擎写回游戏内存时已按句柄身份建好表面 / 上下文空壳
+int gl_snap_restore(const char *path) {
+    FILE *f = fopen(path, "rb"); if (!f) return -1;
+    gl_dev_init();
+    sfr r; int bad = 0, ns = 0, nc = 0;
+    if (sfr_sec(&r, f, "gl.egl", 1)) { fclose(f); GLOG("【红】 即时存档恢复：GL 快照段头不认（比本版新或已坏）"); return -1; }
+    while (sfr_rec(&r) == 1) {
+        int in = 1; GLSF_R(&r, GE_INIT, in); atomic_store(&g_initialized, in); GLSF_R(&r, GE_FPS, g_gl_game_fps);
+        uint32_t a = 0, b = 0; GLSF_R(&r, GE_SEQS, a); GLSF_R(&r, GE_SEQC, b);
+        pthread_mutex_lock(&g_egl_mu); if (a > g_seq_surf) g_seq_surf = a; if (b > g_seq_ctx) g_seq_ctx = b; pthread_mutex_unlock(&g_egl_mu);
+    }
+    sfr_done(&r);
+    if (sfr_sec(&r, f, "gl.surf", 1)) bad = 1;
+    while (!bad && sfr_rec(&r) == 1) {
+        uint32_t k = 0; GLSF_R(&r, GS_SEQ, k); if (!k) continue;
+        pthread_mutex_lock(&g_egl_mu); surface_t *s = surf_by_seq(k, 1); pthread_mutex_unlock(&g_egl_mu); if (!s) { bad = 1; break; }
+        s->w = 1920; s->h = 1080; s->interval = 1;
+        GLSF_R(&r, GS_W, s->w); GLSF_R(&r, GS_H, s->h); GLSF_R(&r, GS_INTERVAL, s->interval); GLSF_R(&r, GS_PBUF, s->pbuffer); GLSF_R(&r, GS_LARGEST, s->largest); GLSF_R(&r, GS_DEAD, s->dead);
+        uint32_t cur = 0; GLSF_R(&r, GS_CUR, cur); s->cur = cur % NSURF;
+        if (s->pbuffer) { if (!surface_pbuffer_build(s)) { GLOG("【红】 即时存档恢复：离屏表面 %u（%ux%u）建不出来", k, s->w, s->h); bad = 1; } }
+        else surface_window_build(s);
+        ns++;
+    }
+    sfr_done(&r);
+    if (!bad && sfr_sec(&r, f, "gl.ctx", 1)) bad = 1;
+    while (!bad && sfr_rec(&r) == 1) {
+        uint32_t k = 0; GLSF_R(&r, GC_SEQ, k); if (!k) continue;
+        pthread_mutex_lock(&g_egl_mu); context_t *c = ctx_by_seq(k, 1); pthread_mutex_unlock(&g_egl_mu); if (!c) { bad = 1; break; }
+        GLSF_R(&r, GC_DEAD, c->dead);
+        #define X(id, fld) GLSF_R(&r, id, c->st.fld);
+        GL_STATE_FIELDS(X)
+        #undef X
+        GLSF_RC(&r, GC_COLOR, c->st.color, "gl.color_state", gl_color_state);   // 带布局指纹的结构数组：旧布局按字段转（上面那遍原样读的盖掉）
+        memset(c->st.default_tex, 0, sizeof c->st.default_tex); c->st.dirty = ~0u; c->bound = 0;
+        nc++;
+    }
+    sfr_done(&r);
+    if (!bad && sfr_sec(&r, f, "gl.thr", 1)) bad = 1;
+    pthread_mutex_lock(&g_egl_mu); g_ntb = 0;
+    while (!bad && sfr_rec(&r) == 1) { if (g_ntb == 64) continue; snap_tb *t = &g_tb[g_ntb]; memset(t, 0, sizeof *t); t->api = EGL_OPENGL_ES_API;
+        GLSF_R(&r, GT_TID, t->tid); GLSF_R(&r, GT_CTX, t->ctx); GLSF_R(&r, GT_SURF, t->surf); GLSF_R(&r, GT_API, t->api); if (t->tid) g_ntb++; }
+    pthread_mutex_unlock(&g_egl_mu);
+    sfr_done(&r);
+    uint32_t n = 0; if (!bad && fread(&n, 4, 1, f) != 1) bad = 1;
+    for (uint32_t i = 0; !bad && i < n; i++) {
+        uint32_t k = 0; if (fread(&k, 4, 1, f) != 1) { bad = 1; break; }
+        pthread_mutex_lock(&g_egl_mu); context_t *c = ctx_by_seq(k, 0); pthread_mutex_unlock(&g_egl_mu);
+        for (int t = 0; t < 4; t++) { long at = ftell(f); uint8_t has; if (fread(&has, 1, 1, f) != 1) { bad = 1; break; } fseek(f, at, SEEK_SET);
+            gl_texture *x = gl_tex_snap_one_load(f); if (has && !x) { bad = 1; break; } if (c) c->st.default_tex[t] = x; }
+    }
+    bad = bad || gl_buf_snap_restore(f) || gl_tex_snap_restore(f) || gl_prog_snap_restore(f) || gl_fb_snap_restore(f) || gl_draw_snap_restore(f);
+    fclose(f);
+    GLOG("%s即时存档恢复：GL 出图层 表面 %d 个、上下文 %d 个、绑定线程 %d 条", bad ? "【红】 " : "", ns, nc, g_ntb);
+    return bad ? -1 : 0;
+}
+// 恢复局：每条游戏线程就位时调（runtime/src/thread.c snap_thread_main，客体线程号）：按快照接回它的当前上下文 / 表面 / API
+void gl_snap_thread_bind(uint64_t tid) {
+    pthread_mutex_lock(&g_egl_mu);
+    snap_tb t = {0}; for (int i = 0; i < g_ntb; i++) if (g_tb[i].tid == tid) t = g_tb[i];
+    context_t *c = t.ctx ? ctx_by_seq(t.ctx, 0) : NULL; surface_t *s = t.surf ? surf_by_seq(t.surf, 0) : NULL;
+    if (c) c->bound++; if (s) s->bound++;
+    pthread_mutex_unlock(&g_egl_mu);
+    if (!t.tid) return;
+    g_draw = s; gl_cur = c ? &c->st : NULL; g_api = t.api ? t.api : EGL_OPENGL_ES_API;
+    GLOG("即时存档恢复：线程 %llu 接回 GL 上下文 %u、表面 %u", (unsigned long long)tid, t.ctx, t.surf);
+}
+// 本层按整块存的小结构（数组元素、嵌套结构）的布局指纹；整体结构按字段号存，不在此列
+void gl_snap_fps(gl_fp_cb cb) {
+    struct gl_program *p = NULL; (void)p;
+    cb("gl.uniform", SNAP_FP_TYPE(gl_uniform)); cb("gl.attrib", SNAP_FP_TYPE(gl_attrib)); cb("gl.vao", SNAP_FP_TYPE(struct gl_vao)); cb("gl.color_state", SNAP_FP_TYPE(gl_color_state));
+    cb("gl.prog.smp", SNAP_FP_OF(p->smp[0])); cb("gl.prog.blk", SNAP_FP_OF(p->blk[0])); cb("gl.prog.attr", SNAP_FP_OF(p->attr[0])); cb("gl.prog.bind", SNAP_FP_OF(p->bind[0]));
+    gl_tex_snap_fps(cb); gl_fb_snap_fps(cb);
+}

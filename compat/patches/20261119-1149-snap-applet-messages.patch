@@ -1,0 +1,40 @@
+diff --git a/src/Ryujinx.HLE/S2AAppletSnap.cs b/src/Ryujinx.HLE/S2AAppletSnap.cs
+new file mode 100644
+index 0000000000000000000000000000000000000000..4379658a75edad6d7ce0dcacd58f00319997d383
+--- /dev/null
++++ b/src/Ryujinx.HLE/S2AAppletSnap.cs
+@@ -0,0 +1,34 @@
++// S2A: 本文件为 S2A 新增（非 Ryujinx 原版）。
++using System.IO;
++
++namespace Ryujinx.HLE
++{
++    /// <summary>
++    /// 即时存档：小程序消息队列（AppletStateMgr.Messages）存取。消息是宿主事件（焦点、运行模式、性能模式……）入队的，不是游戏请求建的，
++    /// 请求日志里没有；存档那一刻游戏还没取走的消息原先就丢了。恢复在请求重放之后：用快照那一刻的队列替换恢复局开机时自己排的
++    /// （游戏状态是快照那一刻的，开机消息它早处理过），按队列空不空设消息事件（同 ReceiveMessage 的规则）
++    /// </summary>
++    public static class S2AAppletSnap
++    {
++        private const uint Magic = 0x31534D41u;   // "AMS1"
++
++        public static int Save(Switch device, BinaryWriter w)
++        {
++            var q = device.System.AppletState.Messages.ToArray();
++            w.Write(Magic); w.Write(q.Length);
++            foreach (var m in q) w.Write((uint)m);
++            return q.Length;
++        }
++
++        /// <returns>放回的消息条数；格式不对回 -1</returns>
++        public static int Restore(Switch device, BinaryReader r)
++        {
++            if (r.ReadUInt32() != Magic) return -1;
++            int n = r.ReadInt32(); var st = device.System.AppletState;
++            while (st.Messages.TryDequeue(out _)) { }
++            for (int i = 0; i < n; i++) st.Messages.Enqueue((HOS.Services.Am.AppletAE.AllSystemAppletProxiesService.SystemAppletProxy.AppletMessage)r.ReadUInt32());
++            if (st.Messages.IsEmpty) st.MessageEvent.ReadableEvent.Clear(); else st.MessageEvent.ReadableEvent.Signal();
++            return n;
++        }
++    }
++}

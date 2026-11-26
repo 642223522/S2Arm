@@ -26,7 +26,8 @@
 # 接口：Pak(路径, key=None, images=()) → .version .legacy .mount .encrypted .key .methods（方式号 1 起对应的名字）
 #   .names / .handles（索引顺序，一一对应；名字不含挂载点）、.files（[(名字, 句柄)]，同名都留）、.by_name（名字 → 句柄）、.entry(句柄) → dict(off raw size method encrypted block_size blocks head)、
 #   .read(句柄, decode=None) → 字节、.close()。is_pak(路径)、footer(文件, 大小)。Unsupported 是 ValueError，Corrupt 是 Unsupported。
-import hashlib, os, struct, zlib
+import hashlib, os, struct, sys, zlib
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'nvn', 'tools')); import romfs_list   # 按路径读经 romfs_list（目录形态同 open；RomFS 不落散文件、只有镜像时从镜像读）
 from pak_crypto import aes_ecb, find_key
 import zstd_lib
 MAGIC = 0x5A6F12E1
@@ -51,7 +52,7 @@ def footer(f, size):
 
 def is_pak(path):
     try:
-        with open(path, 'rb') as f: return footer(f, os.path.getsize(path)) is not None
+        with romfs_list.open_file(path) as f: return footer(f, romfs_list.file_size(path)) is not None
     except OSError: return False
 
 class _B:   # 小端读游标；越界 / 结构错误抛 Corrupt
@@ -93,7 +94,7 @@ def _legacy_compact(r, ver, method_u8=False):
 
 class Pak:
     def __init__(s, path, key=None, images=()):
-        s.path = path; s.f = open(path, 'rb'); s.fsize = os.path.getsize(path); s.key = key
+        s.path = path; s.f = romfs_list.open_file(path); s.fsize = romfs_list.file_size(path); s.key = key
         try:
             ft = footer(s.f, s.fsize)
             if ft is None: raise Corrupt('PAK 文件尾无效（没有魔数或截断）')   # 调用方先用 is_pak 筛：到这里还认不出 = 坏了

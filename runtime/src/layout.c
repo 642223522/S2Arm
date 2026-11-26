@@ -37,6 +37,12 @@ static void vamm_small(s2a_layout *o, uint64_t at, uint64_t stack, uint64_t heap
     o->heap_base = at + stack;         o->heap_size = heap;
     o->aslr_base = at;                 o->aslr_size = stack + heap + VAMM_SHARED;
 }
+// 这款上一局真要过的普通堆（svc_mem.c SetHeapSize 超出堆区时记进 wire/<程序号>/heap_need，起局布局前读回设到这里；0 = 没记过）：
+//   别名优先的款堆区按静态识别压小（ALIAS_FIRST_HEAP），堆大小是运行时算出来的款（D-NGH9：开局要 3.1 GB）静态认不出、每局都在 nninitStartup 里 abort。
+//   记过就至少给到这么多（乙再加远端影子余量），下一局起得来
+static uint64_t g_heap_floor;
+void s2a_layout_heap_floor_set(uint64_t v) { g_heap_floor = v; }
+static uint64_t alias_first_heap(void) { uint64_t f = A2M(g_heap_floor) + (ALIAS_FIRST_HEAP - 64 * MB); return f > ALIAS_FIRST_HEAP ? f : ALIAS_FIRST_HEAP; }   // 堆 + 影子余量 128 MiB
 static uint64_t g_app_pool = 0xCD500000ull;
 uint64_t s2a_app_pool(void) { return g_app_pool; }
 void s2a_app_pool_set(uint64_t v) { g_app_pool = v; }
@@ -81,11 +87,82 @@ uint64_t s2a_layout_need(uint32_t as_type, uint64_t sys_resource_size, uint64_t 
     return sys_resource_size ? VAMM_ALIAS + 2 * MB + VAMM_STACK + S2A_HEAP_DEFAULT + VAMM_SHARED + mod : 32 * GB + mod;
 }
 
+// 多款容器选定游戏后按学到的跨度收窗口前的试算判据（svc_mem.c layout_prepare，D-PR33）：收窄后布局算得出（rc 0），且堆区起点到窗口末端
+//   装得下这款要的堆，才收（堆区本身可以伸出窗口，只是承诺；游戏真要堆时按窗口末端判，同 svc_mem.c「本机地址空间装不下」那条）
+int s2a_layout_cap_fits(int rc, uint64_t heap_base, uint64_t win_end, uint64_t heap_want) { return rc == 0 && win_end > heap_base && win_end - heap_base >= heap_want; }
+// 报给游戏的别名区大小（GetInfo AliasSize，#1441）。内部布局不动（别名区仍按标准尺寸、伸出窗口那段照旧走远端兜底），只是告诉游戏小一点：
+//   SDK 给新地址区挑「最高那段空隙的底部」，报多大游戏就往多高爬（上面「别名优先」那段的火炬之光3 读码），报到窗口末，内存就落在窗口里、不再缺页代执行。
+//   只在这几种情况都成立时收：① 没有出包静态结论，或结论是「上限不定」（alias_gb <= 0；> 0 的上面已按证明收进窗口）。上限不定（< 0）11-21 前也不收（宁慢不崩），
+//     结果这类款照报 64 GiB、玩久了爬进远端：一款 40 局里 31 局越出窗口、14 局远端缺页每秒 10 万次以上，它的别名区真映射只有 2.5 GB。现在照收，
+//     收小后申请地址区失败由 SDK 地址区返回门当场记下本款（svc_mem.c s2a_alias_alloc_failed，同 ④ 的记录）、下一局恢复原值；
+//   ② 宿主占到的空洞放不下标准布局（hole < need；放得下的机型与游戏报给游戏的值一个字节不变）；③ 别名区确实伸出窗口；
+//   ④ 本款没记过「收小后游戏照旧映射到收掉的那段」（full_flag，svc_mem.c 发现就记、下次起局恢复原值）；⑤ 见函数里。
+//   收到窗口末、按 GiB 取整；不足 8 GiB 不收（39 位款的别名区标准是 64 GiB，收到太小风险大于收益，照旧走远端）
+int s2a_alias_big_tops_window(uint64_t alias_base, int alias_gb, uint64_t win_end);
+uint64_t s2a_alias_report_size(uint64_t alias_base, uint64_t alias_size, uint64_t win_end, uint64_t hole, uint64_t need, int alias_gb, int full_flag) {
+    if (alias_gb > 0 || full_flag || !need || hole >= need || alias_base + alias_size <= win_end || win_end <= alias_base) return alias_size;
+    uint64_t r = (win_end - alias_base) & ~(GB - 1);
+    // ⑤ 上限不定、但出包静态认出了开局要的大块（alias_gb < 0，|alias_gb| GB）：收小后的别名区放不下这块就不收（11-21 一款大游戏真机：
+    //   静态 63 GB、收到 58 GB，开局 AllocateAddressRegion 回 0x1803、第 0 帧 Break；记下本款下一局恢复只救得了第二局）
+    if (alias_gb < 0 && s2a_alias_big_tops_window(alias_base, alias_gb, alias_base + r)) return alias_size;
+    return r >= 8 * GB && r < alias_size ? r : alias_size;
+}
+
+// 地址空间不够这款的判据（11-20 维护者定，宁漏勿误）：出包静态认出的开局大区（alias_gb GB = 大区 + SDK 元数据向上取整，大区本身是整 GiB，
+//   故大区长 = (|alias_gb| − 1) GiB）由 SDK 放在元数据之后、按 GiB 对齐的起点（起点 = (别名基址 + 0x3FE00000 + 1 GiB − 1) & −1 GiB）；
+//   大区末端顶到或超过窗口末 → 游戏其余地址区（SDK 放在「最高空隙的底部」= 大区之上，一款大游戏实测这里用 864 MB）必落窗口外 → 1。
+//   大区末端还在窗口里（上面还留着空间）→ 0：其余地址区放不放得下读码定不了，不弹（宁漏）。alias_gb == 0（没有静态大区）→ 0
+int s2a_alias_big_tops_window(uint64_t alias_base, int alias_gb, uint64_t win_end) {
+    if (!alias_gb) return 0;
+    uint64_t gb = (uint64_t)(alias_gb < 0 ? -alias_gb : alias_gb);
+    uint64_t start = (alias_base + 0x3FE00000ull + GB - 1) & ~(GB - 1), end = start + (gb - 1) * GB;
+    return end >= win_end;
+}
+
+// 即时存档命令记录区 + 虚拟池区（共 a 字节）放哪（窗口放不下标准布局时，vawin_reserve）：纯函数（放这里与布局算式同处，单测只链本文件），t_vawin_snaparena 测。
+//   1 = 窗口所在空洞之外（[4 GB, 空洞起点) 里最大一块 out ≥ a）；2 = 窗口下方宿主保留段底部（段长 below，切走 a 后仍 ≥ host_min——
+//   11-20 关快照的那次改动只看窗口外，iOS 27 那一段被共享缓存占满、量出 0，可按应用池留的宿主段有 21 GB，所有游戏的快照都被关了，#1867）；
+//   0 = 都放不下，这一局关快照。宿主段只有 host_min 那么多时不切：Metal 着色器库要从那里放（原先切满 3 GB 首帧前 NSMallocException）
+int s2a_snap_arena_place(uint64_t out, uint64_t below, uint64_t a, uint64_t host_min) {
+    if (out >= a) return 1;
+    if (below >= a + host_min) return 2;
+    return 0;
+}
+// 同上，宿主段本来不够时按游戏实际要多少让窗口（11-21）：fit = 宿主占到的空洞，*below = 窗口下方宿主段（放宿主段底部时可能加长到 a + host_min）；
+//   span = 本款已知的最高跨度（本机记录 / 种子表，0 = 还不知道）。不知道 → 让（按需起局，碰到上限再学）；知道且 span + margin ≤ fit − (a + host_min) → 让；
+//   否则 0（这台设备的地址空间真不够同时放下这款与快照）。空洞连 a + host_min 都不到 → 0
+// 选定游戏后收尾还给系统的 released 字节里放不放得下快照区 a 再给宿主留 host_min（vawin.c snap_late_take，11-21）
+int s2a_snap_late_fits(uint64_t released, uint64_t a, uint64_t host_min) { return released >= a + host_min; }
+int s2a_snap_arena_place2(uint64_t out, uint64_t fit, uint64_t *below, uint64_t a, uint64_t host_min, uint64_t span, uint64_t margin) {
+    int w = s2a_snap_arena_place(out, *below, a, host_min);
+    if (w) return w;
+    uint64_t want = a + host_min;
+    if (fit <= want) return 0;
+    if (span && span + margin > fit - want) return 0;
+    *below = want;
+    return 2;
+}
+
+// 分配器预留压小（改写器在 nn::mem::StandardAllocator 初始化入口挂的闸，svc_mem.c s2a_sainit_gate）：游戏传「地址空、尺寸 size」时
+//   SDK 在别名区划一整块，起点 = 元数据之后按 GiB 对齐（同上 s2a_alias_big_tops_window），末尾留 4 KiB 保护页。
+//   放得下 = 别名区整段在窗口里，或这块（连前后保护页 8 KiB）的末端在窗口里 → 原样，与今天逐字节相同（判据同「地址空间不够」提示）。
+//   放不下 → 压到「窗口末 − 起点 − 余量」按 GiB 向下取整。余量 = 应用池 + 8 KiB：块之后的其余地址区由 SDK 一路往上放
+//   （s2a_layout_compute 注释），它们的提交总量受应用池封顶，按每字节占一字节地址留（≥2 MiB 的区实测不到 2.01 倍、4 KiB 小区更多——
+//   留不够的那部分落到窗口外照旧走远端，只是慢，不会错）。压出来不到 1 GiB（窗口实在太小）→ 不压。返回值 = 该交给 SDK 的尺寸，等于 size 即不动
+uint64_t s2a_sainit_size(uint64_t alias_base, uint64_t alias_size, uint64_t win_end, uint64_t pool, uint64_t size) {
+    if (alias_base + alias_size <= win_end) return size;
+    uint64_t start = (alias_base + 0x3FE00000ull + GB - 1) & ~(GB - 1);
+    if (start < win_end && size + 0x2000 <= win_end - start) return size;
+    if (start >= win_end || win_end - start <= pool + 0x2000) return size;
+    uint64_t y = (win_end - start - pool - 0x2000) & ~(GB - 1);
+    return y >= GB && y < size ? y : size;
+}
+
 int s2a_layout_compute(uint32_t as_type, uint64_t sys_resource_size, uint64_t module_span, int alias_gb, uint64_t W, uint64_t S, s2a_layout *o, uint64_t *mod_base, uint64_t *shadow_base) {
     memset(o, 0, sizeof *o); *mod_base = *shadow_base = 0;
     uint64_t top = s2a_as_type_top(as_type);
     if (!top) return -1;
-    if ((W & (GB - 1)) || module_span > 64 * GB || W > top || S > top - W) return -2;
+    if ((W & (GB - 1)) || module_span > 64 * GB || !s2a_as_type_end(as_type, W, S)) return -2;   // 36 位款可在 2^36 以上按 2^36 对齐的一块里（as_type.h）
     uint64_t mod = A2M(module_span);
     o->win_base = W; o->as_type = as_type; o->sys_resource_size = sys_resource_size;
     if (as_type == 1) { if (as36(o, W, S, mod, mod_base)) { memset(o, 0, sizeof *o); return -2; } return 0; }
@@ -93,9 +170,11 @@ int s2a_layout_compute(uint32_t as_type, uint64_t sys_resource_size, uint64_t mo
         // 甲：别名区在前、整段有宿主地址；其后栈 / 堆 / 余量 / 模块。堆只对别名优先的款让位（从应用池上限往下让到窗口放得下，至少 32 MiB）——
         //   别的款不知道要多大堆（王国之泪首次就要 2.05 GB），放不下「别名 + 满额堆」就走乙：堆给满放前段、别名区伸出窗口（承诺，远端翻译兜底）
         uint64_t stack = alias_gb ? ALIAS_FIRST_STACK : VAMM_STACK, fixed = VAMM_ALIAS + 2 * MB + stack + VAMM_SHARED + mod;
-        if (alias_gb ? S >= fixed + MIN_HEAP : S >= fixed + S2A_HEAP_DEFAULT) {
+        uint64_t min_heap = A2M(g_heap_floor) > MIN_HEAP ? A2M(g_heap_floor) : MIN_HEAP;   // 记过真要的堆（g_heap_floor）：甲放不下它就走乙（堆给够、别名区伸出窗口走远端）——慢一点也要起得来
+        if (alias_gb ? S >= fixed + min_heap : S >= fixed + S2A_HEAP_DEFAULT) {
             uint64_t heap = S >= fixed + HOST_KEEP + MIN_HEAP ? (S - fixed - HOST_KEEP) & ~(2 * MB - 1) : MIN_HEAP;
             if (heap > S2A_HEAP_DEFAULT) heap = S2A_HEAP_DEFAULT;
+            if (alias_gb && A2M(g_heap_floor) > heap && S >= fixed + A2M(g_heap_floor)) heap = A2M(g_heap_floor);   // 上一局真要过这么多（见 g_heap_floor），窗口放得下就给
             vamm_alias(o, W);
             vamm_small(o, W + VAMM_ALIAS + 2 * MB, stack, heap);
             *mod_base = o->aslr_base + o->aslr_size;
@@ -107,7 +186,7 @@ int s2a_layout_compute(uint32_t as_type, uint64_t sys_resource_size, uint64_t mo
         //   别名优先（出包静态认出「开局在别名区要一整块巨大地址区」= 内存走 VAMM 自管，tools/addr_need.py static_alias_gb）：堆区 64 MiB +
         //   影子余量 128 MiB，别名区紧接前段、不按 GiB 对齐，窗口里放不下要的时承诺放到 64 GiB（元数据 ≤1 GiB + 对齐浪费 ≤1 GiB + 62 GiB 照样放下，SDK 对齐没被削也成立）——
         //   巫师3 碰到 49.1 GB，iOS 26 的 [12, 63) GB 空洞（下方 1 GiB 留宿主）放得下的前提
-        vamm_small(o, W + mod, stack, alias_gb ? ALIAS_FIRST_HEAP : S2A_HEAP_DEFAULT + S2A_FAR_SLACK);
+        vamm_small(o, W + mod, stack, alias_gb ? alias_first_heap() : S2A_HEAP_DEFAULT + S2A_FAR_SLACK);
         uint64_t t = alias_gb ? A2M(o->aslr_base + o->aslr_size) : AGB(o->aslr_base + o->aslr_size);
         if (t + 2 * MB > W + S) { memset(o, 0, sizeof *o); return -2; }   // 前段 + TLS/IO 都放不下
         vamm_alias(o, t);

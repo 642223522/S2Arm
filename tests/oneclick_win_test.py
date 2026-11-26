@@ -21,7 +21,7 @@
      机上待解批按完整性分：推到一半的盖掉，推完整的留着、其中文件（.pushed）不重推；没有待解批时 .pushed 不算数；机上 .incoming 有 <时刻>_<序号>.tar 残留 → 逐个用 1024 字节全零同名包覆盖、别的名字不碰；
      盖过残留或 unpack.log 末行是截短包 → 不认机上 index.tsv（上次推上去、没落地），按已应用索引（没有 = 全推）
 反证：选款逻辑内嵌在 oneclick.sh 时没有 pack/source_pick.py（① 全红）。"""
-import contextlib, json, os, re, subprocess, sys, tempfile, unittest
+import contextlib, io, json, os, re, subprocess, sys, tempfile, unittest
 from pathlib import Path
 from unittest.mock import patch
 
@@ -157,13 +157,12 @@ class MetalPath(unittest.TestCase):
     @unittest.skipIf(os.name == 'nt', '合成 .exe 为 POSIX 脚本；Windows 原生编译未覆盖')
     def test_direct_exports_selected_directory_to_both_tools(self):
         repo = self.root / 'repo'
-        script = repo / 'graphics/tools/direct/direct_lib.sh'
+        script = repo / 'graphics/tools/direct/direct_lib.py'
         script.parent.mkdir(parents=True)
-        script.write_text('''set -eu
-: "${S2A_METAL_BIN:?S2A_METAL_BIN missing from build environment}"
-test "$S2A_METAL_BIN" = "$S2A_EXPECT_METAL_BIN"
-"$S2A_METAL_BIN/metal.exe" --version
-"$S2A_METAL_BIN/metallib.exe" --version
+        script.write_text('''import os, subprocess, sys
+b = os.environ.get('S2A_METAL_BIN') or sys.exit('S2A_METAL_BIN missing from build environment')
+if b != os.environ['S2A_EXPECT_METAL_BIN']: sys.exit('S2A_METAL_BIN differs')
+for t in ('metal', 'metallib'): sys.stdout.flush(); subprocess.run([os.path.join(b, t + '.exe'), '--version'], check=True)
 ''', encoding='utf-8')
         explicit = self.root / '显式安装'
         explicit.mkdir()
@@ -179,7 +178,7 @@ test "$S2A_METAL_BIN" = "$S2A_EXPECT_METAL_BIN"
                 **({'S2A_METAL_BIN': str(explicit)} if source == 'explicit' else {}),
             }), patch.object(oneclick_win, 'R', repo), patch.object(oneclick_win, 'WIN', True), \
                  patch.object(oneclick_win, 'prebuilt', return_value=self.root / 'unused.dll'), \
-                 patch.object(oneclick_win, 'bash_exe', return_value='/bin/sh'):
+                 patch.object(oneclick_win, 'bash_exe', side_effect=AssertionError('直连库那一步不该再找 Git Bash')):
                 run = oneclick_win.Run(self.root / source)
                 try:
                     oneclick_win.direct(run, cur, 'ios', 1)
@@ -192,19 +191,44 @@ test "$S2A_METAL_BIN" = "$S2A_EXPECT_METAL_BIN"
     @unittest.skipIf(os.name == 'nt', 'Mac 子进程环境回归仅在 POSIX 宿主运行')
     def test_mac_does_not_export_windows_directory(self):
         repo = self.root / 'mac-repo'
-        script = repo / 'graphics/tools/direct/direct_lib.sh'
+        script = repo / 'graphics/tools/direct/direct_lib.py'
         script.parent.mkdir(parents=True)
-        script.write_text('test "${S2A_METAL_BIN+set}" != set\n', encoding='utf-8')
+        script.write_text("import os, sys\nsys.exit('S2A_METAL_BIN set' if 'S2A_METAL_BIN' in os.environ else 0)\n", encoding='utf-8')
         cur = self.root / 'cur'
         cur.mkdir()
         with patch.object(oneclick_win, 'R', repo), patch.object(oneclick_win, 'WIN', False), \
              patch.object(oneclick_win, 'prebuilt', return_value=None), \
-             patch.object(oneclick_win, 'bash_exe', return_value='/bin/sh'):
+             patch.object(oneclick_win, 'bash_exe', side_effect=AssertionError('直连库那一步不该再找 Git Bash')):
             run = oneclick_win.Run(self.root / 'mac-out')
             try:
                 oneclick_win.direct(run, cur, 'mac', 1)
             finally:
                 run.timing.close()
+
+
+class RmtreeLoud(unittest.TestCase):
+    """11-16 维护者：rmtree(ignore_errors=True) 遇到只读文件会静默留残留。期望手写：① 不在的目录不报错；② 只读的项（Windows 只读位 / 别处父目录无写权限）
+    去掉只读后删干净；③ 还删不掉：strict 抛 OSError 且带「删不掉」和路径，非 strict 只说一句黄、不抛"""
+    def test_missing_readonly_and_failure(self):
+        import stat
+        with tempfile.TemporaryDirectory() as t:
+            oneclick_win.rmtree_loud(Path(t) / 'none')
+            d = Path(t) / 'out'; (d / 'sub').mkdir(parents=True); (d / 'sub/a.bin').write_bytes(b'a')
+            if os.name == 'nt':
+                os.chmod(d / 'sub/a.bin', stat.S_IREAD)
+            else:
+                os.chmod(d / 'sub', 0o500)
+            oneclick_win.rmtree_loud(d)
+            self.assertFalse(d.exists())
+            d.mkdir()
+            with patch.object(oneclick_win.shutil, 'rmtree', side_effect=PermissionError(13, '拒绝访问', str(d))):
+                with self.assertRaises(OSError) as cm:
+                    oneclick_win.rmtree_loud(d)
+                self.assertIn('删不掉', str(cm.exception)); self.assertIn(str(d), str(cm.exception))
+                err = io.StringIO()
+                with contextlib.redirect_stderr(err):
+                    oneclick_win.rmtree_loud(d, strict=False)
+                self.assertIn('【黄】没删干净', err.getvalue())
 
 
 class StepRc(unittest.TestCase):
@@ -230,6 +254,18 @@ class LogReason(unittest.TestCase):
 
     def test_no_exception_keeps_last_three_lines(self):
         self.assertEqual(oneclick_win.log_reason("a\nb\nc\nd\n"), "b / c / d")
+
+    def test_red_line_keeps_its_head(self):
+        # D-Z2VA：直连库出库失败的红行把 .NET 异常头放在前面、build.log 末尾的调用栈放在后面，一行近 2 KB。原先取末 3 行末 300 字，
+        #   玩家只看到一串「at Build.UnityFlush…」，异常类型和消息全丢。期望：取最后一条红行，开头的异常头保住，末尾的日志路径也在
+        stack = ' ⏎ '.join(f'   at Frame{i}() + 0x{i:x}' for i in range(40))
+        red = ('[直连库] 🔴 出库失败 rc=1：Unhandled exception. System.AggregateException: One or more errors occurred. (磁盘读错误)'
+               f'：dsh_batch.py 退出码 1：{stack}（F:/c/work.stage.1/build.log）')
+        got = oneclick_win.log_reason(f'[直连库] 第 1 步\n{red}\n[直连库] 收尾\n')
+        self.assertTrue(got.startswith('[直连库] 🔴 出库失败 rc=1：Unhandled exception. System.AggregateException'), got)
+        self.assertIn('磁盘读错误', got)
+        self.assertTrue(got.endswith('build.log）'), got)
+        self.assertLessEqual(len(got), 600)
 
 
 class Product(unittest.TestCase):
@@ -352,7 +388,7 @@ class SeedAoc(unittest.TestCase):   # ④ 播种与轻阶段带 S2A_SEED_AOC=1�
             t = Path(t); run = oneclick_win.Run(t / 'out'); seen = {}
             def sh(args, log, env=None, ok=(0,), cwd=None): seen[log] = ((env or {}).get('S2A_SEED_AOC'), (env or {}).get('S2A_NX_UNPACK')); return 0
             run.sh = sh
-            (t / 'out/roots').mkdir(parents=True); (t / 'ver').mkdir(); os.symlink(t / 'ver', t / 'out/roots/tx@现行')
+            (t / 'out/roots/tx@v1').mkdir(parents=True); (t / 'out/roots/tx@现行').write_text('tx@v1\n')   # 现行指针文件
             tool = t / 'out/bin/nx_unpack_abc/nx_unpack.exe'
             with patch.object(oneclick_win, "nx_unpack", lambda r: tool):
                 oneclick_win.stages(run, 'tx', t / 'x', t / 'src')
@@ -495,8 +531,74 @@ class Events(unittest.TestCase):   # ⑥ ⑦ ⑧ 机器读事件流与 --from-ex
         try: self.assertIsNone(oneclick_win.work_temp(self.t / 'k')); self.assertEqual(os.environ.get('TMP'), old)
         finally: os.environ.pop('S2A_KEEP_SYSTEM_TEMP', None)
 
+    def test_windows_temp_root_preserves_mapped_drive(self):
+        # A: 映射网络库经 Path.resolve() 会变成 UNC；Metal 只读得了映射盘路径。
+        mapped = r'A:\_game\_ios\games\Absolum\build\ios'
+        with patch.object(oneclick_win, 'WIN', True):
+            self.assertEqual(oneclick_win._work_temp_root(mapped), mapped)
+
+    def test_windows_temp_root_reverses_unc_to_mapped_drive(self):
+        unc = r'\\192.168.50.250\Database\_game\_ios\games\Absolum\build\ios\work'
+        mapped = r'A:\_game\_ios\games\Absolum\build\ios\work'
+        with patch.object(oneclick_win, 'WIN', True), \
+             patch.object(oneclick_win, '_mapped_network_roots', return_value=[('A:', r'\\192.168.50.250\Database')]):
+            self.assertEqual(oneclick_win._work_temp_root(unc), mapped)
+
+    def test_windows_temp_root_requires_share_boundary(self):
+        unc = r'\\server\DatabaseBackup\games\x'
+        with patch.object(oneclick_win, 'WIN', True), \
+             patch.object(oneclick_win, '_mapped_network_roots', return_value=[('A:', r'\\server\Database')]):
+            self.assertEqual(oneclick_win._work_temp_root(unc), unc)
+
 
 class InstallWin(unittest.TestCase):
+    def setUp(self):
+        # 签名前的配对检查（#1973）问的是本机真实设备服务：其余用例一律当「已配对」，配对本身见 test_pair_*
+        self._pair = install_win.has_pair_record; install_win.has_pair_record = lambda udid: True
+    def tearDown(self): install_win.has_pair_record = self._pair
+
+    def pair_case(self, record, devpush_body):
+        """设备服务里有没有配对记录（True / False / OSError）+ 假 s2a-devpush → (结果或 Fail, 事件顺序, devpush 收到的参数)"""
+        body = ("open(a[a.index('-o') + 1] + '.ev', 'w').close()\nprint('Installation complete!')\nz = zipfile.ZipFile(a[a.index('-o') + 1], 'w')\n"
+                "z.writestr('Payload/S2Arm.app/Info.plist', b'<?xml version=\"1.0\"?><plist version=\"1.0\"><dict><key>CFBundleIdentifier</key><string>a.b.T</string></dict></plist>')\nz.close()\n")
+        with tempfile.TemporaryDirectory() as d:
+            ev = Path(d, 'events'); exe = self.fake(d, f"open({str(ev)!r}, 'a').write('sign\\n')\n" + body)
+            dp = Path(d, 's2a-devpush'); dp.write_text(f"#!/usr/bin/env python3\nimport sys\na = sys.argv[1:]\nopen({str(ev)!r}, 'a').write('pair ' + ' '.join(a[:3]) + '\\n')\n" + devpush_body); dp.chmod(0o755)
+            def rec(udid):
+                if isinstance(record, Exception): raise record
+                return record
+            old = install_win.mux_devices, install_win.has_pair_record
+            install_win.mux_devices = lambda: [('U1', 'USB', 42)]; install_win.has_pair_record = rec
+            ns = self.ns(d, exe); ns.devpush = str(dp)
+            try:
+                try: got = install_win.install_app(ns, say=lambda m: None)
+                except install_win.Fail as e: got = e
+            finally: install_win.mux_devices, install_win.has_pair_record = old
+            return got, (ev.read_text().split('\n')[:-1] if ev.is_file() else [])
+
+    def test_pair_missing_record_pairs_then_signs(self):
+        # #1973：设备服务里没有这台的配对记录（Windows 上 Apple Devices 没开时手机点「信任」也不会存）→ 先 s2a-devpush pair、再签名
+        got, ev = self.pair_case(False, "print('pair 已配对（新）')\n")
+        self.assertEqual(got, 'a.b.T')
+        self.assertEqual(ev, ['pair U1 - pair', 'sign'])
+
+    def test_pair_record_present_skips_pairing(self):
+        got, ev = self.pair_case(True, "print('不该跑')\n")
+        self.assertEqual((got, ev), ('a.b.T', ['sign']))
+
+    def test_pair_refused_reports_pairing_not_signing(self):
+        # 手机上点了「不信任」：报 devpush 给的原因、错误码 device_pairing_required，不再去签名（签名只会报更难懂的「没有配对文件」）
+        got, ev = self.pair_case(False, "sys.stderr.write('手机上点了「不信任」：拔下数据线再插上，在弹出的框里点「信任」\\n'); sys.exit(1)\n")
+        self.assertIsInstance(got, install_win.Fail)
+        self.assertEqual(got.err, 'device_pairing_required')
+        self.assertIn('不信任', str(got))
+        self.assertEqual(ev, ['pair U1 - pair'])
+
+    def test_pair_service_unreadable_goes_on_to_sign(self):
+        # 设备服务问不了配对记录：不在这里拦，照常签名，由签名报真原因
+        got, ev = self.pair_case(OSError('refused'), "print('不该跑')\n")
+        self.assertEqual((got, ev), ('a.b.T', ['sign']))
+
     def fake(self, d, body):
         f = Path(d, 'plumesign'); f.write_text('#!/usr/bin/env python3\nimport sys, zipfile\na = sys.argv[1:]\n' + body); f.chmod(0o755); return str(f)
 
@@ -509,6 +611,9 @@ class InstallWin(unittest.TestCase):
         self.assertEqual(install_win.device_id('U1', [('U1', 'Network', 7), ('U2', 'USB', 3), ('U1', 'USB', 9)]), 9)
         self.assertEqual(install_win.device_id('U1', [('U1', 'Network', 7)]), 7)
         self.assertIsNone(install_win.device_id('U3', [('U1', 'USB', 9)]))
+        # D-XHV5：设备服务与 devicectl 的编号写法不同（短横、大小写）也认同一台；空编号不匹配任何一台
+        self.assertEqual(install_win.device_id('ab-cd', [('ABCD', 'USB', 5)]), 5)
+        self.assertIsNone(install_win.device_id('', [('', 'USB', 5)]))
 
     def test_plumesign_is_never_taken_from_desktop_or_downloads(self):
         # 11-11 审查：桌面 / 下载里叫 plumesign* 的任意程序不能被拿来执行；其他档都没有时就是找不到（发版随包那份由调用方传）
@@ -545,6 +650,36 @@ class InstallWin(unittest.TestCase):
                 try: return install_win.run(self.ns(d, exe), say=lambda m: None), got, Path(d, 'p.log').read_text()
                 except install_win.Fail as e: return e, got, None
             finally: install_win.mux_devices, install_win.push_pack = olds
+
+    def test_not_in_device_service_with_other_installer_signs_only_then_hands_over(self):
+        # D-WFBG / D-ST8X：Mac 上手机只在同一 Wi-Fi，设备服务（usbmux）里没有；调用方给了别的装法 → plumesign 只签名（不 --register-and-install），
+        #   签好的包交它装、返回签好包里的包名。期望手写
+        body = ("print('args', a)\nz = zipfile.ZipFile(a[a.index('-o') + 1], 'w')\n"
+                "z.writestr('Payload/S2Arm.app/Info.plist', b'<?xml version=\"1.0\"?><plist version=\"1.0\"><dict><key>CFBundleIdentifier</key><string>a.b.W</string></dict></plist>')\nz.close()\n")
+        with tempfile.TemporaryDirectory() as d:
+            exe = self.fake(d, body); handed = []
+            old = install_win.mux_devices; install_win.mux_devices = lambda: []
+            ns = self.ns(d, exe); ns.fallback_install = lambda p: handed.append(__import__("zipfile").ZipFile(p).namelist())
+            try: bid = install_win.install_app(ns, say=lambda m: None)
+            finally: install_win.mux_devices = old
+            log = Path(d, 'p.log').read_text()
+        self.assertEqual(bid, 'a.b.W')
+        self.assertEqual(handed, [['Payload/S2Arm.app/Info.plist']])
+        self.assertNotIn('--register-and-install', log)
+
+    def test_target_not_listed_is_not_connected(self):
+        # D-XHV5：要装的那台不在设备服务里（插着线的是另一台）→ device_not_connected，报错里写出在列的是哪台；不是「要信任电脑」
+        with tempfile.TemporaryDirectory() as d:
+            exe = self.fake(d, "print('should not run')\n")
+            old = install_win.mux_devices
+            install_win.mux_devices = lambda: [('OTHER', 'USB', 42)]
+            try:
+                with self.assertRaises(install_win.Fail) as e:
+                    install_win.install_app(self.ns(d, exe), say=lambda m: None)
+            finally:
+                install_win.mux_devices = old
+        self.assertEqual(e.exception.err, 'device_not_connected')
+        self.assertIn('OTHER/USB', str(e.exception))
 
     def test_ok(self):
         body = ("print('args', a)\nprint('Installation complete!')\nz = zipfile.ZipFile(a[a.index('-o') + 1], 'w')\n"
@@ -595,6 +730,32 @@ class InstallWin(unittest.TestCase):
         finally:
             self.ns = old_ns
         self.assertIsInstance(e, install_win.Fail); self.assertEqual(e.err, 'app_id_taken'); self.assertNotIn('push', got)
+
+    def test_9401_on_widget_id_installs_without_the_widget(self):
+        # 11-18 Windows 实机：这个 Apple ID 早先被不带包名签过一次，主包名被拒、扩展却注册成了 io.s2arm.games.<大写团队号>.widget，
+        #   之后小写主包名 + 小写扩展永远在扩展上 9401，旧写法重试又在主包名上 9401。期望（手写）：认出被拒的是 .widget → 去掉 PlugIns/ 用同一个
+        #   小写包名再签一次，装上、照常推资源；两次输出都在日志里。假 plumesign：包里有扩展就在扩展包名上 9401，没有就装好
+        body = ("pkg = a[a.index('--package') + 1]; ident = a[a.index('--custom-identifier') + 1]\n"
+                "has = any('/PlugIns/' in n for n in zipfile.ZipFile(pkg).namelist())\nprint('try', ident, 'widget' if has else 'nowidget')\n"
+                "if has:\n"
+                "    print(\"Error: Developer API error 9401 (HTTP Some(200)): An App ID with Identifier '\" + ident + \".widget' is not available.\"); sys.exit(1)\n"
+                "print('Installation complete!')\nz = zipfile.ZipFile(a[a.index('-o') + 1], 'w')\n"
+                "z.writestr('Payload/S2Arm.app/Info.plist', ('<?xml version=\"1.0\"?><plist version=\"1.0\"><dict><key>CFBundleIdentifier</key><string>' + ident + '</string></dict></plist>').encode())\nz.close()\n")
+        old_ns = self.ns
+        def ns(d, exe):
+            import zipfile
+            with zipfile.ZipFile(Path(d, 'w.ipa'), 'w') as z:
+                z.writestr('Payload/S2Arm.app/Info.plist', b'x'); z.writestr('Payload/S2Arm.app/PlugIns/S2ArmWidget.appex/Info.plist', b'x')
+            return __import__("argparse").Namespace(**dict(vars(old_ns(d, exe)), ipa=str(Path(d, 'w.ipa')), bundle="io.s2arm.games.abcde12345"))
+        self.ns = ns
+        try:
+            bid, got, log = self.run_fake(body)
+        finally:
+            self.ns = old_ns
+        self.assertEqual(bid, 'io.s2arm.games.abcde12345')
+        self.assertEqual(got['push'][1], 'io.s2arm.games.abcde12345')
+        self.assertIn('try io.s2arm.games.abcde12345 widget', log); self.assertIn('try io.s2arm.games.abcde12345 nowidget', log)
+        self.assertNotIn('ABCDE12345', log)   # 不走旧写法重试
 
     def test_already_registered_device_signs_then_installs(self):
         # #800：Windows 设备号不带横线、苹果存的带横线，plumesign 精确比较认不出已登记的这台 → 再登记被拒 35「already exists on this team」。
@@ -669,7 +830,7 @@ class InstallWin(unittest.TestCase):
 
 
 class GlslcGate(unittest.TestCase):
-    """要离线编 GLSLC 而 Windows 跑不了：不再退 75，设 S2A_GLSLC_RUNTIME_ONLY 让 extract.sh 跳过（运行时现编）；不需要 / 有宿主时不设（11-08 DQB2）"""
+    """要离线编 GLSLC 而 Windows 跑不了：不再退 75，设 S2A_GLSLC_RUNTIME_ONLY 让 extract.py 跳过（运行时现编）；不需要 / 有宿主时不设（11-08 DQB2）"""
     class Run:
         def step(self, name, f): return f()
     def go(self, why, host=None):

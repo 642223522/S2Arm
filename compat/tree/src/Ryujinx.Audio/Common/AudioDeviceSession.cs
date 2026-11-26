@@ -441,6 +441,47 @@ namespace Ryujinx.Audio.Common
             return false;
         }
 
+        // S2Arm 即时存档：缓冲队列与已播采样数。存：还没交还的（正在放 + 排着，按放的顺序）与已交还、游戏还没取走的（按交还顺序），各存 tag / 地址 / 大小；
+        //   恢复（新会话、重放已 Start）：已交还的直接放回「已交还」并发事件，没交还的按顺序重新追加给硬件（样本在已恢复的游戏内存里），
+        //   已播采样数按偏移接上（游戏拿它做音画同步，不能从 0 重来）。原先这个队列不存：恢复后游戏一直等它以为还排着的缓冲交还，音频线程卡住、跟音频走的动画定格
+        private ulong _s2aPlayedOffset;
+        public ulong S2APlayedSampleCount => GetPlayedSampleCount();
+        public (ulong Tag, ulong Ptr, ulong Size)[] S2APending()
+        {
+            uint n = _bufferRegisteredCount + _bufferAppendedCount;
+            var r = new (ulong, ulong, ulong)[n];
+            uint first = (_hardwareBufferIndex - _bufferRegisteredCount) % Constants.AudioDeviceBufferCountMax;
+            for (uint i = 0; i < n; i++) { AudioBuffer b = _buffers[(first + i) % Constants.AudioDeviceBufferCountMax]; r[i] = (b.BufferTag, b.DataPointer, b.DataSize); }
+            return r;
+        }
+        public (ulong Tag, ulong Ptr, ulong Size)[] S2AReleased()
+        {
+            var r = new (ulong, ulong, ulong)[_bufferReleasedCount];
+            uint first = (_releasedBufferIndex - _bufferReleasedCount) % Constants.AudioDeviceBufferCountMax;
+            for (uint i = 0; i < _bufferReleasedCount; i++) { AudioBuffer b = _buffers[(first + i) % Constants.AudioDeviceBufferCountMax]; r[i] = (b.BufferTag, b.DataPointer, b.DataSize); }
+            return r;
+        }
+        /// <returns>重新追加成功的在途缓冲个数（放不进的不算）</returns>
+        public int S2ARestore((ulong Tag, ulong Ptr, ulong Size)[] released, (ulong Tag, ulong Ptr, ulong Size)[] pending, ulong played)
+        {
+            if (GetTotalBufferCount() != 0 || released.Length + pending.Length > Constants.AudioDeviceBufferCountMax) return -1;   // 只给刚重建的空会话用
+            // 已交还的：占环最前面几格，计数直接记成已交还（不经硬件）；_hardwareBufferIndex / _serverBufferIndex 跟着前移，之后追加的接在后面
+            for (int i = 0; i < released.Length; i++)
+            {
+                AudioBuffer b = _slots[_serverBufferIndex];
+                b.BufferTag = released[i].Tag; b.DataPointer = released[i].Ptr; b.DataSize = released[i].Size; b.PlayedTimestamp = (ulong)PerformanceCounter.ElapsedNanoseconds; b.Data = null; b.SampleReader = null;
+                _buffers[_serverBufferIndex] = b;
+                _serverBufferIndex = (_serverBufferIndex + 1) % Constants.AudioDeviceBufferCountMax;
+            }
+            _hardwareBufferIndex = _serverBufferIndex; _releasedBufferIndex = _serverBufferIndex; _bufferReleasedCount = (uint)released.Length;
+            int ok = 0;
+            foreach (var p in pending) if (AppendBuffer(p.Tag, p.Ptr, p.Size)) ok++;
+            ulong now = _state == AudioDeviceState.Stopped ? 0 : _hardwareDeviceSession.GetPlayedSampleCount();
+            _s2aPlayedOffset = played > now ? played - now : 0;
+            if (released.Length > 0) _bufferEvent.Signal();
+            return ok;
+        }
+
         /// <summary>
         /// Get the count of sample played in this session.
         /// </summary>
@@ -452,13 +493,13 @@ namespace Ryujinx.Audio.Common
                 return 0;
             }
 
-            return _hardwareDeviceSession.GetPlayedSampleCount();
+            return _hardwareDeviceSession.GetPlayedSampleCount() + _s2aPlayedOffset;
         }
 
         /// <summary>
         /// Flush all buffers to the initial state.
         /// </summary>
-        /// <returns>True if any buffer was flushed</returns>
+        /// <returns>True if any buffer was flushed (a playing or an appended one)</returns>
         public bool FlushBuffers()
         {
             if (_state == AudioDeviceState.Stopped)
@@ -466,34 +507,46 @@ namespace Ryujinx.Audio.Common
                 return false;
             }
 
-            uint bufferCount = GetBufferCount();
-
-            while (TryPopReleasedBuffer(out AudioBuffer buffer))
+            // S2Arm (#2157 作者推演、维护者核实)：已放回、游戏还没取走的缓冲留在放回环里照常可取，只从硬件注销。
+            //   原先 TryPopReleasedBuffer 把它们弹掉、清空槽位：交 1、2、3，1 已放回未取、2 / 3 在播 → Flush 后游戏只取回 [2, 3]，1 永远回不来
+            for (uint i = 0; i < _bufferReleasedCount; i++)
             {
-                _hardwareDeviceSession.UnregisterBuffer(buffer);
+                uint index = (_releasedBufferIndex - _bufferReleasedCount + i + Constants.AudioDeviceBufferCountMax) % Constants.AudioDeviceBufferCountMax;
+                _hardwareDeviceSession.UnregisterBuffer(_buffers[index]);
             }
 
-            while (TryPopPlayingBuffer(out AudioBuffer buffer))
+            // S2Arm: 在播缓冲按 Stop 路径的账目交还（ReleaseBuffer 推进 _releasedBufferIndex），并发放回事件。
+            //   原 TryPopPlayingBuffer 只减 _bufferRegisteredCount、不推进 _releasedBufferIndex：放回环的取数区间
+            //   [_releasedBufferIndex − _bufferReleasedCount, _releasedBufferIndex) 落后于在播区，之后再放回一个缓冲，
+            //   GetReleasedBuffer / ContainsBuffer 就读到被清空的槽位（NullReferenceException，音频服务线程未捕获 → 宿主闪退）；
+            //   被 Flush 的缓冲游戏也取不回
+            bool flushed = false;
+
+            while (TryGetPlayingBufferIndex(out uint playingIndex))
             {
-                _hardwareDeviceSession.UnregisterBuffer(buffer);
+                _hardwareDeviceSession.UnregisterBuffer(_buffers[playingIndex]);
+                ReleaseBuffer(_buffers[playingIndex]);
+                flushed = true;
             }
 
-            if (_bufferRegisteredCount == 0 || (_bufferReleasedCount + _bufferAppendedCount) > Constants.AudioDeviceBufferCountMax)
+            // S2Arm (#2157)：已追加、还没交给硬件的缓冲（appended）也一并作废放回。原先这段要求「registered == 0 时 return false」在前，
+            //   而上面的循环总把 registered 耗到 0，这段永远走不到：刚追加的缓冲躲过 Flush、下一次 Update 照常交给硬件播出来，返回值也恒为 false。
+            //   返回值（游戏 FlushAudioOutBuffers 读到的 bool）= 这次有没有作废掉缓冲（在播的或已追加的），已放回的不算
+            if (_bufferAppendedCount > 0 && _bufferReleasedCount + _bufferAppendedCount <= Constants.AudioDeviceBufferCountMax)
             {
-                return false;
+                _bufferReleasedCount += _bufferAppendedCount;
+                _releasedBufferIndex = (_releasedBufferIndex + _bufferAppendedCount) % Constants.AudioDeviceBufferCountMax;
+                _bufferAppendedCount = 0;
+                _hardwareBufferIndex = _serverBufferIndex;
+                flushed = true;
             }
 
-            _bufferReleasedCount += _bufferAppendedCount;
-            _releasedBufferIndex = (_releasedBufferIndex + _bufferAppendedCount) % Constants.AudioDeviceBufferCountMax;
-            _bufferAppendedCount = 0;
-            _hardwareBufferIndex = _serverBufferIndex;
-
-            if (bufferCount > 0)
+            if (flushed)
             {
                 _bufferEvent.Signal();
             }
 
-            return true;
+            return flushed;
         }
 
         /// <summary>

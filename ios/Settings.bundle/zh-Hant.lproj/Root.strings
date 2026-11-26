@@ -16,6 +16,7 @@
 "Standard" = "標準";
 "For 2D Games" = "2D 遊戲專用";
 "Sharp Upscaling (MetalFX)" = "銳利放大（MetalFX）";
+"FSR" = "FSR 銳化放大";
 "Sets a frame rate cap for the game picture; doesn’t unlock the game’s own frame rate limit. The actual frame rate also depends on the game and the screen’s refresh rate." = "設定遊戲畫面的幀率上限，不會解除遊戲本身的幀率限制。實際幀率也取決於遊戲表現和螢幕更新率。";
 "Frame Rate Limit" = "幀率上限";
 "30 FPS" = "30 幀/秒";

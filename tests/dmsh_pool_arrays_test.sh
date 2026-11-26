@@ -16,6 +16,8 @@
 #   ⑧ 改写后的 MSL 交 Metal 编译器（xcrun metal，macOS）能编过（证明形状是合法 MSL，宿主 t_nvn_pool_tex 用同一形状真跑）
 #   ⑨ 早测的池片元，FsAlphaMs 不再加函数常量里的 alpha 丢弃（深度已先写，丢弃改不回来；宿主要 alpha 测试时报红 134）；没早测的照加
 #   ⑩ 置位函数测位用普通读（device uint*，不用 atomic_load_explicit），只有没置位才原子或（11-13 照 nxnative 04811a63：原子读走共享缓存，同字像素排队）
+#   ⑪ 可写缓冲图像池（翻译器 20261118 起图像 / 贴图缓冲也出整池数组）：array<texture_buffer<float, access::write>, 2^20> 改成池指针、.write 前的下标也置位，
+#      着色器自己写图像（.write）→ 不加早测；反射 kind tex_pool、elem 带 access::write（宿主据此建可写图像表）；改写后 Metal 编过
 # 旧代码反证：PoolArrays 不存在（dsh_cmp --fn 报未知函数），① ~ ⑨ 全不通；负对照（把改写里的 dm_pool_mark 去掉）→ ③ 不通。
 set -u; H=$(cd "$(dirname "$0")/.." && pwd); PY=${S2A_PY:-$HOME/.s2arm/venv/bin/python3}
 [ -x "$PY" ] || PY=$(command -v python3) || { echo "dmsh_pool_arrays_test：缺 Python 解释器，环境未就绪（退出 75）"; exit 75; }
@@ -94,6 +96,31 @@ else: print('8', False, r[0])
 fa = dshfn.batch([('fs_alpha_ms', [o if ok else '']), ('fs_alpha_ms', [od if isinstance(od, str) else ''])])
 mk = o[o.index('dm_pool_mark(constant P* p'):o.index('struct spvPool_')] if ok else ''
 print('10', 'atomic_load_explicit' not in mk and 'if (!(*w & b)) atomic_fetch_or_explicit(reinterpret_cast<device atomic_uint*>(w), b, memory_order_relaxed);' in mk)
+img = HEAD + '''struct spvDescriptorSetBuffer0
+{
+    const device _23* fp_s0 [[id(0)]];
+    array<texture_buffer<float, access::write>, 1048576> fp_ib_cb0_40000000 [[id(1)]];
+};
+
+fragment main0_out main0(main0_in in [[stage_in]], constant spvDescriptorSetBuffer0& spvDescriptorSet0 [[buffer(0)]])
+{
+    main0_out out = {};
+    uint _5 = min(uint(spvDescriptorSet0.fp_s0->data[1]), 1048575u);
+    spvDescriptorSet0.fp_ib_cb0_40000000[int(_5)].write(float4(1.0), uint(0));
+    out.c = float4(1.0);
+    return out;
+}
+'''
+oi = dshfn.batch([('pool_arrays', [img])])[0].get('ok')
+rfi = dshfn.batch([('reflect_detail', ['ps', oi if isinstance(oi, str) else '', {'sbufs': [{'binding': 0, 'cb_slot': 0, 'cb_offset': 0x510 // 4, 'flags': 0}]}])])[0].get('ok')
+ei = next((e for e in rfi if e['msl_name'] == 'fp_ib_cb0_40000000'), {}) if isinstance(rfi, list) else {}
+ci = False
+if isinstance(oi, str):
+    open(os.path.join(T, 'i.metal'), 'w').write(oi)
+    ci = subprocess.run(['xcrun', '-sdk', 'macosx', 'metal', '-std=metal3.0', '-c', os.path.join(T, 'i.metal'), '-o', os.path.join(T, 'i.air')], capture_output=True, text=True).returncode == 0
+print('11', isinstance(oi, str) and 'array<texture_buffer<float, access::write>, 1> e;' in oi
+      and '(&spvDescriptorSet0.fp_ib_cb0_40000000->e[0])[dm_pool_mark(spvDescriptorSet0.fp_ib_cb0_40000000, min(uint(int(_5)), spvDescriptorSet0.fp_ib_cb0_40000000->n))].write(' in oi
+      and 'early_fragment_tests' not in oi, (ei.get('kind'), ei.get('elem')), ci)
 print('9', isinstance(fa[0].get('ok'), str) and 'S2A_AT_ON' not in fa[0]['ok'], isinstance(fa[1].get('ok'), str) and 'S2A_AT_ON' in fa[1]['ok'])
 PYEOF
 )
@@ -110,5 +137,6 @@ ck "⑦ 反射：tex_pool / samp_pool、参数号 2 / 3、普通贴图 36" "$(g 
 ck "⑧ 改写后的 MSL 交 Metal 编译器编过" "$(g 8 | cut -d' ' -f1)" "True"
 ck "⑨ 早测的池片元不加 alpha 丢弃、没早测的照加" "$(g 9)" "True True"
 ck "⑩ 置位测位用普通读、没置位才原子或" "$(g 10)" "True"
-[ $bad = 0 ] && { echo "✓ dmsh_pool_arrays_test：10 项全通"; exit 0; }
-echo "$out" | head -30; echo "✗ dmsh_pool_arrays_test：10 项有不通"; exit 1
+ck "⑪ 可写缓冲图像池：改成池指针、写也置位、着色器自己写图像不加早测；反射 tex_pool + 可写元素；Metal 编过" "$(g 11)" "True ('tex_pool', 'texture_buffer<float, access::write>') True"
+[ $bad = 0 ] && { echo "✓ dmsh_pool_arrays_test：11 项全通"; exit 0; }
+echo "$out" | head -30; echo "✗ dmsh_pool_arrays_test：11 项有不通"; exit 1

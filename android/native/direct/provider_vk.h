@@ -1,4 +1,4 @@
-// C1：生产 direct provider 的配置入口（只有把共享 NVN 前端 + nvn_vk 后端编进来的构建才有实现）。
+// C1：生产 direct provider 的配置入口（实现在 native/gfx_plat/provider_nvk.c，只有把共享 NVN 前端 + 新回放层编进来的构建才有）。
 // runtime 在调用 s2a_direct_select 之前把本局上下文交过来；generic 构建里这些符号是弱的，直接跳过。
 #pragma once
 

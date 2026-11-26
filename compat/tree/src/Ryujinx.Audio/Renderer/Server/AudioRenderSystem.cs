@@ -61,13 +61,36 @@ namespace Ryujinx.Audio.Renderer.Server
 
         // S2Arm: work buffer in native memory owned by this renderer (see AudioRendererManager.OpenAudioRenderer)
         private unsafe byte* _ownedWorkBuffer;
+        private int _ownedWorkBufferSize;
+        private bool _ownedWorkBufferWired;
 
         // S2Arm: voice slot diagnostics (S2A_AUDIO_VOICE_DIAG=1), read-only; null when off
         private S2AVoiceSlotDiag _s2aVoiceDiag;
 
+        // S2Arm 即时存档：渲染器状态 = 自有工作缓冲（整块）+ 少量托管标量；恢复时 B 用同参数新建同布局的缓冲，整块拷回再把块内绝对指针平移
+        //   缓冲大小记在旁挂表里、只在即时存档开着时登记（S2ASnapOn 由服务层启动时置）：关着时每个渲染器不多一个字段
+        public static bool S2ASnapOn;
+        private static System.Runtime.CompilerServices.ConditionalWeakTable<AudioRenderSystem, System.Runtime.CompilerServices.StrongBox<int>> s_s2aOwnedSize;
+        public unsafe (IntPtr Ptr, int Size) S2ASnapBuffer => ((IntPtr)_ownedWorkBuffer, s_s2aOwnedSize != null && s_s2aOwnedSize.TryGetValue(this, out var b) ? b.Value : 0);
+        public Lock S2ALock => _lock;
+        public int S2ASessionId => _sessionId;
+        public void S2AForceEffectReinit() { for (int i = 0; i < _effectContext.S2ACount; i++) _effectContext.GetEffect(i).S2AForceReinit(); }
+        // 托管标量个数（布局指纹用）：取一个不跑构造函数的空实例数一下，不建真渲染器
+        public static int S2ASnapScalarCount => ((AudioRenderSystem)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(AudioRenderSystem))).S2ASnapScalarsSafe().Length;
+        private ulong[] S2ASnapScalarsSafe() { try { return S2ASnapScalars(); } catch { return System.Array.Empty<ulong>(); } }
+        public ulong[] S2ASnapScalars() => new ulong[] { _isActive ? 1ul : 0, _totalElapsedTicksUpdating, _totalElapsedTicks, _elapsedFrameCount, _voiceDropEnabled ? 1ul : 0,
+            _voiceDropCount, BitConverter.SingleToUInt32Bits(_voiceDropParameter), _renderingTimeLimitPercent, _isDspRunningBehind ? 1ul : 0 };
+        public void S2ARestoreScalars(ulong[] v)
+        {
+            _isActive = v[0] != 0; _totalElapsedTicksUpdating = v[1]; _totalElapsedTicks = v[2]; _elapsedFrameCount = v[3]; _voiceDropEnabled = v[4] != 0;
+            _voiceDropCount = (uint)v[5]; _voiceDropParameter = BitConverter.UInt32BitsToSingle((uint)v[6]); _renderingTimeLimitPercent = (uint)v[7]; _isDspRunningBehind = v[8] != 0;
+        }
+
         public unsafe Memory<byte> AllocateOwnedWorkBuffer(int size)
         {
-            _ownedWorkBuffer = (byte*)System.Runtime.InteropServices.NativeMemory.AllocZeroed((nuint)Math.Max(size, 1));
+            _ownedWorkBuffer = S2AWiredBuffer.Alloc(size, out _ownedWorkBufferWired);
+            _ownedWorkBufferSize = size;
+            if (S2ASnapOn) (s_s2aOwnedSize ??= new()).AddOrUpdate(this, new System.Runtime.CompilerServices.StrongBox<int>(size));
 
             return new Ryujinx.Memory.NativeMemoryManager<byte>(_ownedWorkBuffer, size).Memory;
         }
@@ -76,7 +99,7 @@ namespace Ryujinx.Audio.Renderer.Server
         {
             if (_ownedWorkBuffer != null)
             {
-                System.Runtime.InteropServices.NativeMemory.Free(_ownedWorkBuffer);
+                S2AWiredBuffer.Free(_ownedWorkBuffer, _ownedWorkBufferSize, _ownedWorkBufferWired);
                 _ownedWorkBuffer = null;
             }
         }

@@ -151,12 +151,20 @@ struct LaunchSettingsSheet: View {
     /// S 级每类状态（作业层 sgradeState）；满屏 / 60 帧两行按它写状态句、没补丁时也照样出一行灰字说为什么（定稿表）
     @State private var sgrade: [String: SGradeCategoryState] = [:]
     @State private var failure: String?
-    @State private var saving = false
+    /// 正在存的改动先照玩家选的画（键 opt.<id> / patch.<id> / cheat.<id> / mod.<id>），整队存完再按作业层回的状态画。
+    /// 以前一改就整页置灰等作业层回话（11-23 维护者：切一个开关全部输入都不能点）；现在只排队、不锁别的控件。
+    @State private var shown: [String: Any] = [:]
+    @State private var inflight = 0
+    @State private var queue: Task<Void, Never>?
     @State private var loaded = false
+    /// 待确认的玩家分享金手指 id（改走 SwiftUI .alert 挂在当前 sheet 上，避免在 Toggle 回调里同步 NSAlert.runModal() 导致 macOS 26/27 Liquid Glass 按钮文字空白）
+    @State private var pendingSharedCheat: String?
 
     private var lang: String { loc.lang.sharedCode }
     private func t(_ id: String) -> String { BackendText.launcherText(id, language: lang) }
     private var gameName: String { model.games.first { $0.id == gameID }?.name ?? gameID }
+    /// 这款的文件正被别的作业占着（S2ArmLauncherModel.gameFilesHeld）：设置项、金手指、mod 先不让改；别的款在出包时照常能改（#2191）
+    private var held: Bool { model.gameFilesHeld(gameID) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -183,6 +191,7 @@ struct LaunchSettingsSheet: View {
                                 }
                             }
                         }
+                        PreviousSaveRow(model: model, gameID: gameID, t: t)   // 回到上一份存档（有上一份才显示）
                     }
                     .padding(.horizontal, LauncherTheme.Space.page).padding(.bottom, LauncherTheme.Space.section)
                 }
@@ -195,6 +204,18 @@ struct LaunchSettingsSheet: View {
             }
         }
         .launcherSheet()
+        .alert(t("display.cheats.shared.warn.title"),
+               isPresented: Binding(get: { pendingSharedCheat != nil }, set: { if !$0 { pendingSharedCheat = nil } })) {
+            Button(t("display.cheats.shared.warn.on")) {
+                if let id = pendingSharedCheat {
+                    pendingSharedCheat = nil
+                    submit(["cheat." + id: true]) { await load(nil, cheats: [id: true]) }
+                }
+            }
+            Button(t("action.cancel"), role: .cancel) { pendingSharedCheat = nil }
+        } message: {
+            Text(t("display.cheats.shared.warn.message"))
+        }
         .onExitCommand { dismiss() }
         .task { if !loaded { await load(nil) } }
     }
@@ -214,12 +235,12 @@ struct LaunchSettingsSheet: View {
         if !top.isEmpty && (p != nil || c != nil) { CardDivider() }
         SGradeSettingsRows(
             patchesTitle: t("sgrade.cpatch.detail"), patchesNote: p?.detail(lang) ?? "",
-            patches: p == nil ? [] : patches.map { SGradeToggle(id: $0.id, label: $0.label, detail: $0.result.isEmpty ? "" : loc.backend($0.result), on: $0.enabled) },
+            patches: p == nil ? [] : patches.map { SGradeToggle(id: $0.id, label: $0.label, detail: $0.result.isEmpty ? "" : loc.backend($0.result), on: flag("patch." + $0.id, $0.enabled)) },
             cheatsTitle: c?.text(lang) ?? "", cheatsNote: cheats.isEmpty && !cheatsReason.isEmpty ? loc.backend(cheatsReason) : (c?.detail(lang) ?? ""),
-            cheats: c == nil ? [] : cheats.map { SGradeToggle(id: $0.id, label: $0.name, detail: cheatDetail($0), on: $0.enabled, enabled: $0.ok) },
-            importTitle: t("display.cheats.import"), busy: saving || model.busy,
-            onPatch: { id, on in Task { await load(nil, patches: [id: on]) } },
-            onCheat: { id, on in if confirmShared(id, on) { Task { await load(nil, cheats: [id: on]) } } },
+            cheats: c == nil ? [] : cheats.map { SGradeToggle(id: $0.id, label: $0.name, detail: cheatDetail($0), on: flag("cheat." + $0.id, $0.enabled), enabled: $0.ok) },
+            importTitle: t("display.cheats.import"), busy: held,
+            onPatch: { id, on in submit(["patch." + id: on]) { await load(nil, patches: [id: on]) } },
+            onCheat: { id, on in toggleCheat(id, on) },
             onImport: { importCheats() },
             summary: { on, all in t("display.cheats.summary").replacingOccurrences(of: "{0}", with: String(on)).replacingOccurrences(of: "{1}", with: String(all)) },
             searchPrompt: t("display.cheats.search"), clearSearchTitle: loc.t("home.clearSearch"),
@@ -230,7 +251,7 @@ struct LaunchSettingsSheet: View {
     /// 金卡最上面的满屏 / 帧率解锁：同一个开关（作业层 widescreen / fps60），副标题写现在用的是什么；自动关给「重新打开」；真用不了置灰
     @ViewBuilder private func topRow(_ item: GameSettingItem) -> some View {
         let option = options[item.id], cat = item.id == "widescreen" ? "widescreen" : "fps"
-        let st = sgrade[cat], on = option?.value as? Bool ?? false
+        let st = sgrade[cat], on = value(item.id) as? Bool ?? false
         let note = SGradeStateText.rowNote(cat: cat, st, hasFpsPatch: st?.source == "patch" || (st?.target ?? 0) > 0, fpsOn: on, t: t,
                                            date: { $0.formatted(Date.FormatStyle(date: .abbreviated, time: .omitted).locale(Locale(identifier: lang))) },
                                            backend: { loc.backend($0) })
@@ -238,13 +259,13 @@ struct LaunchSettingsSheet: View {
         SGradeTopRow(cat == "fps" ? t("sgrade.row.fps") : item.text(lang),
                      note: option?.available == false ? loc.backend(option?.reason ?? "") : note?.text ?? item.detail(lang), dim: note?.disabled == true) {
             if let reenable {
-                Button(t("sgrade.state.reenable")) { Task { await self.reenable(reenable) } }.controllerButtonStyle(LauncherSecondaryButtonStyle())
-                    .accessibilityIdentifier("launch." + item.id + ".reenable").disabled(saving || model.busy)
+                Button(t("sgrade.state.reenable")) { submit { await self.reenable(reenable) } }.controllerButtonStyle(LauncherSecondaryButtonStyle())
+                    .accessibilityIdentifier("launch." + item.id + ".reenable").disabled(held)
             } else {
-                Toggle("", isOn: Binding(get: { on }, set: { v in Task { await load([item.id: v]) } }))
+                Toggle("", isOn: Binding(get: { on }, set: { v in submit(["opt." + item.id: v]) { await load([item.id: v]) } }))
                     .toggleStyle(LauncherSwitchStyle()).labelsHidden().accessibilityLabel(item.text(lang))
                     .accessibilityIdentifier("launch." + item.id)
-                    .disabled(option?.available != true || note?.disabled == true || saving || model.busy)
+                    .disabled(option?.available != true || note?.disabled == true || held)
             }
         }
     }
@@ -281,63 +302,80 @@ struct LaunchSettingsSheet: View {
             CardRow(title, detail: item.detail(lang)) { EmptyView() }
             ForEach(patches) { p in
                 CardRow("  " + p.label, detail: p.result.isEmpty ? "" : loc.backend(p.result)) {
-                    Toggle("", isOn: Binding(get: { p.enabled }, set: { on in Task { await load(nil, patches: [p.id: on]) } }))
-                        .toggleStyle(LauncherSwitchStyle()).labelsHidden().accessibilityLabel(p.label).disabled(saving || model.busy)
+                    Toggle("", isOn: Binding(get: { flag("patch." + p.id, p.enabled) }, set: { on in submit(["patch." + p.id: on]) { await load(nil, patches: [p.id: on]) } }))
+                        .toggleStyle(LauncherSwitchStyle()).labelsHidden().accessibilityLabel(p.label).disabled(held)
                 }
             }
         case "cheats":
             CardRow(title, detail: cheats.isEmpty && !cheatsReason.isEmpty ? loc.backend(cheatsReason) : item.detail(lang)) {
                 Button(t("display.cheats.import")) { importCheats() }.controllerButtonStyle(LauncherSecondaryButtonStyle())
-                    .accessibilityIdentifier("launch.cheats.import").disabled(saving || model.busy)
+                    .accessibilityIdentifier("launch.cheats.import").disabled(held)
             }
             ForEach(cheats) { ch in
                 CardRow("  " + ch.name, detail: cheatDetail(ch)) {
-                    Toggle("", isOn: Binding(get: { ch.enabled }, set: { on in if confirmShared(ch.id, on) { Task { await load(nil, cheats: [ch.id: on]) } } }))
+                    Toggle("", isOn: Binding(get: { flag("cheat." + ch.id, ch.enabled) }, set: { on in toggleCheat(ch.id, on) }))
                         .toggleStyle(LauncherSwitchStyle()).labelsHidden().accessibilityLabel(ch.name)
                         .accessibilityIdentifier("launch.cheat." + ch.id)
-                        .disabled(!ch.ok || saving || model.busy)
+                        .disabled(!ch.ok || held)
                 }
+            }
+        case "text":
+            let option = options[item.id]
+            CardRow(title, detail: item.detail(lang)) {
+                TextField("192.168.1.20", text: Binding(get: { option?.value as? String ?? "" }, set: { value in
+                    options[item.id] = LaunchOption(["available": true, "value": value])
+                }))
+                .textFieldStyle(.roundedBorder).frame(width: 150).accessibilityLabel(title)
+                .accessibilityIdentifier("launch." + item.id)
+                .onSubmit { submit { await load([item.id: options[item.id]?.value as? String ?? ""]) } }
+                .disabled(held)
+                Button(t("input.save")) {
+                    submit { await load([item.id: options[item.id]?.value as? String ?? ""]) }
+                }.controllerButtonStyle(LauncherSecondaryButtonStyle()).disabled(held)
             }
         case "mods":
             CardRow(title, detail: modsNote(item)) {
-                Button(t("display.mods.import")) { importMods() }.controllerButtonStyle(LauncherSecondaryButtonStyle())
-                    .controllerID("launch.mods.import").disabled(saving || model.busy)
+                HStack(spacing: 10) {
+                    ModHelpButton(text: t("mods.help"), label: t("mods.help.label"), id: "launch.mods.help")   // mod 格式说明（11-17 维护者：玩家不知道支持什么、去哪找）
+                    Button(t("display.mods.import")) { importMods() }.controllerButtonStyle(LauncherSecondaryButtonStyle())
+                        .controllerID("launch.mods.import").disabled(held)
+                }
             }
             ForEach(mods.items) { m in
                 CardRow("  " + m.id, detail: t("display.mods.files").replacingOccurrences(of: "{0}", with: String(m.files))
                             .replacingOccurrences(of: "{1}", with: ByteCountFormatter.string(fromByteCount: m.bytes, countStyle: .file))) {
                     HStack(spacing: 10) {
-                        Button(t("display.mods.remove")) { Task { await load(nil, modsRemove: [m.id]) } }.controllerButtonStyle(LauncherSecondaryButtonStyle())
-                            .controllerID("launch.mods.remove." + m.id).disabled(saving || model.busy)
-                        Toggle("", isOn: Binding(get: { m.enabled }, set: { on in Task { await load(nil, modsEnable: [m.id: on]) } }))
+                        Button(t("display.mods.remove")) { submit { await load(nil, modsRemove: [m.id]) } }.controllerButtonStyle(LauncherSecondaryButtonStyle())
+                            .controllerID("launch.mods.remove." + m.id).disabled(held)
+                        Toggle("", isOn: Binding(get: { flag("mod." + m.id, m.enabled) }, set: { on in submit(["mod." + m.id: on]) { await load(nil, modsEnable: [m.id: on]) } }))
                             .toggleStyle(LauncherSwitchStyle()).labelsHidden().accessibilityLabel(m.id)
-                            .accessibilityIdentifier("launch.mods.toggle." + m.id).disabled(saving || model.busy)
+                            .accessibilityIdentifier("launch.mods.toggle." + m.id).disabled(held)
                     }
                 }
             }
         case "choice":
             let option = options[item.id]
-            let picked = item.options.first { $0.value == option?.value as? String }
+            let current = value(item.id) as? String, picked = item.options.first { $0.value == current }
             CardRow(title, detail: !(option?.reason ?? "").isEmpty ? loc.backend(option?.reason ?? "") : option?.note[lang] ?? picked?.detail(lang) ?? item.detail(lang)) {
                 LauncherDropdown(options: item.options.filter { o in
-                    option?.choices.map { $0.contains(o.value) || o.value == option?.value as? String } ?? true
+                    option?.choices.map { $0.contains(o.value) || o.value == current } ?? true
                 }.map { ($0.value, $0.label[lang] ?? $0.value) },
-                                 selection: option?.value as? String ?? "", label: title,
-                                 disabledOptions: Set(option?.blocked ?? [])) { v in Task { await load([item.id: v]) } }
+                                 selection: current ?? "", label: title,
+                                 disabledOptions: Set(option?.blocked ?? [])) { v in submit(["opt." + item.id: v]) { await load([item.id: v]) } }
                 .controllerID("launch." + item.id)
-                .disabled(option?.available != true || saving || model.busy)
+                .disabled(option?.available != true || held)
             }
         default:
             let option = options[item.id], state = stateLine(item.id)
             CardRow(title, detail: option?.available == false ? loc.backend(option?.reason ?? "") : item.detail(lang), detail2: state?.text ?? "") {
                 if let key = state?.reenable {
-                    Button(t("sgrade.state.reenable")) { Task { await reenable(key) } }.controllerButtonStyle(LauncherSecondaryButtonStyle())
-                        .accessibilityIdentifier("launch." + item.id + ".reenable").disabled(saving || model.busy)
+                    Button(t("sgrade.state.reenable")) { submit { await reenable(key) } }.controllerButtonStyle(LauncherSecondaryButtonStyle())
+                        .accessibilityIdentifier("launch." + item.id + ".reenable").disabled(held)
                 } else if option?.hidden != true {   // 包里没有这一类的补丁：只写为什么，不给开关
-                    Toggle("", isOn: Binding(get: { option?.value as? Bool ?? false }, set: { on in Task { await load([item.id: on]) } }))
+                    Toggle("", isOn: Binding(get: { value(item.id) as? Bool ?? false }, set: { on in submit(["opt." + item.id: on]) { await load([item.id: on]) } }))
                         .toggleStyle(LauncherSwitchStyle()).labelsHidden().accessibilityLabel(title)
                         .accessibilityIdentifier("launch." + item.id)
-                        .disabled(option?.available != true || saving || model.busy)
+                        .disabled(option?.available != true || held)
                 }
             }
         }
@@ -352,10 +390,26 @@ struct LaunchSettingsSheet: View {
                                     backend: { loc.backend($0) })
     }
     private func reenable(_ key: String) async {
-        saving = true
         do { try await model.sgradeReenable(gameID, key: key) } catch { failure = (error as? JobClientError)?.message ?? error.localizedDescription }
-        saving = false
         await load(nil)
+    }
+
+    /// 选项现在该画的值：正在存的先照玩家选的，否则作业层回的
+    private func value(_ id: String) -> Any? { shown["opt." + id] ?? options[id]?.value }
+    private func flag(_ key: String, _ stored: Bool) -> Bool { shown[key] as? Bool ?? stored }
+
+    /// 一次改动：画面先照改（shown），作业层按点的顺序一件件存（同一份设置文件，不并发写）；别的控件照常能点。
+    /// 整队存完才清掉 shown、全按作业层回的画——中途回来的结果不会把还在排队的开关弹回去；存失败也是在这时退回原值（failure 那行写原因）。
+    private func submit(_ show: [String: Any] = [:], _ work: @escaping @MainActor () async -> Void) {
+        shown.merge(show) { $1 }
+        inflight += 1
+        let previous = queue
+        queue = Task { @MainActor in
+            await previous?.value
+            await work()
+            inflight -= 1
+            if inflight == 0 { shown = [:] }
+        }
     }
 
     /// 每条写清来源与作者（维护者 11-12：每条在游戏内和启动器里写清作者和来源库）；版本不对写原因；运行中写 Cheats.cs 的状态
@@ -370,11 +424,12 @@ struct LaunchSettingsSheet: View {
     }
 
     /// 打开玩家分享、未验证的条目前提示一句（可能坏存档），不拦：玩家点「仍然打开」照开
-    private func confirmShared(_ id: String, _ on: Bool) -> Bool {
-        guard on, cheats.first(where: { $0.id == id })?.shared == true else { return true }
-        let a = NSAlert(); a.messageText = t("display.cheats.shared.warn.title"); a.informativeText = t("display.cheats.shared.warn.message")
-        a.addButton(withTitle: t("display.cheats.shared.warn.on")); a.addButton(withTitle: t("action.cancel"))
-        return a.runModal() == .alertFirstButtonReturn
+    private func toggleCheat(_ id: String, _ on: Bool) {
+        if on, cheats.first(where: { $0.id == id })?.shared == true {
+            pendingSharedCheat = id
+        } else {
+            submit(["cheat." + id: on]) { await load(nil, cheats: [id: on]) }
+        }
     }
 
     /// 刚导入的说明（导入了哪几份、哪些没收及原因，作业层 mods.import_paths notes）优先，否则定义表的说明
@@ -390,7 +445,8 @@ struct LaunchSettingsSheet: View {
         panel.allowsMultipleSelection = true; panel.canChooseDirectories = true; panel.canChooseFiles = true
         panel.allowedContentTypes = [.zip, .folder]
         guard panel.runModal() == .OK, !panel.urls.isEmpty else { return }
-        Task { await load(nil, modsImport: panel.urls.map(\.path)) }
+        let paths = panel.urls.map(\.path)
+        submit { await load(nil, modsImport: paths) }
     }
 
     /// 缺省勾不勾「分享给其他玩家」（维护者定，改这一行；同 pack/jobs/cheats.py SHARE_DEFAULT、iOS kS2ACheatsShareDefault）。玩家上次的选择记在 App 级
@@ -410,12 +466,11 @@ struct LaunchSettingsSheet: View {
         guard panel.runModal() == .OK, !panel.urls.isEmpty else { return }
         let paths = panel.urls.map(\.path), share = box.state == .on
         UserDefaults.standard.set(share, forKey: "S2ACheatsShare")
-        Task { await load(nil, cheatsImport: paths, cheatsShare: share) }
+        submit { await load(nil, cheatsImport: paths, cheatsShare: share) }
     }
 
     private func load(_ change: [String: Any]?, patches change2: [String: Bool]? = nil, cheats change3: [String: Bool]? = nil, cheatsImport: [String]? = nil, cheatsShare: Bool? = nil,
                       modsImport: [String]? = nil, modsRemove: [String]? = nil, modsEnable: [String: Bool]? = nil) async {
-        saving = true; defer { saving = false }
         do {
             if items.isEmpty { items = try GameSettingsSpec.macItems() }
             (options, patches, cheats, cheatsReason, sgrade, mods) = try await model.launchSettingsFull(gameID, change: change, patches: change2, cheats: change3, cheatsImport: cheatsImport, cheatsShare: cheatsShare,

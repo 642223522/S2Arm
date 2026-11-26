@@ -85,7 +85,9 @@ public sealed partial class EnvironmentWindow
         foreach (var (label, key) in new[] { ("feature.what", "what"), ("feature.how", "how"), ("feature.where", "where") })
         {
             var cell = new StackPanel { Spacing = 4 };
-            cell.Children.Add(new TextBlock { Text = T(label), FontSize = 12, FontWeight = FontWeight.Bold, Foreground = FeatureGold2 });
+            // 三栏标题：这一页写了 labels（如快照页 where 换成「要知道」）就用它
+            var custom = page.TryGetProperty("labels", out var labels) && labels.ValueKind == JsonValueKind.Object ? FeatureText(labels, key) : "";
+            cell.Children.Add(new TextBlock { Text = custom.Length > 0 ? custom : T(label), FontSize = 12, FontWeight = FontWeight.Bold, Foreground = FeatureGold2 });
             cell.Children.Add(Rich(FeatureText(page, key), 13.5, Brush.Parse("#DAD6CE")));
             var box = new Border { Child = cell, Background = Brush.Parse("#202024"), BorderBrush = Brush.Parse("#2B2B30"), BorderThickness = new Thickness(1),
                 CornerRadius = new CornerRadius(12), Padding = new Thickness(13, 11) };

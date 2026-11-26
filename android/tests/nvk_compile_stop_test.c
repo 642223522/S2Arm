@@ -8,7 +8,9 @@ static void *resolve_thread(void *arg) {
 }
 static void *activate_thread(void *arg) { return (void *)(intptr_t)activate(arg); }
 int main(int argc, char **argv) {
-    if (argc != 2 || (strcmp(argv[1], "late") && strcmp(argv[1], "race") && strcmp(argv[1], "control") && strcmp(argv[1], "activate"))) return 2;
+    if (argc != 2) return 2;
+    int frame_test = !strcmp(argv[1], "frame") || !strcmp(argv[1], "frame-off") || !strcmp(argv[1], "frame-empty");
+    if (!frame_test && strcmp(argv[1], "late") && strcmp(argv[1], "race") && strcmp(argv[1], "control") && strcmp(argv[1], "activate")) return 2;
     stop_test_mode = !strcmp(argv[1], "control") ? 0 : !strcmp(argv[1], "race") ? 2 : 1;
     struct provider_context ctx = {0}; ctx.state = S2A_DIRECT_ACTIVE; ctx.engine_ok = 1;
     ctx.session = 4; ctx.generation = 6; ctx.direct_abi = 1; ctx.device_ok = 1;
@@ -16,6 +18,35 @@ int main(int argc, char **argv) {
     snprintf(ctx.profile_json, sizeof ctx.profile_json, "%s", profile); ctx.profile_bytes = strlen(ctx.profile_json);
     snprintf(ctx.profile_hash, sizeof ctx.profile_hash, "%s", phash); snprintf(ctx.closure, sizeof ctx.closure, "%s", "closure-test");
     g_active_context = &ctx; atomic_store(&g_stop_published, 0); atomic_store(&g_session_active, 1);
+    if (frame_test) {
+        g.land_auto = g.land_readback = 1;
+        land_auto_check_gap_locked(LA_SECOND);
+        nvn_gpu_land_auto_present(LA_SECOND, 1, 1, 1, 1, 1.0 / 60);
+        if (strcmp(argv[1], "frame-empty")) {
+            s2a_frame_log_present_timed(3000, 7000);
+            nvn_vk_frame_log_fence_wait(2500000);
+            s2a_frame_log_present_timed(5000, 11000);
+        }
+        int first = request_stop_impl(&ctx);
+        // 未证明客体静止：第一次 Stop 返回后可能还有迟到写者。
+        nvn_vk_frame_log_fence_wait(13000000);
+        s2a_frame_log_present_timed(17000, 19000);
+        int second = request_stop_impl(&ctx);
+        if (lines != 1 || !strstr(decision, "phase=exit mode=0 reason=insufficient_samples ")) {
+            fprintf(stderr, "FAIL: retained Stop must report the auto decision on entry to retirement\n");
+            return 1;
+        }
+        land_auto_exit_locked();
+        if (lines != 1) {
+            fprintf(stderr, "FAIL: close after retained Stop repeated the auto exit decision\n");
+            return 1;
+        }
+        if (first != S2A_DIRECT_RES_RETIREMENT || second != first || g_retained_context != &ctx) {
+            fprintf(stderr, "FAIL: frame dump Stop must retain the session\n");
+            return 1;
+        }
+        return 0;
+    }
     rp_state_reset(); s2a_source_clear(); source(); bind_pools(7); compiler_calls = 0;
     if (!strcmp(argv[1], "activate")) {
         ctx.state = S2A_DIRECT_PREPARED; ctx.engine_ok = 0; stop_test_mode = 3;

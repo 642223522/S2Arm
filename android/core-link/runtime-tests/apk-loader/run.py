@@ -27,7 +27,7 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
     sources = [ROOT / "runtime/src/loader.c", ROOT / "android/native/module.c",
-               ROOT / "runtime/src/gate.c", ROOT / "runtime/src/widen.c", ROOT / "runtime/src/cpatch.c", HERE / "loader_mem_test.c", ROOT / "runtime/src/nrodefer.c", ROOT / "platform/apple/plat_apple.c"]
+               ROOT / "runtime/src/gate.c", ROOT / "runtime/src/widen.c", ROOT / "runtime/src/cpatch.c", HERE / "loader_mem_test.c", ROOT / "runtime/src/nrodefer.c", ROOT / "platform/apple/plat_apple.c", ROOT / "runtime/src/snapsw.c"]   # snapsw.c：loader.c 调即时存档开关 s2a_snap_mode（真实实现，缺省关）
     inputs = sources + [ROOT / "runtime/src/native.h", ROOT / "runtime/src/loader.h",
                         ROOT / "runtime/include/s2a_native.h", ROOT / "platform/plat.h",
                         ROOT / "android/native/module.h", HOST_ANDROID_COMPAT,

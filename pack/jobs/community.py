@@ -153,6 +153,8 @@ def _valid(item, value):
         return isinstance(value, bool)
     if item["type"] == "choice":
         return isinstance(value, str) and value in [o["value"] for o in item.get("options", [])]
+    if item["type"] == "text":
+        return isinstance(value, str)
     return False
 
 
@@ -185,18 +187,25 @@ def runtime_caps(c, gid):
 
 
 # 60 帧缺省开的来源（11-11 维护者：出包默认游戏原本帧率、玩家手动开；速度已验证正确的款保留默认 60）。
-#   与宿主 runtime/src/caps.c apply_cap 同一条规则、同一组字样：清单 fps60 值 1 且原因含其一，宿主没收到玩家选择时自己开 60 帧
-FPS60_VERIFIED = ("fps.tsv", "逻辑速度同局 A/B 绿", "游戏原生 60 帧", "社区帧率补丁")   # 社区帧率补丁：版本精确命中才进得了包，默认开（11-13）  # 非玩家句
+#   与宿主 runtime/src/caps.c s2a_caps_fps60_verified 同一条规则：清单 fps60 值 1 且原因含「游戏原生 60 帧」，或同时含「社区帧率补丁」与「逻辑速度同局 A/B 绿」
+#   （11-23 #2120：补丁只字节命中不等于逻辑速度对）；旧口径（S2A_CAPS_OWN=1）另认「fps.tsv」「逻辑速度同局 A/B 绿」
+FPS60_NATIVE, FPS60_PATCH, FPS60_AB = "游戏原生 60 帧", "社区帧率补丁", "逻辑速度同局 A/B 绿"  # 非玩家句
 
 
 def fps60_default(rows):
     value, why = rows.get("fps60", ("", ""))
-    return value == "1" and any(mark in why for mark in FPS60_VERIFIED)
+    if value != "1":
+        return False
+    if FPS60_NATIVE in why or (FPS60_PATCH in why and FPS60_AB in why):
+        return True
+    return os.environ.get("S2A_CAPS_OWN") == "1" and ("fps.tsv" in why or FPS60_AB in why)  # 非玩家句
 
 
 NO_FPS60 = "这款游戏没有可用的 60 帧方案。"
 NO_DIRECT = "这款游戏没有走直连渲染，用不了锐利放大（MetalFX）。"
 NO_WIDEN = "本款满屏有已知问题，暂不可开。"
+NO_VS_SPEAKERS = "仅设备类型为「内置扬声器」时可用。"   # 虚拟环绕开关只在对应设备类型下生效（#189 后续，5.1 虚拟环绕第二片）
+NO_VS_HEADPHONES = "仅设备类型为「耳机」时可用。"
 
 
 def _default(item, caps, platform="mac", rows=None):
@@ -205,7 +214,7 @@ def _default(item, caps, platform="mac", rows=None):
         d = d.get(platform)
     if d == "caps":   # 按能力清单：60 帧看值和原因（fps60_default，同宿主）；满屏看 widen（发布包只有真机验过的款是 1，同 iPhone），没给原因按值
         if item["id"] == "widescreen":
-            return caps.get("widen") == "1"
+            return False   # 没选过的满屏看 fullscreen_state（只有自适应满屏补丁才默认开），不按清单 widen（#2205）
         return fps60_default(rows) if item["id"] == "fps60" and rows is not None else caps.get(item["id"]) == "1"
     return d
 
@@ -217,33 +226,40 @@ def mac_settings(c, gid):
     caps = {k: v for k, (v, _) in rows.items()}
     picked = chosen(c, gid, table)
     # 满屏改不动只认强信号（tools/caps_policy.py 原因写「强信号：…」）；「发布缺省关」只是没验证过，玩家可以明确开（同 iPhone settings.m s2a_ios_fullscreen_state）
-    strong = caps.get("widen") == "0" and "强信号" in rows.get("widen", ("", ""))[1]  # 非玩家句
+    full, strong, _ = fullscreen_state(c, gid, picked, rows)
     need = {"fps60": ("fps60" in caps, NO_FPS60), "widescreen": (not strong, NO_WIDEN)}
     out = {}
     for key, item in table.items():
-        if "mac" not in item.get("platforms", []) or item["type"] not in ("bool", "choice"):
+        if "mac" not in item.get("platforms", []) or item["type"] not in ("bool", "choice", "text"):
             continue
         # 还没出 Mac 版（读不到能力清单）：各项都能选、先存偏好，出好后生效（v0.3.1「拿不准不停」：有没有 60 帧方案、走不走直连此时还不知道，不先挡）；
         #   清单明说没有 60 帧方案 / 没走直连的，才是物理上用不了
         ok, why = need.get(key, (True, "")) if caps else (True, "")
         value = picked.get(key, _default(item, caps, rows=rows))
-        if key == "widescreen" and key not in picked and adaptive_patches(c, gid)[0]:
-            value = True   # 没选过、包里有自适应满屏补丁：显示开（11-13 命中就默认开，同 iPhone）
+        if key == "widescreen":
+            value = full   # 显示起局真生效的那个值（fullscreen_state，同 launch_env）
         out[key] = dict(available=ok, value=value if ok else _default(item, caps, rows=rows), reason="" if ok else why)
         if key == "language":
             out[key].update(language_state(c, gid, item, out[key]["value"]))
     # 画质提升：标准 / 2D 游戏专用哪款都能用；锐利放大（MetalFX）要走直连。清单明说没走直连的，锐利放大置灰（blocked）、写一句为什么（这一行照样能选另两档）
     if caps and caps.get("direct") != "1" and "quality" in out:
-        out["quality"]["blocked"] = ["MetalFX"]
+        out["quality"]["blocked"] = ["MetalFX", "Fsr"]   # Fsr（FSR 1）同样只直连上屏有
         out["quality"]["reason"] = NO_DIRECT
     # 只用社区补丁（11-13 维护者撤掉我方 60 帧与通用满屏，tools/caps_policy.py patch_only）：没有帧率补丁的款不出「60 帧」，没有宽屏补丁的款不出「满屏」
     #   （读到了能力清单才判：还没出 Mac 版时照旧都列、先存偏好）
     if caps:
         fps_p = "社区帧率补丁" in rows.get("fps60", ("", ""))[1]  # 非玩家句
-        ws_p = any((r.get("编号") or "").startswith(("widescreen:", "wsauto:")) for r in _rows(layout.image_mac(c, gid, create=False) / "cpatch.tsv"))  # 非玩家句
-        for key, has in (("fps60", fps_p), ("widescreen", ws_p), ("fpsPick", len(fps_levels(c, gid)) > 1)):
+        #   满屏例外（11-15 维护者「没补丁的游戏手动打开满屏就走咱们通用方案」，#2205）：没有宽屏补丁也列，缺省关、明确开 = 我方通用满屏
+        for key, has in (("fps60", fps_p), ("fpsPick", len(fps_levels(c, gid)) > 1)):
             if key in out and not has:
                 out[key]["hidden"] = True
+    # 两个虚拟环绕开关只在对应设备类型下生效（#189 后续，5.1 虚拟环绕第二片）：设备类型 = builtin / headphones 时各自的开关才
+    #   可用，external / 没选（auto）置灰（原因写明只认哪种类型）；值照旧显示（玩家拨过的各存各的，驱动侧也只在对应类型下认）
+    device = picked.get("audioDevice", _default(table["audioDevice"], caps, rows=rows)) if "audioDevice" in table else "auto"
+    if device != "builtin" and "vsSpeakers" in out:
+        out["vsSpeakers"].update(available=False, reason=NO_VS_SPEAKERS)
+    if device != "headphones" and "vsHeadphones" in out:
+        out["vsHeadphones"].update(available=False, reason=NO_VS_HEADPHONES)
     return out
 
 
@@ -400,6 +416,19 @@ def adaptive_patches(c, gid):
     return fams, default_on
 
 
+def fullscreen_state(c, gid, picked=None, rows=None):
+    """满屏此刻的生效值（设置页显示与起局环境变量读同一个，#2205：原先两处各判一套，显示开、实际 16:9；同 iPhone settings.m s2a_ios_fullscreen_state）：
+    返回 (开否, 改不动, 自适应满屏补丁族)。清单原因「强信号」= 判过坏，改不动、一律关；玩家明确选过 = 照选的；
+    没选过 = 只有带自适应满屏补丁的款开（11-13 命中就默认开）。清单 widen 1 / 已验证名单不算：我方通用满屏缺省不开（11-15 维护者「手动打开满屏走通用方案」，runtime/src/widen.c 名单门）"""
+    rows = runtime_caps_rows(c, gid) if rows is None else rows
+    picked = chosen(c, gid) if picked is None else picked
+    strong = rows.get("widen", ("", ""))[0] == "0" and "强信号" in rows.get("widen", ("", ""))[1]  # 非玩家句
+    fams = adaptive_patches(c, gid)[0]
+    if strong:
+        return False, True, fams
+    return (picked["widescreen"] if isinstance(picked.get("widescreen"), bool) else bool(fams)), False, fams
+
+
 def patch_status(c, gid):
     """上一局每条社区补丁的实际结果（runtime/src/cpatch.c 写 <起局文档根>/cpatch_status.tsv；Mac 起局文档根 = 游戏库/temp/<程序号>，build.py）：
     {编号: (状态 开 | 关 | 不配套 | 表不认, 实测 fps=<n> | aspect=<w>:<h> | 空)}；没跑过 = {}"""
@@ -524,7 +553,13 @@ def save(c):
     shared = load_app(c)
     for key, value in want.items():
         item = table.get(key)
-        if item is None or item.get("scope") not in ("game", "app") or item["type"] not in ("bool", "choice"):
+        if item is None or item.get("scope") not in ("game", "app") or item["type"] not in ("bool", "choice", "text"):
+            # D-778G：0.6.9 Mac 启动器交来 settings 里带 patches（定义表里是补丁一栏、不是可存的设置），读码没找到哪个入口发的、诊断里也没有请求体：
+            #   把这次请求带的设置键、取值类型与请求的其他字段记进任务日志（进诊断包），下一份诊断直接看得出来源
+            from core import trace
+            where = "没有" if item is None else "是 %s / %s" % (item.get("type"), item.get("scope"))  # 非玩家句
+            trace(c, "启动设置保存被拒：设置键 %s 不是可存的设置（定义表里%s）；这次请求的设置 %s；请求其他字段 %s" % (  # 非玩家句
+                key, where, {k: type(v).__name__ for k, v in want.items()}, sorted(k for k in c.r if k != "settings")))
             raise Failure("没有这个启动设置：%s。" % key, code="job_failed")
         target = shared if item["scope"] == "app" else data
         if value is None:
@@ -587,10 +622,37 @@ def save(c):
     return out
 
 
-def launch_env(c, gid):
+def ldn_env(settings, existing=None):
+    """三种联机模式互斥落成环境：自动探测 Switch / 指定中继地址 / 强制 ldn_mitm。"""
+    if settings.get("ldnMode") == "switch":
+        return {"S2A_LDN_AUTO": "0", "S2A_LDN_MITM": "1"}
+    if settings.get("ldnMode") == "manual":
+        env = {"S2A_LDN_AUTO": "0", "S2A_LDN_MITM": "0"}
+        if "S2A_LDN_SERVER" in (existing or {}):
+            return env
+        if settings.get("ldnHost") is True:
+            env.update({"S2A_LDN_SERVER": "127.0.0.1", "S2A_LDN_RELAY": "1", "S2A_LDN_LISTEN": "0.0.0.0"})
+            return env
+        # 与 iOS 一致：空地址也不回到发现 / 选举，不阻止玩家启动游戏。
+        address = settings.get("ldnAddress", "").strip() or "0.0.0.0"
+        env.update({"S2A_LDN_SERVER": address, "S2A_LDN_RELAY": "0"})
+        return env
+    if settings.get("ldnMode") != "auto":
+        return {}
+
+    # 显式服务器（例如开发 / 外部注入）仍是整套优先；普通自动模式关掉强制
+    # ldn_mitm，由宿主探测 Switch 房间或走原有 RyuLDN / 平台局域网发现。
+    env = {"S2A_LDN_AUTO": "1", "S2A_LDN_MITM": "0"}
+    if "S2A_LDN_SERVER" in (existing or {}):
+        env = {"S2A_LDN_AUTO": "0", "S2A_LDN_MITM": "0"}
+    return env
+
+
+def launch_env(c, gid, existing=None):
     """Mac 启动时的宿主开关：只把玩家选过、且和宿主缺省不同的转成环境变量（与 iPhone 同口径）"""
     env, caps, table = {}, runtime_caps(c, gid), settings_table(c)
     s = chosen(c, gid, table)
+    env.update(ldn_env(s, existing))
     # 60 帧（11-11 维护者：缺省原帧率、玩家手动开，速度已验证正确的款保留默认 60）：只转玩家明确的选择——开 1、关 0；
     #   没选过不写，由宿主按清单原因自己定（runtime/src/caps.c：验证过的款开、其余原帧率）。没选也写 0 会把验证过的款一起关掉
     if s.get("fps60") is True:
@@ -609,12 +671,10 @@ def launch_env(c, gid):
     # 满屏（11-13 合并「宽屏」与「宽屏强制启用」，同 iPhone settings.m）：明确开 = 没验证过也铺满（画面被拉伸会自动退回 16:9）；明确关 = 16:9；
     #   没选过 = 清单 widen 1 或包里有我方验过的自适应满屏补丁才开。有自适应满屏补丁的款由补丁铺满（下面写进 S2A_CPATCH_ON，S2Arm 满屏让开）；
     #   清单原因「强信号」= 判过坏，一律不开
-    strong = caps.get("widen") == "0" and "强信号" in runtime_caps_rows(c, gid).get("widen", ("", ""))[1]  # 非玩家句
-    fams, fam_default = adaptive_patches(c, gid)
-    full = False if strong else s["widescreen"] if isinstance(s.get("widescreen"), bool) else (caps.get("widen") == "1" or bool(fams))   # 有自适应满屏补丁 = 默认开（11-13）
-    # 11-15 维护者「没补丁的游戏手动打开满屏就走咱们通用方案」：玩家明确开满屏、没有自适应满屏补丁 → 我方通用满屏（第三层整套放宽，不看已验证名单）。
+    full, strong, fams = fullscreen_state(c, gid, s)   # 与设置页同一个生效值（#2205）
+    # 11-15 维护者「没补丁的游戏手动打开满屏就走咱们通用方案」：生效值开、又没有自适应满屏补丁 = 玩家明确开了 → 我方通用满屏（第三层整套放宽，不看已验证名单）。
     #   原先这里还要 S2A_CAPS_OWN=1（v0.4.0 撤通用满屏时加的），手动开也不生效。没选过照旧不开（宿主缺省关，runtime/src/widen.c）
-    if s.get("widescreen") is True and not strong and not fams:
+    if full and not fams:
         env["S2A_WIDEN_VERIFIED"] = "1"
         env["S2A_WIDESCREEN"] = "1"
     elif s.get("widescreen") is False:
@@ -629,8 +689,17 @@ def launch_env(c, gid):
         if any(k.startswith(("widescreen:", "wsauto:")) for k in on):
             env["S2A_WIDESCREEN"] = "0"   # 开着社区宽屏 / 画幅补丁：游戏自己画宽画面，S2Arm 的满屏（图形层加宽渲染目标）让开，不拉宽两次；关掉补丁恢复
     # 画质提升（11-15，同 iPhone S2AScalingFilter）：2D 游戏专用 = 最近邻；锐利放大 = 直连上屏 MetalFX 空间放大（graphics/nvn/gfx/nvn/nvn_present_fx.inc），没走直连不设
-    if s.get("quality") == "Nearest" or (s.get("quality") == "MetalFX" and caps.get("direct") == "1"):
+    if s.get("quality") == "Nearest" or (s.get("quality") in ("MetalFX", "Fsr") and caps.get("direct") == "1"):
         env["S2A_SCALING_FILTER"] = s["quality"]
+    # 渲染分辨率 / 帧率上限（11-17，同 iPhone S2AResolutionScale / S2AFrameRateLimit，ios/settings.m）：缺省 1× / 不限不写，宿主照旧；
+    #   其余照选的值设 S2A_RES_SCALE（graphics/nvn/gfx/nvn/nvn_rscale.inc）、S2A_FPS（graphics/loop/RenderLoop.cs、nvn_fps.c）
+    if str(s.get("resolutionScale") or "1") != "1":
+        env["S2A_RES_SCALE"] = str(s["resolutionScale"])
+    if str(s.get("fpsLimit") or "0") != "0":
+        env["S2A_FPS"] = str(s["fpsLimit"])
+    # 即时快照（0.6.0，同 iPhone S2ASnapshot，ios/settings.m）：宿主苹果端缺省开（runtime/src/snapsw.c），只有玩家明确关才写 0；没选过不写
+    if s.get("snapshot") is False:
+        env["S2A_SNAP_MODE"] = "0"
     if "docked" in s:
         env["S2A_DOCKED"] = "1" if s["docked"] == "docked" else "0"
     if s.get("language", "system") != "system":
@@ -645,15 +714,33 @@ def launch_env(c, gid):
         env["S2A_PAD_FACE"] = s["padFace"]  # 手柄按键布局：玩家手动选的 Switch / Xbox 布局（缺省自动不设；宿主 runtime/src/pad.c s2a_pad_layout）
     if s.get("motion") is False:
         env["S2A_MOTION"] = "0"           # 体感关：不开手柄六轴（macos/front_mac.m）
+    if s.get("motionInvertY") is True:
+        env["S2A_MOTION_INVERT_Y"] = "1"  # 体感上下反过来（#1551，服务层 ControllerFeedback 绕 X 轴角速度取反）
+    if s.get("motionInvertX") is True:
+        env["S2A_MOTION_INVERT_X"] = "1"  # 体感左右反过来（绕 Z 轴角速度取反）
     # 声音延迟（11-14 维护者，PR #1066 收进启动设置）：低 / 最低 = 请求输出设备 IO 缓冲 128 / 32 帧（Ryujinx.Audio.Backends.Apple
     #   AppleDeviceBufferFrames，S2A_AUDIO_BUFFER_FRAMES）；标准不写 = 不请求、跟设备默认（内置扬声器 512 帧 ≈ 10.7 ms）
     frames = next((o.get("frames", 0) for o in table["audioLatency"]["options"] if o["value"] == s.get("audioLatency")), 0) if "audioLatency" in table else 0
     if frames:
         env["S2A_AUDIO_BUFFER_FRAMES"] = str(frames)
+    # 输出设备类型 + 两个虚拟环绕开关（#189 后续，5.1 虚拟环绕第二片，与 iPhone ios/settings.m 同口径）：设备类型只转玩家显式选过的
+    #   builtin / headphones / external，没选过不写（= auto：按设备真实声道判，5.1 直通缺省不变）；两个开关各存各的、只在对应
+    #   显式类型下生效（驱动侧判，这里照转玩家拨过的值：开 1 / 关 0，没拨过不写）
+    if s.get("audioDevice") in ("builtin", "headphones", "external"):
+        env["S2A_AUDIO_DEVICE"] = s["audioDevice"]
+    if isinstance(s.get("vsSpeakers"), bool):
+        env["S2A_AUDIO_VS_SPEAKERS"] = "1" if s["vsSpeakers"] else "0"
+    if isinstance(s.get("vsHeadphones"), bool):
+        env["S2A_AUDIO_VS_HEADPHONES"] = "1" if s["vsHeadphones"] else "0"
     if s.get("pauseUnfocused") is False:
         env["S2A_FOCUS_PAUSE"] = "0"      # 切到别的窗口不暂停：游戏要求失焦暂停时也照常跑（macos/front_mac.m，#989）
     if s.get("diagRun") is True:
         env.update(diag_run_env(c, gid))  # 诊断局（#438）：只管这一局，用掉就关
+    import diagcode
+    code_env = diagcode.pending(c, gid)
+    if code_env:   # 诊断码（#1449）：在这台 Mac 上起这款，直接并进这一局的环境，用掉就清
+        env.update(code_env)
+        diagcode.used(c, f"Mac 起局 {gid}")  # 非玩家句
     return env
 
 

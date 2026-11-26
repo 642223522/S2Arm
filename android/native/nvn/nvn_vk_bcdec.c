@@ -14,11 +14,11 @@ enum { SH_S3TC, SH_RGTC, SH_BC6, SH_BC7 };
 // 每格式：变体、dst 存储视图格式、解码后采样格式、族名（失败上报用）、块字节数。
 struct route { struct variant v; VkFormat view_fmt; VkFormat decoded_fmt; VkFormat image_fmt; const char *family; int block_bytes; };
 static const struct route ROUTES[0x51] = {
-    [0x41] = {{SH_S3TC, 1, 1}, VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM, "s3tc", 8},
+    [0x41] = {{SH_S3TC, 0, 1}, VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM, "s3tc", 8},
     [0x42] = {{SH_S3TC, 1, 1}, VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM, "s3tc", 8},
     [0x43] = {{SH_S3TC, 1, 2}, VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM, "s3tc", 16},
     [0x44] = {{SH_S3TC, 1, 3}, VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM, "s3tc", 16},
-    [0x45] = {{SH_S3TC, 1, 1}, VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_SRGB, VK_FORMAT_R8G8B8A8_UNORM, "s3tc", 8},
+    [0x45] = {{SH_S3TC, 0, 1}, VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_SRGB, VK_FORMAT_R8G8B8A8_UNORM, "s3tc", 8},
     [0x46] = {{SH_S3TC, 1, 1}, VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_SRGB, VK_FORMAT_R8G8B8A8_UNORM, "s3tc", 8},
     [0x47] = {{SH_S3TC, 1, 2}, VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_SRGB, VK_FORMAT_R8G8B8A8_UNORM, "s3tc", 16},
     [0x48] = {{SH_S3TC, 1, 3}, VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_SRGB, VK_FORMAT_R8G8B8A8_UNORM, "s3tc", 16},
@@ -31,7 +31,7 @@ static const struct route ROUTES[0x51] = {
     [0x4f] = {{SH_BC6, 1, 0}, VK_FORMAT_R16G16B16A16_UINT, VK_FORMAT_R16G16B16A16_SFLOAT, VK_FORMAT_R16G16B16A16_SFLOAT, "bc6", 16},
     [0x50] = {{SH_BC6, 0, 0}, VK_FORMAT_R16G16B16A16_UINT, VK_FORMAT_R16G16B16A16_SFLOAT, VK_FORMAT_R16G16B16A16_SFLOAT, "bc6", 16},
 };
-#define N_VARIANTS 10
+#define N_VARIANTS 11
 
 int nvn_vk_bcdec_route(uint32_t f, VkFormat *view_fmt, VkFormat *decoded_fmt, VkFormat *image_fmt,
                        const char **family, int *block_bytes) {
@@ -69,9 +69,9 @@ static void spv_init(void) {
     SPV[SH_BC7] = nvn_bc_bc7_comp; SPV_LEN[SH_BC7] = sizeof(nvn_bc_bc7_comp);
 }
 
-// ROUTES 的 10 个去重变体，按管线数组下标。
+// ROUTES 的 11 个去重变体，按管线数组下标。
 static const struct variant VARIANTS[N_VARIANTS] = {
-    {SH_S3TC, 1, 1}, {SH_S3TC, 1, 2}, {SH_S3TC, 1, 3},   // BC1, BC2, BC3（UNORM/SRGB 同管线）
+    {SH_S3TC, 0, 1}, {SH_S3TC, 1, 1}, {SH_S3TC, 1, 2}, {SH_S3TC, 1, 3},   // BC1 RGB/RGBA, BC2, BC3（UNORM/SRGB 同管线）
     {SH_RGTC, 0, 0}, {SH_RGTC, 0, 1}, {SH_RGTC, 1, 0}, {SH_RGTC, 1, 1},
     {SH_BC6, 0, 0}, {SH_BC6, 1, 0},
     {SH_BC7, 0, 0},
@@ -133,7 +133,7 @@ int nvn_vk_bcdec_create(struct s2a_vk_device *d, struct nvn_vk_bcdec **out, char
             NULL, 0, VK_SHADER_STAGE_COMPUTE_BIT, bc->mod[v->shader], "main", &si };
         ci.layout = bc->pl;
         if (vkCreateComputePipelines(d->device, VK_NULL_HANDLE, 1, &ci, NULL, &bc->pipe[i]) != VK_SUCCESS) {
-            static const char *FAM[N_VARIANTS] = { "s3tc","s3tc","s3tc","rgtc","rgtc","rgtc","rgtc","bc6","bc6","bc7" };
+            static const char *FAM[N_VARIANTS] = { "s3tc","s3tc","s3tc","s3tc","rgtc","rgtc","rgtc","rgtc","bc6","bc6","bc7" };
             snprintf(why, why_size, "bcdec: %s compute pipeline failed (variant %u/%u)",
                      FAM[i], v->c0, v->c1); goto fail;
         }

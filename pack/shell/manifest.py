@@ -75,9 +75,9 @@ def _identity(source_commit, inputs, chain, ios_min, ios_sdk):
         raise ShellError("壳输入指纹要 16 位十六进制")
     if not isinstance(chain, str) or not re.fullmatch("[0-9a-z]{1,12}", chain):
         raise ShellError("直连链号不对（1–12 位）")
-    if not isinstance(ios_min, str) or not re.fullmatch(r"\d+(\.\d+){0,2}", ios_min):
-        raise ShellError("iOS 最低版本不对")
-    if not isinstance(ios_sdk, str) or not re.fullmatch(r"\d{1,3}", ios_sdk):
+    if not isinstance(ios_min, str) or not re.fullmatch(r"(tvos)?\d+(\.\d+){0,2}", ios_min):
+        raise ShellError("最低版本不对（iOS 写数字，Apple TV 带 tvos 前缀）")
+    if not isinstance(ios_sdk, str) or not re.fullmatch(r"(tvos)?\d{1,3}", ios_sdk):
         raise ShellError("iOS SDK 主版本不对")
 
 
@@ -205,25 +205,36 @@ def seal(root, manifest, source_commit, inputs, chain, ios_min, ios_sdk):
     return doc
 
 
-def _defaults():   # 本仓库当前提交、壳输入指纹、直连链号、iOS 部署目标
+def apple_os(platform=None):
+    """出哪个平台的壳：参数 > 环境变量 S2A_APPLE_OS（顶层 Makefile 同名开关）> ios"""
+    p = platform or os.environ.get("S2A_APPLE_OS") or "ios"
+    if p not in ("ios", "tvos"):
+        raise ShellError(f"S2A_APPLE_OS 只认 ios / tvos，给的是 {p}")
+    return p
+
+
+def _defaults(platform=None):   # 本仓库当前提交、壳输入指纹、直连链号、部署目标、SDK 主版本（Apple TV：两项带 tvos 前缀，11-15）
     commit = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
     sys.path.insert(0, str(ROOT / "translator")); import dmsh_chain
     env = (ROOT / "tools/toolchain.env").read_text()
-    m = re.search(r"^IPHONEOS_DEPLOYMENT_TARGET\s*[:?]?=\s*(\S+)", env, re.M)
-    sdk = re.search(r"^IPHONEOS_SDK_MAJOR\s*[:?]?=\s*(\S+)", env, re.M)
-    return commit, inputs_key(), dmsh_chain.version(), m.group(1) if m else "", sdk.group(1) if sdk else ""
+    tv = apple_os(platform) == "tvos"
+    m = re.search(r"^%s\s*[:?]?=\s*(\S+)" % ("TVOS_DEPLOYMENT_TARGET" if tv else "IPHONEOS_DEPLOYMENT_TARGET"), env, re.M)
+    sdk = re.search(r"^%s\s*[:?]?=\s*(\S+)" % ("TVOS_SDK_MAJOR" if tv else "IPHONEOS_SDK_MAJOR"), env, re.M)
+    pre = "tvos" if tv else ""
+    return commit, inputs_key(), dmsh_chain.version(), pre + m.group(1) if m else "", pre + sdk.group(1) if sdk else ""
 
 
-def current_id():   # 本树该用的壳编号：出包取壳、组装核壳都用它
+def current_id(platform=None):   # 本树该用的壳编号：出包取壳、组装核壳都用它（platform 不给按 S2A_APPLE_OS，缺省 ios）
     """开发树：按输入表在 HEAD 上算。发布快照（App / 启动器内置引擎，根有 engine.json）：读打包时写进去的 shellId——
     快照只收部分目录、还剔了测试目录，在快照里按目录对象号重算会与出壳时不同（platforms/bundle_engine.py write_manifest 写）"""
     eng = ROOT / "engine.json"
+    tv = apple_os(platform) == "tvos"
     if eng.is_file():
-        sid = json.loads(eng.read_text(encoding="utf-8")).get("shellId")
+        sid = json.loads(eng.read_text(encoding="utf-8")).get("shellIdTvos" if tv else "shellId")
         if not (isinstance(sid, str) and re.fullmatch("[0-9a-f]{16}", sid)):
             raise ShellError("发布快照的 engine.json 里没有壳编号 shellId（引擎打包时没写，重新打包引擎）")
         return sid
-    _, inputs, chain, ios_min, ios_sdk = _defaults()
+    _, inputs, chain, ios_min, ios_sdk = _defaults(platform)
     return shell_id(inputs, chain, ios_min, ios_sdk)
 
 

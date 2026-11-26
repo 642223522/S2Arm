@@ -40,6 +40,9 @@ namespace Ryujinx.Audio.Output
         /// The <see cref="AudioOutputSystem"/> session instances.
         /// </summary>
         private readonly AudioOutputSystem[] _sessions;
+        public AudioOutputSystem[] S2ASessions => _sessions;   // S2Arm 即时存档：按会话号找 audout 队列
+                                                                  //   （读时持 S2ASessionLock：会话开关会改这个表）
+        public System.Threading.Lock S2ASessionLock => _sessionLock;
 
         /// <summary>
         /// The count of active sessions.

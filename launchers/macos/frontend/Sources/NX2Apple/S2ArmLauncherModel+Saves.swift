@@ -15,6 +15,8 @@ struct SaveStatusInfo: Equatable {
     let recovered: Bool
     /// 没做完的恢复自动撤回失败时的记录位置；没有为空。
     let recoveryFailed: String
+    /// 待放区里等着的存档文件数（没在这台 Mac 上玩过的这款，恢复先放进待放区、第一次启动时灌入；#2066）；没有为 nil。
+    let pendingFiles: Int?
 
     init?(_ r: [String: Any]) {
         guard let has = r["hasSave"] as? Bool else { return nil }
@@ -24,6 +26,7 @@ struct SaveStatusInfo: Equatable {
         previousBackup = r["previousBackup"] as? String ?? ""
         recovered = r["recovered"] as? Bool ?? false
         recoveryFailed = r["recoveryFailed"] as? String ?? ""
+        pendingFiles = ((r["pendingSeed"] as? [String: Any])?["fileCount"] as? NSNumber)?.intValue
     }
 }
 
@@ -71,9 +74,12 @@ struct SaveRestoreInfo: Equatable {
     let previousBackup: String
     /// 存档已恢复但事务记录没清完时作业层的原话；正常为空。
     let cleanupWarning: String
+    /// 只是放进了待放区（这款在这台 Mac 上还没玩过），第一次启动时才进存档（#2066）
+    let pending: Bool
 
     init(_ r: [String: Any]) {
         hadOriginal = r["hadOriginal"] as? Bool ?? false
+        pending = r["pending"] as? Bool ?? false
         previousBackup = r["previousBackup"] as? String ?? ""
         cleanupWarning = r["cleanupWarning"] as? String ?? ""
     }
@@ -100,14 +106,21 @@ extension S2ArmLauncherModel {
         return info
     }
 
+    /// 存档页「不要了」：删掉待放区里这款等着的存档（saveDiscardSeed，#2066）
+    func saveDiscardSeed(_ gameID: String, events: EventSink? = nil) async throws {
+        _ = try await saveJob("saveDiscardSeed", gameID: gameID, events: events)
+    }
+
     /// 备份到 destination（玩家在保存面板里选的文件）；回作业层实际写下的路径。
     func saveBackup(_ gameID: String, to destination: URL, events: EventSink? = nil) async throws -> String {
         let r = try await saveJob("saveBackup", gameID: gameID, extra: ["path": destination.path], events: events)
         return r["outputPath"] as? String ?? destination.path
     }
 
-    func saveInspect(_ gameID: String, source: URL, events: EventSink? = nil) async throws -> SavePreviewInfo {
+    /// sync：云存档自动同步调用（没人看提示、不经玩家确认）——版本 / DLC 组合、用户归属对不上时作业层照旧拒绝；玩家手动恢复不带，只提示、照常恢复
+    func saveInspect(_ gameID: String, source: URL, sync: Bool = false, events: EventSink? = nil) async throws -> SavePreviewInfo {
         var extra: [String: Any] = ["path": source.path]
+        if sync { extra["sync"] = true }
         // 本地玩家（#623）：社区存档导进当前玩家的账号存档（pack/jobs/saves.py external_archive）；恢复时带同一个玩家
         if let player = S2ArmLauncherModel.playerRequest() { extra["player"] = player }
         let r = try await saveJob("saveInspect", gameID: gameID, extra: extra, events: events)
@@ -116,9 +129,10 @@ extension S2ArmLauncherModel {
     }
 
     /// 用检查过的备份覆盖当前存档：带回检查时的三个校验值，备份或当前存档变了作业层拒绝（save_changed）。
-    func saveRestore(_ gameID: String, preview: SavePreviewInfo, events: EventSink? = nil) async throws -> SaveRestoreInfo {
+    func saveRestore(_ gameID: String, preview: SavePreviewInfo, sync: Bool = false, events: EventSink? = nil) async throws -> SaveRestoreInfo {
         var extra: [String: Any] = ["path": preview.source.path, "archiveSha256": preview.archiveSha256,
                                     "targetFingerprint": preview.targetFingerprint, "previewLibraryId": preview.previewLibraryId]
+        if sync { extra["sync"] = true }
         if let player = S2ArmLauncherModel.playerRequest() { extra["player"] = player }
         return SaveRestoreInfo(try await saveJob("saveRestore", gameID: gameID, extra: extra, events: events))
     }

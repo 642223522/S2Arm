@@ -264,7 +264,7 @@ struct TaskGameHeader: View {
 //   最近一次打 iPhone 包成功、玩家还没收起时，主栏最上方是这一屏：这款游戏、用了多久、包里是什么、各阶段花在哪、接下来三步怎么装
 
 extension Store {
-    /// 这次出包之后、同一款游戏成功的「装到 iPhone」（完成页第 1 步据此打勾）
+    /// 这次出包之后、同一款游戏成功的「推到 iPhone」（完成页第 1 步据此打勾）
     func installTask(after ipa: TaskRecord) -> (task: TaskRecord, device: String?)? {
         guard let t = tasks.filter({ $0.operation == "install" && $0.state == "completed" && $0.gameId == ipa.gameId && ($0.ended ?? 0) >= (ipa.ended ?? 0) })
             .max(by: { ($0.ended ?? 0) < ($1.ended ?? 0) }) else { return nil }
@@ -407,13 +407,13 @@ struct PackCompletionHero: View {
             let installed = store.installTask(after:task)
             VStack(alignment:.leading, spacing:8) {
                 Text(L("接下来两步")).font(.headline)
-                step(1, installed.map { $0.task.unpackPending ?? (L("已装到 iPhone") + ($0.device.map { "「\($0)」" } ?? "") + Store.packPushedClause($0.task.packFiles)) }
+                step(1, installed.map { $0.task.unpackPending ?? (L("已推到 iPhone") + ($0.device.map { "「\($0)」" } ?? "") + Store.packPushedClause($0.task.packFiles)) }
                         ?? L("用数据线连上 iPhone，一键装好：用你在 Xcode 里登录的 Apple ID 签名，资源包一起拷进去")) {
                     if installed == nil {
                         HStack(spacing:10) {
                             if !InstallGuideView.xcodeInstallVerified { VerifyingBadge().help(L("这条路还在真机验证，装不上或打不开时请改用下面的 AltStore。")) }   // 与装机步骤页同一开关（审计 P2-7）
                             Button(L("改用 AltStore")) { store.showInstallGuide = true }.buttonStyle(.borderless)
-                            Button { if let game { store.requestInstall(game) } } label: { Label(L("装到 iPhone"), systemImage:"iphone.and.arrow.forward") }
+                            Button { if let game { store.requestInstall(game) } } label: { Label(L("推到 iPhone"), systemImage:"iphone.and.arrow.forward") }
                                 .platformButtonStyle(prominent:true).controlSize(.small).disabled(game == nil || store.executionBusy)
                         }
                     } else {
@@ -421,7 +421,7 @@ struct PackCompletionHero: View {
                     }
                 }
                 step(2, L("打开游戏：第一次会先导入游戏资源（几分钟），保持在前台、别锁屏，导入完会自动进入游戏")) { EmptyView() }
-                Text(L("免费 Apple ID 签的 App 7 天过期：到时连上 iPhone 再点一次「装到 iPhone」，已经在机上的资源包不用重拷。"))
+                Text(L("免费 Apple ID 签的 App 7 天过期：到时连上 iPhone 点游戏库第一格「S2Arm」里的「续签 S2Arm」，手机上的游戏不用重新推。"))
                     .font(.caption).foregroundStyle(.secondary)
             }
         }

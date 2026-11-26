@@ -6,7 +6,7 @@
 
   img = RomfsImage(路径, base=0)          独立镜像 base=0；IMG 里的段用 RomfsImage.in_img(game.img)
   img.entries()                          [(相对路径, 绝对偏移, 长度)]，按路径的 UTF-8 字节序（同 romfs_list 排序清单的口径）
-  img.size(rel) / img.read(rel) / img.read_range(rel, off, n) / img.head(rel, n=32) / img.open(rel)（流式读的文件对象）
+  img.size(rel) / img.span(rel)（绝对偏移, 长度）/ img.read(rel) / img.read_range(rel, off, n) / img.head(rel, n=32) / img.open(rel)（流式读的文件对象）
   img.dirs()                             镜像里记着的目录（根是 ""）；我们出镜像只加文件，空目录不在里面
 
   romfs_img.py ls <镜像> [--img]          列「相对路径<TAB>长度」
@@ -94,6 +94,10 @@ class RomfsImage:
 
     def size(self, rel):
         return self._span(rel)[1]
+
+    def span(self, rel):
+        """(在镜像文件里的绝对偏移, 长度)"""
+        return self._span(rel)
 
     def read_range(self, rel, offset, n):
         """rel 里从 offset 起至多 n 字节（越过文件尾就截短）"""

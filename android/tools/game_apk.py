@@ -7,10 +7,13 @@ with the rewritten modules inside the APK.
       against the package's index.tsv (index.tsv against manifest.json), reads the title id,
       name and display version from ctl/control.nacp, and writes <out>/game.properties for
       Gradle (versionCode too, default 1), <out>/res/values/game_name.xml (the launcher label:
-      "<game's own NACP title> S2Arm", pack/display_name.py — same function as the iPhone display name)
-      and <out>/assets/game/{game.properties,modules/}. With --shader-pack <make_pack shader bake
+      "<game's own NACP title> S2Arm", pack/display_name.py — same function as the iPhone display name),
+      and <out>/assets/game/{game.properties,modules/}. When available, launcher PNGs are
+      rendered deterministically from the package's icon.jpg; missing, empty or unreadable icons
+      warn and leave the APK on its default launcher icon. With --shader-pack <make_pack shader bake
       output root> (android/tools/bake_shaders.py <out>/pack, #1574) it also writes the
       deterministic assets/game/shaders.zip the runtime extracts as the offline shader pack.
+      Indexed shaders/s2a-cold-guard-v1/*.bin records are optional debug APK assets.
       Default out: build/android-game/<title id>.
       Build it with  S2ARM_ANDROID_GAME_DIR=<out, relative to the repo> bash android/docker/build.sh.
 
@@ -37,7 +40,7 @@ with the rewritten modules inside the APK.
 Only modules go into the APK; the resource package is deployed separately. The output is
 derived from the player's own game: it stays under build/ and never goes into the repository or
 a PR."""
-import hashlib, json, os, re, shutil, stat, struct, subprocess, sys, zipfile, zlib
+import hashlib, io, json, os, re, shutil, stat, struct, sys, warnings, zipfile, zlib
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.abspath(os.path.join(HERE, '..', '..'))
@@ -47,6 +50,8 @@ import direct_library   # noqa: E402  F5.2：直连描述的文件清单只按�
 sys.path.insert(1, os.path.join(REPO, 'pack'))
 import display_name   # noqa: E402  桌面标签与 iPhone 同一函数：「<游戏自带 nacp 标题> S2Arm」（11-04 维护者）
 GRAPHICS_FEATURE = direct_library.GRAPHICS_FEATURE
+COLD_GUARD_PREFIX = 'shaders/s2a-cold-guard-v1/'
+REFRESH_PAYLOAD = ('manifest.json', 'index.tsv', 'game-build-artifact.json', 'ctl/control.nacp')
 
 
 def sha256(path):
@@ -116,6 +121,13 @@ def nacp_info(path):
     return f'{title_id:016X}', name, text_field(nacp, 0x3060, 0x10)
 
 
+def apk_version(version):
+    """游戏显示版本 → APK versionName 里放的文字。aapt 把以「?」开头的值当主题属性引用（?attr/…）、找不到就整包出不来：
+    pack/ns2_dump.py 合成的控制数据把显示版本写成「?」（表示不知道），也可能是空。取不到真值就写 unknown，不让出包停在 aapt。"""
+    text = version.strip()
+    return text if text.strip('?') else 'unknown'
+
+
 def properties_value(text):
     """java.util.Properties escaping for a value (non-ASCII as \\uXXXX, so any encoding reads it)."""
     out = []
@@ -135,6 +147,46 @@ def resource_string(text):
     text = text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
     text = text.replace('\\', '\\\\').replace("'", "\\'").replace('"', '\\"')
     return '\\' + text if text[:1] in ('@', '?') else text
+
+
+def render_game_icon(pack):
+    """控制分区导出的 icon.jpg → 密度图字节；无可读图片时使用默认图标。"""
+    icon = os.path.join(pack, 'icon.jpg')
+    try:
+        info = os.lstat(icon)
+    except FileNotFoundError:
+        print('【黄】没有游戏图标：沿用默认图标')
+        return None
+    except OSError as error:
+        print(f'【黄】游戏图标无法读取：{error}；沿用默认图标')
+        return None
+    if stat.S_ISLNK(info.st_mode) or getattr(info, 'st_file_attributes', 0) & 0x400:
+        raise ValueError('拒绝图标链接或重解析点')
+    if not stat.S_ISREG(info.st_mode):
+        raise ValueError('游戏图标不是普通文件')
+    if info.st_size == 0:
+        print('【黄】游戏图标为空：沿用默认图标')
+        return None
+    try:
+        from PIL import Image
+    except ImportError:
+        print('【黄】缺少 Pillow，无法生成游戏图标：沿用默认图标')
+        return None
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter('error', Image.DecompressionBombWarning)
+            with Image.open(icon) as image:
+                image.load()
+                image = image.convert('RGB')
+                rendered = []
+                for density, size in (('mdpi', 48), ('hdpi', 72), ('xhdpi', 96), ('xxhdpi', 144), ('xxxhdpi', 192)):
+                    data = io.BytesIO()
+                    image.resize((size, size), Image.Resampling.LANCZOS).save(data, format='PNG')
+                    rendered.append((density, data.getvalue()))
+    except (OSError, ValueError, Image.DecompressionBombError, Image.DecompressionBombWarning) as error:
+        print(f'【黄】游戏图标打不开或缩放失败：{error}；沿用默认图标')
+        return None
+    return rendered
 
 
 ASSET_ROOT = 'game/modules'
@@ -170,24 +222,18 @@ def apk_signer_sha256(apk):
             certs, _ = prefixed(signed_data, off)
             cert, _ = prefixed(certs, 0)
             return hashlib.sha256(cert).hexdigest()
-    sys.exit(f'{apk}: no v2 / v3 signature (minSdk 29 builds are signed with them)')
+    sys.exit(f'{apk}: no v2 / v3 signature (minSdk 34 builds are signed with them)')
 
 
 def apk_identity(apk):
-    """Read the final manifest using the SDK tool, never infer it from title metadata."""
-    sdk = os.environ.get('ANDROID_HOME') or os.environ.get('ANDROID_SDK_ROOT')
-    tool = os.path.join(sdk, 'build-tools', '36.0.0', 'aapt2') if sdk else shutil.which('aapt2')
-    if not tool or not os.path.isfile(tool):
-        raise ValueError('APK identity requires SDK build-tools 36.0.0 aapt2 (ANDROID_HOME / ANDROID_SDK_ROOT or PATH)')
-    result = subprocess.run([tool, 'dump', 'badging', os.fspath(apk)],
-                            capture_output=True, text=True, timeout=60)
-    if result.returncode:
-        raise ValueError('Cannot read APK manifest: ' + result.stderr.strip())
-    matches = re.findall(r"^package: name='([^']+)' versionCode='([0-9]+)'", result.stdout, re.MULTILINE)
-    if len(matches) != 1:
-        raise ValueError('APK manifest must have exactly one package identity')
-    package, version = matches[0]
-    return package, int(version), 'application-debuggable' in result.stdout.splitlines()
+    """Read the final manifest itself (axml.py), never infer it from title metadata; no SDK tool needed."""
+    import axml
+    try:
+        with zipfile.ZipFile(apk) as z:
+            package, version, _, debuggable = axml.identity(z.read('AndroidManifest.xml'))
+    except (OSError, KeyError, zipfile.BadZipFile, axml.AxmlError, struct.error, IndexError) as error:
+        raise ValueError(f'Cannot read APK manifest: {error}') from error
+    return package, version, debuggable
 
 
 def validate_apk_package(title, package, debug):
@@ -228,6 +274,16 @@ def write_shader_zip(pack_dir, destination):
             info.external_attr = 0o600 << 16
             with open(full, 'rb') as stream, archive.open(info, 'w') as member:
                 shutil.copyfileobj(stream, member)
+
+
+def cold_guard_assets(rows):
+    """APK-only destination names for the optional indexed shader records."""
+    for rel in sorted(p for p in rows if p.startswith(COLD_GUARD_PREFIX)):
+        name = rel[len(COLD_GUARD_PREFIX):]
+        size, _ = rows[rel]
+        if not re.fullmatch('[0-9a-f]{64}[.]bin', name) or not 184 < size <= 16 * 1024 * 1024:
+            raise ValueError(f'invalid cold guard asset index row: {rel}')
+        yield rel, 'assets/s2a-cold-guard-v1/' + name
 
 
 def previous_package(path, out, pack):
@@ -291,6 +347,7 @@ def resources(pack, apk, out, refresh_existing=False, reuse_from=None):
         except direct_library.LibraryError as error:
             sys.exit(f'{pack}: {error}')
     modules = sorted(p for p in rows if p.startswith('modules/'))
+    guard_assets = list(cold_guard_assets(rows))
     with zipfile.ZipFile(apk) as z:
         props = dict(line.split('=', 1) for line in z.read('assets/game/game.properties').decode('ascii').splitlines() if '=' in line)
         if props.get('titleId') != title_id:
@@ -299,7 +356,14 @@ def resources(pack, apk, out, refresh_existing=False, reuse_from=None):
             member = 'assets/' + ASSET_ROOT + '/' + p[len('modules/'):]
             if member not in z.namelist() or hashlib.sha256(z.read(member)).hexdigest() != rows[p][1]:
                 sys.exit(f'{apk}: {member} is missing or differs from the package')
+        for rel, member in guard_assets:
+            expected_size, expected_sha = rows[rel]
+            if (member not in z.namelist() or z.getinfo(member).file_size != expected_size
+                    or hashlib.sha256(z.read(member)).hexdigest() != expected_sha):
+                raise ValueError(f'APK cold guard asset missing or differs: {member}')
     package, version_code, debug = apk_identity(apk)
+    if guard_assets and not debug:
+        raise ValueError('cold guard assets require a debug APK')
     validate_apk_package(title_id, package, debug)
     if version_code != int(props.get('versionCode', '1')):
         raise ValueError('APK manifest versionCode differs from game.properties')
@@ -313,7 +377,7 @@ def resources(pack, apk, out, refresh_existing=False, reuse_from=None):
     index = ''
     reused = 0
     for p in kept:
-        if not refresh_existing or p == nacp:
+        if not refresh_existing or p in REFRESH_PAYLOAD:
             dst = os.path.join(out, p)
             linked = previous is not None and link_previous(previous, p, rows[p], dst)
             if linked and sha256(dst) != rows[p][1]:
@@ -400,6 +464,7 @@ def main():
             with open(os.path.join(pack, p), encoding='utf-8') as f:
                 if '# TARGET\tandroid\n' not in f.read():
                     sys.exit(f'{p} was not rewritten for Android (S2A_TARGET=android)')
+    rendered_icon = render_game_icon(pack)
     out = os.path.abspath(sys.argv[2] if len(sys.argv) == 3 else os.path.join(REPO, 'build', 'android-game', title_id))
     if os.path.exists(out):
         if not os.path.isfile(os.path.join(out, 'game.properties')):
@@ -409,10 +474,26 @@ def main():
     os.makedirs(os.path.join(assets, 'modules'))
     for p in modules:
         shutil.copyfile(os.path.join(pack, p), os.path.join(assets, p))
+    for rel, member in cold_guard_assets(rows):
+        expected_size, expected_sha = rows[rel]
+        with open(os.path.join(pack, rel), 'rb') as stream:
+            data = stream.read(expected_size + 1)
+        if len(data) != expected_size or hashlib.sha256(data).hexdigest() != expected_sha:
+            raise ValueError(f'cold guard asset does not match index.tsv: {rel}')
+        dest = os.path.join(out, member)
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        with open(dest, 'wb') as stream:
+            stream.write(data)
     if shader_pack is not None:
         write_shader_zip(shader_pack, os.path.join(assets, 'shaders.zip'))
-    props = (f'titleId={title_id}\nname={properties_value(name or title_id)}\nversion={properties_value(version)}\n'
+    for density, data in rendered_icon or ():
+        directory = os.path.join(out, 'res', f'mipmap-{density}')
+        os.makedirs(directory, exist_ok=True)
+        with open(os.path.join(directory, 'game_icon.png'), 'wb') as f:
+            f.write(data)
+    props = (f'titleId={title_id}\nname={properties_value(name or title_id)}\nversion={properties_value(apk_version(version))}\n'
              f'versionCode={version_code}\n'
+             f'launcherIcon={"game" if rendered_icon else "default"}\n'
              f'modules={",".join(p[len("modules/"):-len(".fixups.tsv")] for p in modules if p.endswith(".fixups.tsv"))}\n')
     for target in (os.path.join(out, 'game.properties'), os.path.join(assets, 'game.properties')):
         with open(target, 'w', encoding='ascii', newline='\n') as f:

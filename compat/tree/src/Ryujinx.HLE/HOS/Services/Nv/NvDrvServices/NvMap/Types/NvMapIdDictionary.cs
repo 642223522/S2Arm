@@ -55,6 +55,11 @@ namespace Ryujinx.HLE.HOS.Services.Nv.NvDrvServices.NvMap
 
             _nvmapHandles.Clear();
 
+            // S2Arm: Clear is the session reset (NvMapDeviceFile.S2AReset) of an in-process restart. Numbering restarts too, as in a new
+            // process: an instant snapshot replays the logged nvmap Create calls and later requests name the handles by the numbers they had
+            // when logged (left running on, the replayed handles got other numbers and the video channel's maps all failed: video frozen)
+            Interlocked.Exchange(ref _id, 0);
+
             return values;
         }
     }

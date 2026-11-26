@@ -41,7 +41,7 @@ def ndk_bin():
         command = f'{shlex.quote(manager)} --sdk_root={shlex.quote(sdk)} {shlex.quote("ndk;29.0.14206865")}'
         raise RuntimeError(f'expected Android NDK 29.0.14206865; searched [{searched}]; env [{env}]; install: {command}')
     binary = ndk / 'toolchains/llvm/prebuilt' / system / 'bin'
-    for tool in ('aarch64-linux-android29-clang', 'aarch64-linux-android29-clang++', 'ld.lld', 'llvm-nm'):
+    for tool in ('aarch64-linux-android34-clang', 'aarch64-linux-android34-clang++', 'ld.lld', 'llvm-nm'):
         if not (binary / tool).is_file():
             raise RuntimeError(f'missing {binary / tool}; install NDK 29.0.14206865 or set ANDROID_NDK_HOME')
     return binary
@@ -62,14 +62,14 @@ def main():
         bridge_flags = ['-std=gnu++17', '-DS2A_CS_STATIC=1', '-DVK_USE_PLATFORM_ANDROID_KHR',
                         '-I', temp, '-I', ROOT, '-I', ROOT / 'runtime/src',
                         '-I', ROOT / 'runtime/include', '-I', ANDROID / 'native',
-                        # #868：bridge.cpp 引 nvn/nvn_vk_first_draw.h → direct/vk_device.h、vk_record.h → nvn_obj.h …：正式编译里这些目录由
+                        # #868：bridge.cpp 引 direct/*.h 等（旧层 nvn_vk_first_draw.h 已删，#1501）：正式编译里这些目录由
                         #   直连目标（core-link/NvnDirect.cmake s2a_android_direct_core 的 includes）给，这里照抄同一份
                         '-I', ROOT / 'graphics/nvn/gfx/nvn', '-I', ROOT / 'graphics/nvn/gfx/nvn/include', '-I', ROOT / 'graphics/nvn',
                         '-I', ROOT / 'graphics/nvn/host', '-I', ROOT / 'graphics/nvn/gfx/tex', '-I', ANDROID / 'native/nvn',
                         '-I', ANDROID / 'native/nvn/compat', '-I', ANDROID / 'native/direct',
                         '-I', ROOT / 'graphics/track']
         for mode, extra in (('diagnostic', []), ('game', ['-DS2A_ANDROID_GAME_RUNTIME=1'])):
-            run([ndk / 'aarch64-linux-android29-clang++', *bridge_flags, *extra, '-c',
+            run([ndk / 'aarch64-linux-android34-clang++', *bridge_flags, *extra, '-c',
                  ANDROID / 'native/bridge.cpp', '-o', temp / (mode + '-bridge.o')])
         print('diagnostic and game bridge: NDK real C++ compilation passed')
         listing = temp / 'sources.txt'
@@ -91,7 +91,7 @@ def main():
             if source not in sources:
                 continue
             obj = temp / (source.stem + '.o')
-            run([ndk / 'aarch64-linux-android29-clang', *flags, '-c', source, '-o', obj])
+            run([ndk / 'aarch64-linux-android34-clang', *flags, '-c', source, '-o', obj])
             objects.append(obj)
         linked = temp / 'core.o'
         run([ndk / 'ld.lld', '-r', *objects, '-o', linked])
@@ -105,7 +105,7 @@ def main():
         # 开关口径 Apple / Android 相同（#48 D2：不设 S2A_CPATCH_ON 按表缺省开），一份宿主单测覆盖目录与 APK 内存表两条装载路
         exe = temp / 't_cpatch'
         run([*host_cc, '-std=gnu11', '-I', ROOT / 'runtime/include',
-             ROOT / 'runtime/tests/t_cpatch.c', ROOT / 'runtime/src/cpatch.c', '-o', exe])
+             ROOT / 'runtime/tests/t_cpatch.c', ROOT / 'runtime/src/cpatch.c', '-o', exe, '-lm'])   # cpatch.c 用 lround / log：Linux 宿主要显式链 libm（macOS 在 libSystem 里，-lm 照样认）
         print(run([exe]).strip())
     return 0
 

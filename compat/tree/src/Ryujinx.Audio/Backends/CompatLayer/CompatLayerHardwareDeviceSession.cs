@@ -61,7 +61,9 @@ namespace Ryujinx.Audio.Backends.CompatLayer
         {
             SampleFormat realSampleFormat = _realSession.RequestedSampleFormat;
 
-            if (_userSampleFormat != realSampleFormat)
+            // Guest buffers are converted as the device reads them (ReadSamples, any guest format); only samples already in Data
+            // (renderer output, PCM16) are converted here
+            if (_userSampleFormat != realSampleFormat && buffer.Data != null)
             {
                 if (_userSampleFormat != SampleFormat.PcmInt16)
                 {
@@ -73,21 +75,17 @@ namespace Ryujinx.Audio.Backends.CompatLayer
                     throw new NotImplementedException($"Sample format conversion from {_userSampleFormat} to {realSampleFormat} not implemented.");
                 }
 
-                // Guest buffers are converted as the device reads them (ReadSamples); only samples already in Data are converted here
-                if (buffer.Data != null)
+                ReadOnlySpan<short> samples = MemoryMarshal.Cast<byte, short>(buffer.Data);
+                int convertedSize = BackendHelper.GetSampleSize(realSampleFormat) * samples.Length;
+
+                if (_convertedData == null || _convertedData.Length != convertedSize)
                 {
-                    ReadOnlySpan<short> samples = MemoryMarshal.Cast<byte, short>(buffer.Data);
-                    int convertedSize = BackendHelper.GetSampleSize(realSampleFormat) * samples.Length;
-
-                    if (_convertedData == null || _convertedData.Length != convertedSize)
-                    {
-                        _convertedData = new byte[convertedSize];
-                    }
-
-                    ConvertSamples(samples, _convertedData);
-
-                    buffer.Data = _convertedData;
+                    _convertedData = new byte[convertedSize];
                 }
+
+                ConvertSamples(samples, _convertedData);
+
+                buffer.Data = _convertedData;
             }
 
             _realSession.QueueBuffer(buffer);
@@ -102,11 +100,6 @@ namespace Ryujinx.Audio.Backends.CompatLayer
 
             if (_downmix)
             {
-                if (_userSampleFormat != SampleFormat.PcmInt16)
-                {
-                    throw new NotImplementedException("Downmixing formats other than PCM16 is not supported.");
-                }
-
                 if (_userChannelCount != 6 && !(_userChannelCount == 2 && _realSession.RequestedChannelCount == 1))
                 {
                     throw new NotImplementedException($"Downmixing from {_userChannelCount} to {_realSession.RequestedChannelCount} not implemented.");
@@ -124,7 +117,8 @@ namespace Ryujinx.Audio.Backends.CompatLayer
 
         public override void ReadSamples(AudioBuffer buffer, ulong offset, Span<byte> destination)
         {
-            Span<byte> input = stackalloc byte[UnitsPerChunk * 6 * sizeof(short)];
+            Span<byte> input = stackalloc byte[UnitsPerChunk * 6 * sizeof(float)];
+            Span<short> decoded = stackalloc short[UnitsPerChunk * 6];
             Span<short> stereo = stackalloc short[UnitsPerChunk * 2];
             Span<short> mono = stackalloc short[UnitsPerChunk];
             Span<byte> output = stackalloc byte[UnitsPerChunk * 2 * sizeof(float)];
@@ -139,7 +133,11 @@ namespace Ryujinx.Audio.Backends.CompatLayer
 
                 MemoryManager.Read(buffer.DataPointer + unit * (ulong)_unitInSize, inBytes);
 
-                ReadOnlySpan<short> samples = MemoryMarshal.Cast<byte, short>(inBytes);
+                // S2Arm: guest samples in another format (audsmx external streams: PcmInt8 / PcmInt32 / PcmFloat) are decoded to PCM16
+                //   first; the downmix and the conversion to the device format below work on PCM16
+                ReadOnlySpan<short> samples = _userSampleFormat == SampleFormat.PcmInt16
+                    ? MemoryMarshal.Cast<byte, short>(inBytes)
+                    : PcmHelper.DecodeToPcm16(_userSampleFormat, inBytes, decoded);
 
                 if (_downmix)
                 {
@@ -160,7 +158,7 @@ namespace Ryujinx.Audio.Backends.CompatLayer
 
                 Span<byte> outBytes = output[..(units * _unitOutSize)];
 
-                if (_userSampleFormat != _realSession.RequestedSampleFormat)
+                if (_realSession.RequestedSampleFormat != SampleFormat.PcmInt16)
                 {
                     ConvertSamples(samples, outBytes);
                 }

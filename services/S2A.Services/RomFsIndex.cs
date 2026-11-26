@@ -9,6 +9,7 @@ using System.Threading;
 using System.Collections.Generic;
 using System.IO;
 using System.Text;
+using System.Runtime.InteropServices;
 using Path = System.IO.Path;
 
 namespace S2A.Services
@@ -318,8 +319,15 @@ namespace S2A.Services
         //   按 romfs.s2aidx 的文件顺序给每个文件在 game.img 里的绝对偏移，-1 = 读界面覆盖层。和 romfs.s2aidx 一起在就走单文件镜像同一条预建路径（IndexedStorage），
         //   起局不重建 RomFS 目录表（11-11 真机对比：有覆盖层时 RomFsBuilder 重建约 10 万条目 138.6 ms，预建路径 7.9 ms）
         public const string ImgMapName = "game.imgmap";
+        // 一款一份资源（0.6.0）：Mac 运行目录 image/mac 不再放 romfs.std，放一个 game.img——它是 iPhone 资源包 .pack/game.img 的硬链接（同一个文件）。
+        //   Mac 目录不放偏移表 / 索引：起局走下面现建那条（同原先 romfs.std 的 OpenStd：没有覆盖层直接交 RomFS 段，有覆盖层按 IMG 目录表里的 romfs.list 现建），
+        //   起局耗时与原先一致；Mac 的界面覆盖层在 ui_overlay/romfs，由调用方传进来
         private static ReadOnlySpan<byte> ImgMagic => "S2AIMG01"u8;
-        public static IStorage OpenImg(string programDir)
+
+        public static IStorage OpenImg(string programDir) => OpenImg(programDir, null);
+
+        /// <summary>overlayDir：界面覆盖层目录（Mac = ui_overlay/romfs）；null = 本目录的 romfs_overlay（iPhone 资源包）</summary>
+        public static IStorage OpenImg(string programDir, string overlayDir)
         {
             string path = Path.Combine(programDir, ImgName);
             if (!File.Exists(path)) return null;
@@ -327,7 +335,7 @@ namespace S2A.Services
             byte[] hdr = new byte[136];
             if (RandomAccess.Read(h, hdr, 0) != hdr.Length || !hdr.AsSpan(0, 8).SequenceEqual(ImgMagic)) { h.Dispose(); throw new InvalidDataException($"不是 S2Arm 资源包 IMG：{path}"); }
             uint fmt = BitConverter.ToUInt32(hdr, 8);
-            if (fmt != 1) { h.Dispose(); throw new InvalidDataException($"资源包 IMG 格式号 {fmt}，这个 S2Arm 只认 1：请更新 S2Arm（{path}）"); }
+            if (fmt != 1) Red.Waive($"资源包 IMG 格式号 {fmt}，这个 S2Arm 只认 1，按 1 照常读（出问题先更新 S2Arm）", path);   // 11-17 维护者：校验不过不整个拒，黄字照常继续
             long ro = BitConverter.ToInt64(hdr, 96), rl = BitConverter.ToInt64(hdr, 104), to = BitConverter.ToInt64(hdr, 112), tl = BitConverter.ToInt64(hdr, 120), total = BitConverter.ToInt64(hdr, 128);
             if (RandomAccess.GetLength(h) != total || rl <= 0)
             {
@@ -335,9 +343,9 @@ namespace S2A.Services
                 // 推到一半（审计 P1-170）：旁边还有旧形态的 romfs/ 目录就退回读它（同单文件镜像不完整时）；没有就是资源确实没传完，
                 //   物理上起不了：抛错让会话失败，宿主按事实归到「游戏文件缺失，请在电脑上重新装到 iPhone」（init_fail.c），不再报「缺 romfs/」后照样起空数据
                 if (Directory.Exists(Path.Combine(programDir, "romfs"))) { Red.Report($"资源包 IMG 不完整（{have} / {total} 字节，多半推到一半），这局改读 romfs/ 目录", path); return null; }
-                throw new InvalidDataException($"资源包 IMG 没传完（{have} / {total} 字节）：请在电脑上的 S2Arm 里对这款游戏重新「装到 iPhone」（{path}）");
+                throw new InvalidDataException($"资源包 IMG 没传完（{have} / {total} 字节）：请在电脑上的 S2Arm 里对这款游戏重新「推到 iPhone」（{path}）");
             }
-            Dictionary<string, string> overlay = OverlayFiles(Path.Combine(programDir, ImageOverlayDir));
+            Dictionary<string, string> overlay = OverlayFiles(overlayDir ?? Path.Combine(programDir, ImageOverlayDir));
             string map = Path.Combine(programDir, ImgMapName), index = Path.Combine(programDir, FileName);
             if (File.Exists(map) && File.Exists(index))
             {
@@ -497,6 +505,21 @@ namespace S2A.Services
         }
 
         // 文件句柄上的一段只读区间：RandomAccess 按偏移读，多线程安全、不经 FileStream 读位置（同 IndexedStorage 读镜像的做法）
+        // 外部游戏来源（11-22，iOS 游戏库设置里加的来源文件夹，如外接硬盘）：game.img 是指向外部文件的软链接，玩到一半拔盘 → 读盘抛 IOException（不是 EFAULT）。
+        //   不把读失败交回游戏（游戏拿着读失败往下跑会崩成乱象）：交宿主停局页（ios/app.m s2a_ios_game_data_lost：冻游戏线程、说清原因、存档在 App 里不受影响），
+        //   这条读线程停在这里不再返回（本局已终止，玩家从后台划掉再开）。宿主没有这个入口（Mac、单测）→ 回读失败，同原先
+        private static int _sourceLost;
+        internal static unsafe Result SourceLost(IOException e, string what)
+        {
+            if (Interlocked.Exchange(ref _sourceLost, 1) == 0) Console.Error.WriteLine($"[S2A RomFS] 【红】{what}读不到了（{e.Message}）：游戏数据所在的盘断开或文件被挪走");
+            if (NativeLibrary.TryGetExport(NativeLibrary.GetMainProgramHandle(), "s2a_ios_game_data_lost", out nint p))   // 平台例外：只有 iOS 壳（ios/app.m）有停局页，Mac 与单测没有这个导出
+            {
+                fixed (byte* m = Encoding.UTF8.GetBytes(e.Message + "\0")) ((delegate* unmanaged<byte*, void>)p)(m);
+                Thread.Sleep(Timeout.Infinite);
+            }
+            return ResultFs.HostFileDataCorrupted.Value;
+        }
+
         private sealed class HandleRange : IStorage
         {
             private readonly Microsoft.Win32.SafeHandles.SafeFileHandle _h; private readonly long _off, _len;
@@ -515,6 +538,7 @@ namespace S2A.Services
                         return LazyHostFile.ReadViaBounce(_h, left, _off + offset + got, "RomFS 镜像", out long bounced) && bounced == left.Length
                             ? Result.Success : ResultFs.HostFileDataCorrupted.Value;
                     }
+                    catch (IOException e) { return SourceLost(e, "RomFS 镜像"); }
                     if (n <= 0) return ResultFs.OutOfRange.Value;
                     got += n;
                 }
@@ -552,8 +576,8 @@ namespace S2A.Services
         public static Source Decide(bool imageOpened, bool imageFileExists, bool romfsDirExists, string programDir)
         {
             if (imageOpened) return Source.Image;
-            if (imageFileExists && !romfsDirExists)
-                throw new InvalidDataException($"RomFS 单文件镜像不完整（长度与对照表不符或缺对照表 / 索引，多半推到一半），也没有 romfs/ 可退：{programDir}；请重新装到 iPhone");
+            if (imageFileExists && !romfsDirExists)   // 11-17 维护者：不整个拒——黄字记下、照常开局，游戏读不到文件时按原因报（报红带上这条）
+                Red.Waive("RomFS 单文件镜像不完整（长度与对照表不符或缺对照表 / 索引，多半推到一半），也没有 romfs/ 可退，照常开局（可能缺文件或闪退，重新装到 iPhone 可解）", programDir);
             return romfsDirExists ? Source.Directory : Source.Missing;
         }
 
@@ -763,6 +787,7 @@ namespace S2A.Services
                             if (!LazyHostFile.ReadViaBounce(_image, left, at, "RomFS 镜像", out long got) || got != left.Length)
                                 return ResultFs.HostFileDataCorrupted.Value;
                         }
+                        catch (IOException e) { return SourceLost(e, "RomFS 镜像"); }
                     }
                     else if (_ref[i] >= 0)
                     {

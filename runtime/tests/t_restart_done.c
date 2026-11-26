@@ -7,6 +7,7 @@
 //   ② 再重启、请求方不带回调（同游戏发起时服务层以外的发起方）：登记点再调 1 次（代号 3）——登记跨重启存活，不随会话复位清
 //   ③ 登记 NULL 后重启：登记点不调，请求回调照常 0
 //   ④ 重新登记、重建失败：登记点不调；请求回调 -1；日志有「【红】进程内重启失败」
+// 等事件的上限只当兜底（11-19：原先 1～5 秒，负载高时线程没跑到就判红 → 一律 30 秒，正常时一到就返回）
 #include "../src/native.h"
 #include "s2a_session.h"
 #include <dispatch/dispatch.h>
@@ -75,7 +76,7 @@ static int restart(int with_cb) {
     reset_counts();
     int rc = s2a_host_restart(with_cb ? request_cb : NULL, NULL);
     if (rc) return rc;
-    return dispatch_semaphore_wait(with_cb ? g_done : g_obs_done, dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC)) ? -100 : 0;
+    return dispatch_semaphore_wait(with_cb ? g_done : g_obs_done, dispatch_time(DISPATCH_TIME_NOW, 30 * NSEC_PER_SEC)) ? -100 : 0;
 }
 
 int main(void) {

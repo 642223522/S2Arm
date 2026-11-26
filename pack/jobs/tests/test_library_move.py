@@ -1,5 +1,6 @@
 """换游戏库：打开已有的、认领旧产物、搬家（同盘 / 跨盘）和失败回滚。"""
 import hashlib
+import jobcase  # noqa: E402（作业上下文替身统一工厂 jobcase.fake_context）
 import json
 import os
 import sys
@@ -32,7 +33,7 @@ class MoveTests(unittest.TestCase):
 
     def ctx(self, library_path, **request):
         notes = []
-        c = SimpleNamespace(library=library_path, private=self.private, engine=self.root / "engine", r=request, begin=lambda *a, **k: None, check=lambda: None,
+        c = jobcase.fake_context(self.root, library=library_path, private=self.private, engine=self.root / "engine", r=request, begin=lambda *a, **k: None, check=lambda: None,
                             progress=lambda *a: None, redact=lambda s: s, diagnostic=lambda m, **k: notes.append(m), notes=notes,
                             emit=lambda *a, **k: None, lock_wait=0.3, task="t1", operation="setup")
         c.lock_holder, c.lock = MethodType(core.Context.lock_holder, c), MethodType(core.Context.lock, c)   # 库锁走真实现（剃刀 H2：搬家锁旧库同一语义）
@@ -171,7 +172,7 @@ class MoveTests(unittest.TestCase):
     def test_setup_does_not_adopt_logs_of_a_plain_folder(self):
         import layout
         folder = self.root / "picked"; (folder / "logs").mkdir(parents=True); (folder / "logs" / "mine.txt").write_text("玩家自己的")
-        layout.adopt_library_logs(SimpleNamespace(library=folder, private=self.private, logs=self.private / "logs"))
+        layout.adopt_library_logs(jobcase.fake_context(self.root, library=folder, private=self.private, logs=self.private / "logs"))
         self.assertEqual((folder / "logs" / "mine.txt").read_text(), "玩家自己的")   # 还不是游戏库：logs 是玩家自己的东西，不收
 
     def test_opens_existing_library(self):

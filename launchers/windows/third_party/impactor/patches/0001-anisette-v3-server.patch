@@ -1,0 +1,165 @@
+diff --git a/3rdparty/omnisette/src/lib.rs b/3rdparty/omnisette/src/lib.rs
+index 69b8684..71f46c7 100755
+--- a/3rdparty/omnisette/src/lib.rs
++++ b/3rdparty/omnisette/src/lib.rs
+@@ -59,6 +59,23 @@ pub const DEFAULT_ANISETTE_URL: &str = "https://ani.f1sh.me/";
+ 
+ pub const DEFAULT_ANISETTE_URL_V3: &str = "https://mac-ani.jkcoxson.com";
+ 
++// S2Arm: the default v3 server reports "<Mac OS X;10.12.6>" as X-Mme-Client-Info and Apple rejects some accounts with
++// "-23782 A Mac with macOS 10.13 or later is required". Switching servers for everyone would expire every saved session
++// (Apple ties sessions to the anisette server), so the fallback is used only after that rejection and is then remembered
++// per data folder in V3_URL_FILE. ani.sidestore.io reports macOS 13.1.
++pub const FALLBACK_ANISETTE_URL_V3: &str = "https://ani.sidestore.io";
++pub const V3_URL_FILE: &str = "anisette-v3-url";
++
++/// S2Arm: provisioning state file for a v3 server ("state.plist" for the default one)
++pub fn state_file_name(url: &str) -> String {
++    if url.trim_end_matches('/') == DEFAULT_ANISETTE_URL_V3 {
++        return "state.plist".to_string();
++    }
++    let host: String = url.split("://").last().unwrap_or(url).trim_end_matches('/')
++        .chars().map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '-' { c } else { '_' }).collect();
++    format!("state-{host}.plist")
++}
++
+ #[derive(Clone, Debug)]
+ pub struct AnisetteConfiguration {
+     anisette_url: String,
+@@ -101,6 +118,24 @@ impl AnisetteConfiguration {
+         self
+     }
+ 
++    /// S2Arm: the v3 server in use for this data folder (V3_URL_FILE overrides the default)
++    pub fn effective_anisette_url_v3(&self) -> String {
++        std::fs::read_to_string(self.configuration_path.join(V3_URL_FILE))
++            .ok()
++            .map(|s| s.trim().to_string())
++            .filter(|s| !s.is_empty())
++            .unwrap_or_else(|| self.anisette_url_v3.clone())
++    }
++
++    /// S2Arm: remember the fallback v3 server for this data folder → true if it switched (false if already on it / cannot write)
++    pub fn switch_to_fallback_v3(&self) -> bool {
++        if self.effective_anisette_url_v3() == FALLBACK_ANISETTE_URL_V3 {
++            return false;
++        }
++        let _ = std::fs::create_dir_all(&self.configuration_path);
++        std::fs::write(self.configuration_path.join(V3_URL_FILE), FALLBACK_ANISETTE_URL_V3).is_ok()
++    }
++
+     pub fn set_configuration_path(mut self, configuration_path: PathBuf) -> AnisetteConfiguration {
+         self.configuration_path = configuration_path;
+         self
+@@ -147,7 +182,7 @@ impl AnisetteHeaders {
+         #[cfg(feature = "remote-anisette-v3")]
+         return Ok(AnisetteHeadersProviderRes::remote(Box::new(
+             remote_anisette_v3::RemoteAnisetteProviderV3::new(
+-                configuration.anisette_url_v3,
++                configuration.effective_anisette_url_v3(),
+                 configuration.configuration_path.clone(),
+                 configuration.macos_serial.clone(),
+             ),
+diff --git a/3rdparty/omnisette/src/remote_anisette_v3.rs b/3rdparty/omnisette/src/remote_anisette_v3.rs
+index 0b171f3..4442998 100755
+--- a/3rdparty/omnisette/src/remote_anisette_v3.rs
++++ b/3rdparty/omnisette/src/remote_anisette_v3.rs
+@@ -495,7 +495,8 @@ impl AnisetteHeadersProvider for RemoteAnisetteProviderV3 {
+ 
+         fs::create_dir_all(&self.configuration_path)?;
+ 
+-        let config_path = self.configuration_path.join("state.plist");
++        // S2Arm: provisioning state per server; the default server keeps "state.plist" (existing data stays valid)
++        let config_path = self.configuration_path.join(crate::state_file_name(&self.client_url));
+         if self.state.is_none() {
+             self.state = Some(if let Ok(text) = plist::from_file(&config_path) {
+                 text
+diff --git a/apps/plumeimpactor/src/screen/settings.rs b/apps/plumeimpactor/src/screen/settings.rs
+index c2d1aa5..de10c35 100644
+--- a/apps/plumeimpactor/src/screen/settings.rs
++++ b/apps/plumeimpactor/src/screen/settings.rs
+@@ -93,8 +93,15 @@ impl SettingsScreen {
+             Message::SelectTeam(_, _) => Task::none(),
+             Message::SelectLocale(_) => Task::none(),
+             Message::ResetAnisetteData => {
+-                let path = crate::defaults::get_data_path().join("state.plist");
+-                let _ = std::fs::remove_file(path);
++                // S2Arm: provisioning state is per anisette server (state.plist, state-<host>.plist)
++                if let Ok(entries) = std::fs::read_dir(crate::defaults::get_data_path()) {
++                    for e in entries.flatten() {
++                        let name = e.file_name().to_string_lossy().to_string();
++                        if name.starts_with("state") && name.ends_with(".plist") {
++                            let _ = std::fs::remove_file(e.path());
++                        }
++                    }
++                }
+                 Task::none()
+             }
+             _ => Task::none(),
+diff --git a/crates/plume_core/src/auth/account/login.rs b/crates/plume_core/src/auth/account/login.rs
+index 1f2fa76..c5bdc38 100644
+--- a/crates/plume_core/src/auth/account/login.rs
++++ b/crates/plume_core/src/auth/account/login.rs
+@@ -49,8 +49,21 @@ impl Account {
+         tfa_closure: impl Fn(TwoFactorRequest) -> Result<TwoFactorAction, String>,
+         config: AnisetteConfiguration,
+     ) -> Result<Account, Error> {
+-        let anisette = AnisetteData::new(config).await?;
+-        Account::login_with_anisette(appleid_closure, tfa_closure, anisette).await
++        // S2Arm: credentials are asked once (plumesign reads the password from stdin) and reused for the fallback retry
++        let cached: std::sync::Mutex<Option<Result<(String, String), String>>> = std::sync::Mutex::new(None);
++        let creds = || {
++            let mut c = cached.lock().unwrap();
++            if c.is_none() {
++                *c = Some(appleid_closure());
++            }
++            c.clone().unwrap()
++        };
++        let who = || creds().map(|(u, _)| u).unwrap_or_default();
++        login_with_anisette_fallback(config, who, |config| async {
++            let anisette = AnisetteData::new(config).await?;
++            Account::login_with_anisette(&creds, &tfa_closure, anisette).await
++        })
++        .await
+     }
+ 
+     pub async fn login_with_anisette<
+@@ -299,3 +312,28 @@ impl Account {
+         locked.clone()
+     }
+ }
++
++/// S2Arm: log in on the data folder's anisette v3 server; "-23782 A Mac with macOS 10.13 or later is required" there →
++/// remember the fallback server for this data folder (omnisette FALLBACK_ANISETTE_URL_V3), log one line, retry once on it.
++/// `attempt` logs in once with the given configuration (tests pass a fake).
++pub async fn login_with_anisette_fallback<T, A, Fut>(
++    config: AnisetteConfiguration,
++    who: impl Fn() -> String,
++    attempt: A,
++) -> Result<T, Error>
++where
++    A: Fn(AnisetteConfiguration) -> Fut,
++    Fut: std::future::Future<Output = Result<T, Error>>,
++{
++    let from = config.effective_anisette_url_v3();
++    match attempt(config.clone()).await {
++        Err(Error::AuthSrpWithMessage(-23782, msg)) if config.switch_to_fallback_v3() => {
++            log::warn!(
++                "S2Arm anisette fallback: account {} rejected on {} (SRP -23782: {}); switching this data folder to {} and retrying",
++                who(), from, msg, omnisette::FALLBACK_ANISETTE_URL_V3
++            );
++            attempt(config).await
++        }
++        r => r,
++    }
++}
+diff --git a/crates/plume_core/src/auth/account/mod.rs b/crates/plume_core/src/auth/account/mod.rs
+index 142b9a2..f77a8ec 100644
+--- a/crates/plume_core/src/auth/account/mod.rs
++++ b/crates/plume_core/src/auth/account/mod.rs
+@@ -1,4 +1,5 @@
+ mod login;
++pub use login::login_with_anisette_fallback;   // S2Arm: anisette v3 fallback on SRP -23782
+ mod token;
+ mod two_factor_auth;
+ 

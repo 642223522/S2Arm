@@ -23,8 +23,7 @@ namespace S2A.Services
     // 起 Ryujinx 的 Switch 侧（HLE / Horizon / 声音 / 显卡逻辑），不建 Ryujinx 的游戏进程：游戏由原生层原生执行。
     public static class Host
     {
-        // 主机 / 掌机档（维护者 10-20 晚：「那就把开关调回掌机档吧，不让咱们被困在这里无法推进」；主机档保留作可选项）。
-        //   缺省掌机：DockedMode 假（apm 性能模式 / 操作模式 / 变更事件都由 Ryujinx 按它回答）；外接手柄样式独立由 InputPump 配置。S2A_DOCKED=1 只切主机档及初始手柄配置。
+        // 主机 / 掌机档影响性能、显示参数与手柄样式；游戏看到的运行模式另外在本地多人时回主机（Horizon.S2ASetLocalMultiplayer，输入泵按实接手柄数报）。
         private static Lazy<bool> LegacyDocked = new(() => Environment.GetEnvironmentVariable("S2A_DOCKED") == "1");
         private static Lazy<SystemLanguage> LegacyLanguage = new(PickLanguage);
         internal static void ResumeAudioForShutdown()
@@ -86,7 +85,8 @@ namespace S2A.Services
         }
 
         // 本地无线联机中继地址（IP 或主机名，端口缺省 Ryujinx LanPlayPort 30456，单测改到临时端口：S2AHooks.LdnPort）：Mac 多开给 127.0.0.1，第一个起来的进程托管中继、其余连它；
-        //   S2A_LDN_RELAY=1 时非回环地址也就地托管（手机局域网当主机）。不给 = 不联机
+        //   S2A_LDN_RELAY=1 显式托管，=0 只当客户端；S2A_LDN_LISTEN 独立指定监听地址。
+        //   未指定服务器时保留按需平台发现；显式服务器跳过发现与选举。
         public static string LdnServer { get; } = string.IsNullOrEmpty(Environment.GetEnvironmentVariable("S2A_LDN_SERVER")) ? null : Environment.GetEnvironmentVariable("S2A_LDN_SERVER");
         // 局域网模式（同一 Wi-Fi 多台设备，ios/ldn_lan.m）：每台都在全部网卡上托管中继并用 Bonjour 发布，大家按同一规则选出同一台中继，
         //   原生层经 S2A_LdnSetServer 随时改指，游戏下一次建房 / 加入（ldn:u OpenAccessPoint / OpenStation）用新地址。
@@ -108,12 +108,42 @@ namespace S2A.Services
         //   2 有 provider 但程序号 / 端口无效或启动返回失败。界面经 S2A_LanState（LdnExports）读，非 0 就给玩家说明（Mac：front_mac.m 横幅）
         internal static int LanUnavailable => System.Threading.Volatile.Read(ref _lanUnavailable);
         private static int _lanUnavailable;
+        // Switch-compatible local wireless: ldn_mitm uses UDP/TCP 11452 and does not
+        // need the native provider that Mac hosts do not register.
+        internal static bool LdnMitmRequested =>
+            string.Equals(Environment.GetEnvironmentVariable("S2A_LDN_MITM"), "1", StringComparison.Ordinal);
+        internal static bool LdnAutoRequested =>
+            !LdnMitmRequested &&
+            LdnServer == null &&
+            !string.Equals(Environment.GetEnvironmentVariable("S2A_LDN_AUTO"), "0", StringComparison.Ordinal);
+
+        // 游戏初始化 ldn:u 时要不要先不碰网络（自动模式、这一局还没起过）：很多游戏开局就初始化 ldn:u、根本不进本地联机（动森标题画面前），
+        //   原先在这一刻起局域网发现 / 中继 / ldn_mitm 套接字，所有玩家一开游戏就被弹「本地网络」授权框。推迟到游戏第一次扫描 / 建房 / 进站点
+        //   （IUserLocalCommunicationService.S2AActivateLan 调 OnLdnInitializing）。显式给了中继地址 / ldn_mitm 的开发局照旧在初始化时起
+        internal static bool LdnDeferInit() { lock (_lanLock) return LdnAutoRequested && !_lanSessionStopped && !LdnAutoTried; }
 
         // 游戏初始化 ldn:u：按需启动已登记的平台发现；显式中继地址不自动发现。
-        internal static void OnLdnInitializing()
+        internal static unsafe void OnLdnInitializing()
         {
             lock (_lanLock)
             {
+                if (LdnMitmRequested)
+                {
+                    LdnAutoTried = true;
+                    Logger.SetEnable(LogLevel.NetLog, true);
+                    Console.Error.WriteLine("[S2A 联机] 游戏初始化 ldn:u：使用 Switch ldn_mitm 局域网协议（UDP/TCP 11452）");
+                    return;
+                }
+
+                // 自动模式（#2134 起缺省开）：宿主有平台局域网发现（iOS 登记了 provider）时照旧「发现 → RyuLDN 中继」，iPhone 之间的局域网联机走这条；
+                //   没有平台发现（Mac 不登记 provider）、或发现起不来时才用 Switch ldn_mitm 协议。#2134 原先自动模式一律 ldn_mitm，
+                //   iOS 的发现 / 选举 / 托管中继整条不走了（services/gate.sh LdnRelayTest 8 项不符）
+                if (LdnAutoRequested && Native.LanDiscovery == null)
+                {
+                    UseAutoMitm("宿主没有平台局域网发现");
+                    return;
+                }
+
                 if (_lanSessionStopped || LdnAutoTried || LdnServer != null)
                 {
                     return;
@@ -121,13 +151,32 @@ namespace S2A.Services
 
                 LdnAutoTried = true;
 
-                if (!StartLanDiscovery()) return;
+                if (!StartLanDiscovery())
+                {
+                    if (LdnAutoRequested) UseAutoMitm("平台局域网发现起不来");
+                    return;
+                }
+                Ryujinx.HLE.S2AHooks.LdnPlatformDiscovery = true;   // ldn:u 照旧建 RyuLDN 中继客户端（不建双协议自动客户端）
 
                 Logger.SetEnable(LogLevel.NetLog, true);
                 StartLdnRelay();
                 ApplyLanSelection();
                 Console.Error.WriteLine($"[S2A 联机] 游戏初始化 ldn:u：自动进入局域网模式，先用中继 {Device.Configuration.MultiplayerLdnServer}（Bonjour 选举结果在建房 / 加入时生效）");
             }
+        }
+
+        // 自动模式退到 Switch ldn_mitm 协议（UDP/TCP 11452）：调用方持 _lanLock
+        private static void UseAutoMitm(string why)
+        {
+            LdnAutoTried = true;
+            Ryujinx.HLE.S2AHooks.LdnPlatformDiscovery = false;
+            Logger.SetEnable(LogLevel.NetLog, true);
+            if (Device != null)
+            {
+                Device.Configuration.MultiplayerMode = MultiplayerMode.LdnMitm;
+                Device.Configuration.MultiplayerLdnServer = string.Empty;
+            }
+            Console.Error.WriteLine($"[S2A 联机] 游戏初始化 ldn:u：自动模式使用 ldn_mitm（UDP/TCP 11452）：{why}");
         }
 
         // Host session retirement is terminal even though the platform provider
@@ -139,6 +188,7 @@ namespace S2A.Services
                 if (_lanStopping || _lan) throw new InvalidOperationException("上一联机会话未停止");
                 _lanSessionStopped = false;
                 LdnAutoTried = false;
+                Ryujinx.HLE.S2AHooks.LdnPlatformDiscovery = false;
             }
         }
 
@@ -229,6 +279,13 @@ namespace S2A.Services
             lock (_ldnSelectionLock)
             {
                 if (Device == null) return;
+                if (LdnMitmRequested ||
+                    (LdnAutoRequested && Device.Configuration.MultiplayerMode == MultiplayerMode.LdnMitm))
+                {
+                    Device.Configuration.MultiplayerMode = MultiplayerMode.LdnMitm;
+                    Device.Configuration.MultiplayerLdnServer = string.Empty;
+                    return;
+                }
                 Device.Configuration.MultiplayerMode = _ldnSelectionAvailable ? MultiplayerMode.LdnRyu : MultiplayerMode.Disabled;
                 Device.Configuration.MultiplayerLdnServer = _ldnSelectionAvailable ? (_ldnServerNow ?? "127.0.0.1") : string.Empty;
             }
@@ -246,6 +303,11 @@ namespace S2A.Services
         {
             System.Net.IPAddress address;
 
+            if (LdnMitmRequested)
+            {
+                return;
+            }
+
             if (_ldnRelay != null)
             {
                 return;
@@ -256,12 +318,23 @@ namespace S2A.Services
                 address = System.Net.IPAddress.Any;   // 局域网：别的设备要连得进来
             }
             else if (LdnServer == null || !System.Net.IPAddress.TryParse(LdnServer, out address) ||
-                !(System.Net.IPAddress.IsLoopback(address) || Environment.GetEnvironmentVariable("S2A_LDN_RELAY") == "1"))
+                !(Environment.GetEnvironmentVariable("S2A_LDN_RELAY") == "1" ||
+                  (System.Net.IPAddress.IsLoopback(address) && Environment.GetEnvironmentVariable("S2A_LDN_RELAY") != "0")))
             {
                 return;
             }
 
-            string where = LdnLan ? "全部网卡" : LdnServer;
+            // 连接目标与监听网卡独立：本机游戏连回环，远端玩家可经公网 / VPN IPv4 接入。
+            // 未指定时保留旧行为；自动发现仍始终监听全部网卡。
+            string listen = Environment.GetEnvironmentVariable("S2A_LDN_LISTEN");
+            if (!LdnLan && !string.IsNullOrEmpty(listen) &&
+                !System.Net.IPAddress.TryParse(listen, out address))
+            {
+                Console.Error.WriteLine($"[S2A 联机] 无效的中继监听地址：{listen}");
+                return;
+            }
+
+            string where = address.ToString();
             _ldnRelay = LdnRelay.TryHost(address, Ryujinx.HLE.S2AHooks.LdnPort);
             Console.Error.WriteLine(_ldnRelay != null ? $"[S2A 联机] 本进程托管中继 {where}:{Ryujinx.HLE.S2AHooks.LdnPort}" : $"[S2A 联机] 中继 {where}:{Ryujinx.HLE.S2AHooks.LdnPort} 已由别的进程托管，本进程只当客户端");
 
@@ -331,6 +404,7 @@ namespace S2A.Services
             HorizonHost.Reset();
             GuestMemory.ResetSession();
             Application.Reset();
+            LocalPlayer.ResetSession();
             Aoc.Reset();
             SystemDataSeen.Clear();
             Ryujinx.HLE.S2ASessionState.End();
@@ -648,7 +722,7 @@ namespace S2A.Services
             Logger.SetEnable(LogLevel.Debug, false);
             Logger.SetEnable(LogLevel.Stub, true);   // 上游 Logger 缺省不建 Stub 级（Logger.Stub 为 null），不开就一条桩都收不到、汇总行假空
             Logger.SetEnable(LogLevel.Guest, true);  // 游戏经 lm 写的日志（八方2 SDK 初始化自退的原因就写在里面），排查常要，量小
-            Logger.SetEnable(LogLevel.NetLog, LdnServer != null);   // 开了联机才打：RyuLdn 客户端连上 / 断开 / 出错只在这一级（排查中继连不上、扫描没结果）
+            Logger.SetEnable(LogLevel.NetLog, LdnMitmRequested || LdnAutoRequested || LdnServer != null);   // 开了联机才打：RyuLdn 客户端连上 / 断开 / 出错只在这一级（排查中继连不上、扫描没结果）
             if (!_loggerInstalled)
             {
                 Logger.Updated += static (_, e) =>
@@ -660,6 +734,7 @@ namespace S2A.Services
 
             Ryujinx.HLE.S2AHooks.Red = static what => Red.Report(what);
             Ryujinx.HLE.S2AHooks.LdnInitializing = OnLdnInitializing;   // 游戏第一次初始化 ldn:u → 按需进局域网模式（见 OnLdnInitializing）
+            Ryujinx.HLE.S2AHooks.LdnDeferInit = LdnDeferInit;   // 自动模式：初始化不碰网络，游戏第一次扫描 / 建房 / 进站点才跑 OnLdnInitializing
             // fs 命令失败（上游原样把结果回给游戏、不打日志；游戏不查结果就会在远处崩，如 10-26 普查双点医院开文件失败后拿空文件对象写存档）
             Ryujinx.HLE.S2AHooks.FsFailed = static (what, detail, red) =>
             {
@@ -743,7 +818,7 @@ namespace S2A.Services
             AccountManager account = new(libHac.RyujinxClient, null);
             UserChannelPersistence channel = Channel;   // 进程级，跨重启存活（见 Channel）
 
-            if (LdnServer == "lan") StartLanDiscovery();
+            if (!LdnMitmRequested && LdnServer == "lan") StartLanDiscovery();
             // 游戏不支持系统语言时的退路：只从宿主主语言出发（Host.Language：显式指定 → 平台标签 → 宿主首选第一项），见 SystemLocale.TitleFallback
             Ryujinx.HLE.S2AHooks.TitleLanguageFallback = SystemLocale.TitleFallback(Language);
             // 显式指定的系统语言（env.txt 也算）：游戏的控制数据没声明支持语言时仍按它回（IApplicationFunctions.GetDesiredLanguage）
@@ -753,7 +828,7 @@ namespace S2A.Services
                 Language,                         // 缺省跟设备系统首选语言（SystemLocale.cs）；带存档 / 对真值时 S2A_SYSTEM_LANGUAGE 与存档语言一致（如01006F8002326000存档 Japanese）
                 configuration?.Region ?? EnvEnum("S2A_REGION", RegionCode.USA),
                 VSyncMode.Switch,
-                enableDockedMode: Docked,         // 缺省掌机档（维护者 10-20 晚）；S2A_DOCKED=1 切主机（以后做成玩家设置）
+                enableDockedMode: Docked,
                 enablePtc: false,                 // 不用 Ryujinx 的 CPU 翻译缓存
                 ITickSource.RealityTickScalar,
                 enableInternetAccess: false,
@@ -767,7 +842,9 @@ namespace S2A.Services
                 audioVolume: 1.0f,
                 useHypervisor: false,
                 multiplayerLanInterfaceId: "0",
-                !LdnLan && (LdnServer == null || LdnServer == "lan") ? MultiplayerMode.Disabled : MultiplayerMode.LdnRyu,
+                LdnMitmRequested
+                    ? MultiplayerMode.LdnMitm
+                    : !LdnLan && (LdnServer == null || LdnServer == "lan") ? MultiplayerMode.Disabled : MultiplayerMode.LdnRyu,
                 multiplayerDisableP2p: true,      // 不开 UPnP 直连，数据全走中继
                 multiplayerLdnPassphrase: Environment.GetEnvironmentVariable("S2A_LDN_PASSPHRASE") ?? string.Empty,
                 multiplayerLdnServer: LdnLan ? (_ldnServerNow ?? "127.0.0.1") : LdnServer == "lan" ? string.Empty : LdnServer ?? string.Empty,   // 局域网：选举出结果前先用本机中继
@@ -794,7 +871,7 @@ namespace S2A.Services
             Ryujinx.HLE.S2AHooks.EncodeScreenshotJpeg = configuration?.ScreenshotEncoder ?? Exports.ScreenshotEncoder;
             StartLdnRelay();
             Device = new Switch(config);
-            if (_lan) ApplyLanSelection();
+            if (LdnMitmRequested || _lan) ApplyLanSelection();
             Native.Mark("服务：Ryujinx Switch 建（Horizon 服务线程起）\0"u8);
 
             // Ryujinx 在游戏进程 Start 时做的一步（ProcessResult.Start）：带设备重载内容表，顺带初始化时区、证书、共享字体
@@ -877,10 +954,13 @@ namespace S2A.Services
             //   照 NpadDevices.StyleSupported 认，同游戏内的样式判断（#747）；改前只认一代位 → 判成没有可配的样式、游戏提示要 Joy-Con 2
             var npads = Host.Device.Hid.Npads;
             bool takes(ControllerType t) => npads.StyleSupported(t, args.SupportedStyles);
-            ControllerType externalType = takes(ControllerType.ProController) ? ControllerType.ProController
-                                        : takes(ControllerType.JoyconPair) ? ControllerType.JoyconPair : ControllerType.None;
+            bool takesPro = takes(ControllerType.ProController);
+            bool takesPair = takes(ControllerType.JoyconPair);
+            bool prefersJoyconPair = takesPair && InputPump.PrefersJoyconPair;
+            ControllerType externalType = takesPair && (!takesPro || prefersJoyconPair) ? ControllerType.JoyconPair
+                                        : takesPro ? ControllerType.ProController : ControllerType.None;
 
-            if ((InputPump.ExternalController || InputPump.Pads > 1) && players.Exists(p => p != PlayerIndex.Handheld) && externalType != ControllerType.None)
+            if ((InputPump.ExternalController || prefersJoyconPair || InputPump.Pads > 1) && players.Exists(p => p != PlayerIndex.Handheld) && externalType != ControllerType.None)
             {
                 (player, type) = (players.Find(p => p != PlayerIndex.Handheld), externalType);
             }
@@ -929,11 +1009,10 @@ namespace S2A.Services
                 InputPump.SetPrimary(Host.Device, player, type);
             }
 
-            // 等采样泵（约 16 ms 一拍）把新样式写进共享内存，小程序的重验读的是那里
-            for (int i = 0; i < 20 && ((uint)Host.Device.Hid.SharedMemory.Npads[(int)player].InternalState.StyleSet & ~Joycon2Bits) != expectedStyle; i++)
-            {
-                System.Threading.Thread.Sleep(10);
-            }
+            // 当场把配置写进共享内存（同一把锁里 Remap，同 InputPump.FollowNow / 审计 P1-192）：小程序的重验读的是那里。
+            //   原先等采样泵（约 16 ms 一拍）最多 200 ms：本机负载 7 倍核数时泵线程 200 ms 内没被调度，回 true 时共享内存仍是旧样式（0），
+            //   游戏重验判不满足；服务层单测「只收单只 Joy-Con」随负载时红时绿（11-22）
+            Host.Device.Hid.Npads.S2AApplyConfiguration();
 
             string pads = InputPump.SecondPlayer != PlayerIndex.Unknown ? $"两个手柄配到 {InputPump.Player} + {InputPump.SecondPlayer}" : $"唯一手柄配到 {player}";
             Console.Error.WriteLine($"S2A 手柄设置小程序自动应答：{pads}（{type}）；游戏要 人数 {args.PlayerCountMin}–{args.PlayerCountMax} 样式 {args.SupportedStyles}");

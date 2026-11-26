@@ -8,7 +8,9 @@ final class ExportFlowTests: XCTestCase {
         // 存的顺序是 mac、android、ios：排队按页面顺序 iPhone / iPad → macOS；安卓没开放，存了也不算
         XCTAssertEqual(ExportPlatform.picked(["mac", "android", "ios"]), [.ios, .mac])
         XCTAssertEqual(ExportPlatform.picked([]), [])
-        XCTAssertEqual(ExportPlatform.allCases.filter(\.released), [.ios, .mac])
+        XCTAssertEqual(ExportPlatform.allCases.filter(\.released), [.ios, .tvos, .mac])   // Apple TV（11-15）与 iPhone 并列、排在它后面
+        XCTAssertEqual(ExportPlatform.picked(["mac", "tvos"]), [.tvos, .mac])
+        XCTAssertEqual(ExportPlatform.tvos.target, .appleTV)
     }
 
     func testToggleIgnoresUnreleased() {
@@ -74,6 +76,17 @@ final class ExportFlowTests: XCTestCase {
         XCTAssertNil(g.version("patch"))
         XCTAssertEqual(g.dlcCount, 2)
         XCTAssertEqual(g.totalBytes, 1000 + 200 + 300 + 50 + 70)
+    }
+
+    func testIntegritySkippedPackageMarksTheGame() {
+        // 11-17：导入时数据校验不过照常导入（catalog packages[].integritySkipped 非空数组）→ 这款标「数据校验不过」；空数组 / 没有这个字段都不标。期望手写
+        let skipped = GameSummary(catalog: ["id": "0100A", "name": "Alpha", "packages": [
+            ["type": "base", "sha256": "a"],
+            ["type": "update", "sha256": "b", "integritySkipped": [["stage": "import", "contents": ["x"], "place": "romfs"]]]]])!
+        XCTAssertEqual(skipped.packages.map(\.integritySkipped), [false, true])
+        XCTAssertTrue(skipped.integritySkipped)
+        let clean = GameSummary(catalog: ["id": "0100B", "name": "Beta", "packages": [["type": "base", "sha256": "c", "integritySkipped": []], ["type": "dlc", "sha256": "d"]]])!
+        XCTAssertFalse(clean.integritySkipped)
     }
 
     func testReemittedPlanKeepsStartedTimes() {

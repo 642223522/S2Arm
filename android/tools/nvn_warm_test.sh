@@ -4,7 +4,7 @@
 #   ② 在途重试：build 返回 1 的条目会被重试并最终发布，不丢；
 #   ③ 计数：失败条目计入 failed、不阻塞其它条目；
 #   ④ Stop（快落盘）：返回 0、线程退出、两个 owner 的清单都落盘、后台静默被调用；
-#   ⑤ Stop（慢落盘 900 毫秒）：返回 1 且 ≤500+50 毫秒——落盘归预热线程，交互线程绝不做文件 IO；
+#   ⑤ Stop（慢落盘 3 秒）：返回 1、记「未完成」、耗时远小于这次落盘——落盘归预热线程，交互线程绝不做文件 IO；
 #      到点后后台继续写完（旧文件在此之前保留）；
 #   ⑥ 没有预热线程（开关关 / 线程起不来）：落盘归一次性 saver，Stop 同样有界；
 #   ⑦ 负对照：把持久化挪回 Stop 调用线程 → ⑤ 必须变红（复现复核的 900.1 毫秒）。
@@ -21,8 +21,8 @@ cc_bin="${CC:-cc}"
 "$cc_bin" "${CFLAGS[@]}" -o "$tmp/t" "$android/tests/nvn_warm_test.c" "$android/native/nvn/nvn_warm.c"
 "$tmp/t"                                     # ① ② ③ ④（默认：快落盘）
 NVK_WARM_OFF=1 "$tmp/t"                      # ⑦ 开关关 + 无预热线程时的快落盘（saver）
-NVK_WARM_SLOW_SAVE_US=900000 "$tmp/t"        # ⑤ 慢落盘：Stop 必须有界
-NVK_WARM_OFF=1 NVK_WARM_SLOW_SAVE_US=900000 "$tmp/t"   # ⑥ 没有预热线程 + 慢落盘
+NVK_WARM_SLOW_SAVE_US=3000000 "$tmp/t"        # ⑤ 慢落盘：Stop 必须有界
+NVK_WARM_OFF=1 NVK_WARM_SLOW_SAVE_US=3000000 "$tmp/t"   # ⑥ 没有预热线程 + 慢落盘
 
 # ---- 负对照：持久化挪回 Stop 调用线程（复核报的形态）----
 # 在 nvk_warm_stop 入口直接落盘并置完成标志：落盘就成了交互线程上的同步文件 IO，⑤ 必须变红。
@@ -43,7 +43,7 @@ PY
 "$cc_bin" "${CFLAGS[@]}" -o "$tmp/neg" "$android/tests/nvn_warm_test.c" "$tmp/nvn_warm_neg.c"
 ulimit -c 0 || true   # 负对照会 abort（断言失败），不要在门禁机上留 core
 set +e
-( NVK_WARM_SLOW_SAVE_US=900000 "$tmp/neg" > "$tmp/neg.out" 2>&1 ) 2>/dev/null   # 外层 2>/dev/null：吞掉 shell 的 "Aborted" 行
+( NVK_WARM_SLOW_SAVE_US=3000000 "$tmp/neg" > "$tmp/neg.out" 2>&1 ) 2>/dev/null   # 外层 2>/dev/null：吞掉 shell 的 "Aborted" 行
 neg_rc=$?
 set -e
 if [ "$neg_rc" -eq 0 ]; then

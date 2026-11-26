@@ -134,7 +134,7 @@ final class ControlStateCache: @unchecked Sendable {
         let info: [String: Any] = ["port": Int(port), "token": token, "pid": Int(ProcessInfo.processInfo.processIdentifier)]
         try? FileManager.default.createDirectory(at: privateRoot, withIntermediateDirectories: true)
         guard let d = try? JSONSerialization.data(withJSONObject: info),
-              FileManager.default.createFile(atPath: controlFile.path, contents: d, attributes: [.posixPermissions: 0o600]) else {
+              FileManager.default.createFile(atPath: controlFile.path, contents: d) else {
             // 写不上 = AI 客户端连不进来（审计 18:00 P2-35）：停听，不当作已开
             fail("写不了 " + controlFile.path)
             return
@@ -183,6 +183,13 @@ public enum ControlJournal {
     /// 玩家看得见的作业（同旧启动器 Store.visibleOperations）；查环境、读游戏库这类后台小作业不进。
     public static let visibleOperations: Set<String> = ["install", "installRemove", "installRestore", "installUpdate", "build", "moveGame", "import", "keys", "downloadMetal", "downloadIosPlatform", "launch", "clean",
                                                         "remove", "delete", "diagnostics", "prepareEngine", "pullDiagnostics", "ipa", "installDotnet", "setup", "spaceFree"]
+
+    /// 这条任务的原请求（<任务目录>/<任务号>.request.json）：控制口 /retry 照它回填装到哪台、团队、方式（#1946）；不在 / 读不了 → nil
+    public static func request(privateRoot: URL, id: String) -> [String: Any]? {
+        guard !id.isEmpty, !id.contains("/") else { return nil }
+        let url = S2ArmPaths.jobsDir(privateRoot: privateRoot).appendingPathComponent(id + ".request.json")
+        return (try? Data(contentsOf: url)).flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+    }
 
     /// 最近的 limit 条，按开始时间从旧到新。
     /// 控制口每秒刷一次状态快照（ControlPort.refreshCache）都会调这里。原先每次把任务目录里所有记录重读、重解析一遍：

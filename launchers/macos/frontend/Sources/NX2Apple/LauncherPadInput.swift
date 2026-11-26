@@ -30,6 +30,19 @@ struct LauncherPadInput: Equatable {
         if pad.dpad.yAxis.value < -0.5 { input.buttons |= 1 << 15 }
         return input
     }
+
+    /// HID 兜底手柄（#1151，LauncherPadBridge/HIDPads.m）：按键已是 Npad 位（含十字键 12–15），摇杆 Y 向上为正
+    static func hid(_ pad: s2a_launcher_hid_pad, mapping: ControllerFaceMapping) -> Self {
+        Self(buttons: mapping.apply(UInt64(pad.buttons)), x: Float(pad.lx) / 32767, y: Float(pad.ly) / 32767, rightY: Float(pad.ry) / 32767)
+    }
+    /// 读哪些兜底手柄（纯函数，单测）：GameController 已列出同名的那只让位（同 HIDFallbackPads.listed、宿主 s2a_hidg_route），不读两遍
+    static func fallback(_ hid: [s2a_launcher_hid_pad], system: [String]) -> [s2a_launcher_hid_pad] {
+        let known = Set(system.map { $0.lowercased() })
+        return hid.filter { !known.contains(hidName($0).lowercased()) }
+    }
+    static func hidName(_ pad: s2a_launcher_hid_pad) -> String {
+        withUnsafeBytes(of: pad.name) { String(decoding: $0.prefix { $0 != 0 }, as: UTF8.self) }
+    }
 }
 
 /// Buttons are edge triggered; only directions/scroll repeat. A held button must
@@ -90,6 +103,14 @@ struct LauncherPadRepeater {
     var isActive: () -> Bool = { NSApp.isActive }
     var updatePresentation: (Bool, [PadShortcut: String]) -> Void = { _, _ in }
     var refresh: () -> Void = {}
+    /// HID 兜底手柄（#1151）：启动器在前台时开着读，失焦（游戏在前台）就关，免得和游戏里的宿主同读
+    var hidOpen: () -> Void = { s2a_launcher_hid_open() }
+    var hidClose: () -> Void = { s2a_launcher_hid_close() }
+    var hidPads: () -> [s2a_launcher_hid_pad] = {
+        var out = [s2a_launcher_hid_pad](repeating: s2a_launcher_hid_pad(), count: 8)
+        let n = Int(s2a_launcher_hid_read(&out, Int32(out.count)))
+        return Array(out.prefix(max(0, n)))
+    }
     private var timer: Timer?
     private var observers: [NSObjectProtocol] = []
     private var client: OpaquePointer?
@@ -159,16 +180,16 @@ struct LauncherPadRepeater {
         var symbols: [PadShortcut: String] = [:]
         if let primary {
             let family = ControllerFaceFamily.of(primary)
-            symbols = (family == .nintendo ? .identity : faceMapping(family)).symbols(for: family)
+            symbols = faceMapping(family).symbols(for: family)
         } else if assignment().primaryIsNintendo || relayConnected() || relay.ready != 0 {
-            symbols = ControllerFaceMapping.identity.symbols(for: .nintendo)
+            symbols = faceMapping(.nintendo).symbols(for: .nintendo)
         }
         updatePresentation(!pads.isEmpty || relayConnected() || relay.ready != 0, symbols)
     }
-    private func pause() { timer?.invalidate(); timer = nil; releaseRelay() }
+    private func pause() { timer?.invalidate(); timer = nil; releaseRelay(); hidClose() }
     private func resume() {
         guard timer == nil else { return }
-        repeater.reset()
+        repeater.reset(); hidOpen()
         let t = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.tick() }
         }
@@ -200,7 +221,7 @@ struct LauncherPadRepeater {
         for controller in pads {
             guard let pad = controller.extendedGamepad else { continue }
             let family = ControllerFaceFamily.of(controller)
-            let mapping = family == .nintendo ? .identity : faceMapping(family)
+            let mapping = faceMapping(family)
             controllerTokens.append("\(ObjectIdentifier(controller)):\(mapping.code)")
             let state = LauncherPadInput.system(pad, mapping: mapping)
             input.buttons |= state.buttons
@@ -208,14 +229,24 @@ struct LauncherPadRepeater {
             if abs(state.y) > abs(input.y) { input.y = state.y }
             if abs(state.rightY) > abs(input.rightY) { input.rightY = state.rightY }
         }
+        let nintendoMapping = faceMapping(.nintendo)
+        // HID 兜底手柄：Switch 样式（Pro 协议）与按位置映射的通用手柄，按键都已是任天堂语义的 Npad 位，同 NS2 中继用任天堂映射
+        for pad in LauncherPadInput.fallback(hidPads(), system: SystemControllers.snapshot(pads).map(\.name)) {
+            controllerTokens.append("hid:\(LauncherPadInput.hidName(pad))")
+            let state = LauncherPadInput.hid(pad, mapping: nintendoMapping)
+            input.buttons |= state.buttons
+            if abs(state.x) > abs(input.x) { input.x = state.x }
+            if abs(state.y) > abs(input.y) { input.y = state.y }
+            if abs(state.rightY) > abs(input.rightY) { input.rightY = state.rightY }
+        }
         if relay.ready != 0 {
-            input.buttons |= relay.buttons
+            input.buttons |= nintendoMapping.apply(relay.buttons)
             if abs(relay.x) > abs(input.x) { input.x = relay.x }
             if abs(relay.y) > abs(input.y) { input.y = relay.y }
             if abs(relay.right_y) > abs(input.rightY) { input.rightY = relay.right_y }
         }
         let nextToken = controllerTokens.joined(separator: ",")
-            + ":\(relay.ready):\(relay.epoch):\(primary.map { String(describing: ObjectIdentifier($0)) } ?? ""):\(players.generation)"
+            + ":\(relay.ready):\(relay.epoch):\(nintendoMapping.code):\(primary.map { String(describing: ObjectIdentifier($0)) } ?? ""):\(players.generation)"
         if token != nextToken { token = nextToken; repeater.reset() }
         for action in repeater.actions(input, time: now) { receive(action) }
     }

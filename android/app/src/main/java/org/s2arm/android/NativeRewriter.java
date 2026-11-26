@@ -68,7 +68,7 @@ public final class NativeRewriter {
         public boolean succeeded() { return nativeStatus == 0 && validationError == null; }
     }
 
-    /** All options are explicit; the Android defaults are spin=false, sdkAddressCut=true.
+    /** All options are explicit; the Android defaults are spin=true, sdkAddressCut=true.
      * A null table means absent. Failures retain this attempt for private diagnostics.
      * The caller owns retention and passes successful output to the existing installer. */
     public static Result rewrite(Path privateWorkspace, Path input, String module,

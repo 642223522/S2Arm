@@ -16,8 +16,16 @@ struct GameSizesList: View {
 
     private func t(_ id: String) -> String { BackendText.launcherText("library.sizes." + id, language: loc.lang.sharedCode) }
 
+    /// 0.6.0 四类（作业层带了 categories）：资源、程序、玩家数据、缓存 + 原件；没带照旧五项
     static func rows(_ s: GameSizes) -> [(id: String, bytes: Int64)] {
-        [("imageMac", s.imageMac), ("imageIos", s.imageIos), ("saves", s.saves), ("cache", s.cache), ("sources", s.sources)]
+        if let c = s.categories { return GameSizes.categoryOrder.map { ($0, c[$0] ?? 0) } + [("sources", s.sources)] }
+        return [("imageMac", s.imageMac), ("imageIos", s.imageIos), ("saves", s.saves), ("cache", s.cache), ("sources", s.sources)]
+    }
+
+    /// 悬停说明：原件说平摊；四类说「删了会怎样」
+    private func note(_ id: String) -> String {
+        if id == "sources" { return t("sourcesNote") }
+        return sizes.categories != nil ? t(id + "Note") : ""
     }
 
     var body: some View {
@@ -28,7 +36,7 @@ struct GameSizesList: View {
                     Spacer(minLength: 8)
                     Text(sizes.measured || row.id == "sources" ? size(row.bytes) : "-").monospacedDigit()
                 }
-                .help(row.id == "sources" ? t("sourcesNote") : "")
+                .help(note(row.id))
             }
             if !sizes.measured {
                 Text(t("unmeasured")).font(.manrope(11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
@@ -68,7 +76,9 @@ struct StorageOverviewSection: View {
                         if part.id != o.shared.last?.id { CardDivider() }
                     }
                 }
-                CardGroup(t("games"), footnote: BackendText.launcherText("library.sizes.sourcesNote", language: loc.lang.sharedCode)) {
+                // 0.6.0 四类时多一句：这里是盘上真实占用，访达显示逻辑大小（克隆、硬链接不额外占盘）
+                CardGroup(t("games"), footnote: BackendText.launcherText("library.sizes.sourcesNote", language: loc.lang.sharedCode)
+                          + (o.games.contains { $0.sizes.categories != nil } ? "\n" + t("finderNote") : "")) {
                     ForEach(o.games) { g in
                         // 游戏名和设置行共用同一条文字起始线。
                         HStack(alignment: .top, spacing: LauncherTheme.Space.medium) {

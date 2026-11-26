@@ -200,6 +200,14 @@ static void depth_case(NvProg *reader, prog_t *reader_p, tex_t *depth, tex_t *b,
     S.ds.dt=1; S.ds.dw=1; S.ds.df=8; g_pso_dirty=1; draw(triangle,NULL);   // writes depth (and samples it: a fresh copy of the depth before this draw)
     S.ds.dw=0; g_pso_dirty=1; uint64_t c2=g_fb_depth; draw(triangle,NULL);
     CHECK(g_fb_depth-c2==1,"after a depth-writing draw the next sampling draw copies again (new copies %llu)",(unsigned long long)(g_fb_depth-c2));
+    // Stencil writes leave the depth plane a depth-view copy holds as it was: with the stencil test on and an op that writes (REPLACE on pass, write mask 0xff),
+    //   two more sampling draws still read the copy (a deferred lighting pass: one light volume per draw, stencil on, depth writes off). The old rule copied for each
+    uint64_t sc=g_fb_depth, sr=g_fb_depth_reuse, sp=g_stat_pass;
+    S.ds.st=1; S.st_wmask[0]=S.st_wmask[1]=0xff; S.ds.zpass_f=S.ds.zpass_b=NVN_STENCIL_OP_REPLACE; g_pso_dirty=1;
+    draw(triangle,NULL); draw(triangle,NULL);
+    CHECK(g_fb_depth==sc && g_fb_depth_reuse-sr==2 && g_stat_pass==sp,"stencil-writing draws sampling the depth: reuse the depth-view copy (new copies %llu, reuses %llu, passes opened %llu)",
+        (unsigned long long)(g_fb_depth-sc),(unsigned long long)(g_fb_depth_reuse-sr),(unsigned long long)(g_stat_pass-sp));
+    S.ds.st=0; S.ds.zpass_f=S.ds.zpass_b=NVN_STENCIL_OP_KEEP; g_pso_dirty=1;
     finish(); CHECK(!mtl_last_commit_error(),"depth attachment sampled in its own pass: submission completes without a Metal error");
     // Audit P2-247: a whole-surface depth clear with no pass open is only recorded (R.clear_d, folded into the next pass's load action). A draw sampling that depth in the pass must
     //   see the cleared value, as on the Switch the clear is in memory before the draw runs: the copy is taken after the clear lands. Expected 0.75 (the clear), never the old 0.25
@@ -217,6 +225,27 @@ static void depth_case(NvProg *reader, prog_t *reader_p, tex_t *depth, tex_t *b,
     [be endEncoding]; [cb commit]; [cb waitUntilCompleted];
     float d0=((float *)rb.contents)[0];
     CHECK(d0==0.75f,"pending depth clear then same-pass sampling: the copy holds the cleared depth (read %g, expected 0.75)",d0);
+    // Precise dsnap invalidation: unrelated textures / buffer ranges must keep g_dsnap valid, while overlapping ones must stale it
+    tex_t d_obj = *depth; d_obj.mem = (uint8_t *)(uintptr_t)0x100000000ull; d_obj.L.size = 0x10000;
+    tex_t other = *out;   other.serial = depth->serial + 999; other.mem = (uint8_t *)(uintptr_t)0x200000000ull; other.L.size = 0x10000;
+    tex_t alias = *out;   alias.serial = depth->serial + 1000; alias.mem = d_obj.mem + 0x1000; alias.L.size = 0x2000;
+    g_dsnap.ser = d_obj.serial; g_dsnap.mem = d_obj.mem; g_dsnap.size = d_obj.L.size; g_dsnap.base = nil; g_dsnap.valid = 1;
+    dsnap_stale_tex(&other);
+    dsnap_stale_addr((uint64_t)(uintptr_t)other.mem, 0x1000);
+    CHECK(g_dsnap.valid == 1, "unrelated texture / buffer range leaves depth snapshot valid");
+    dsnap_stale_tex(&alias);
+    CHECK(g_dsnap.valid == 0, "overlapping aliased texture stales depth snapshot");
+    g_dsnap.valid = 1;
+    dsnap_stale_addr((uint64_t)(uintptr_t)(d_obj.mem + 0x800), 64);
+    CHECK(g_dsnap.valid == 0, "overlapping buffer write range stales depth snapshot");
+    g_dsnap.valid = 1;
+    dsnap_stale_tex(&d_obj);
+    CHECK(g_dsnap.valid == 0, "same serial texture stales depth snapshot");
+    // 换不成 CPU 地址的 GPU 地址（GPU 地址窗口 0xC000000000 起、没映射到任何池：nvn_ga2ca 原样回 GPU 地址）判不了重叠：要按改过算。
+    //   旧写法拿 GPU 地址和深度的 CPU 区间比、永远不重叠，快照不作废、之后读到旧深度
+    g_dsnap.valid = 1;
+    dsnap_stale_addr(0xC000000000ull + 0x3000000000ull, 64);
+    CHECK(g_dsnap.valid == 0, "unmapped GPU address write stales depth snapshot (overlap cannot be judged)");
 }
 
 int main(int argc, char **argv) {
@@ -285,6 +314,14 @@ int main(int argc, char **argv) {
         pixels("pending ClearColor lands before feedback snapshot",&first,48,176,80);
         }
         storage_alias_cases(&p,&a,&b,&first,pool,&triangle,all);
+        // Verify fb_prepare's per-shader fb_tex cache: textured FS caches 2, untextured FS caches 1 and fast-exits
+        NvProg *notex=[NvProg new]; notex->sh[0]=program->sh[0]; notex->sh[1]=[NvShader new];
+        notex->sh[1]->rf.nb=0; notex->sh[1]->fb_tex=0;
+        R.rt.n=1; R.rt.color[0]=&a; R.has_rt=1;
+        fb_prepare(notex);
+        CHECK(program->sh[1]->fb_tex==2 && notex->sh[1]->fb_tex==1 && g_fb_n==0,
+              "fb_prepare fb_tex cache: textured=%u (expect 2), untextured=%u (expect 1)",
+              program->sh[1]->fb_tex, notex->sh[1]->fb_tex);
         unlink(map); unlink(user);
     }
     printf("%s t_nvn_feedback_snapshot %s: %u checks, %u failures\n",failures?"✗":"✓",all?"snap-all":"default",checks,failures);

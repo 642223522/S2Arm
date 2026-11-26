@@ -1,3 +1,4 @@
+<!-- 门禁手动：手动核 JIT / NativeAOT 两条路径（services/README.md）；门禁跑同一测试的服务单测独立模式 --filesystem-restart（随 services/test.sh 那次编译），不再单独编本工程 -->
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>Exe</OutputType>

@@ -21,11 +21,46 @@ static void out(const char *fmt, ...) {
     s2a_log_line("[现场] %s", b);
     if (g_fd >= 0) { b[n] = '\n'; write(g_fd, b, (size_t)n + 1); }
 }
+// 系统库符号多被抹成「<redacted>」，「符号+偏移」没法还原。每帧括号里再带「库名+库内偏移」（离库加载基址），本次现场用到的库在末尾
+//   连同加载基址与 UUID 列一张表：拿同版本系统的符号（Xcode 设备支持目录）按 UUID 对上，库内偏移就能还原成函数名（11-16 #55248c：崩点在 Metal 里、全被抹名）
+enum { TD_IMG = 64 };
+static struct { uint64_t base; char name[64]; } g_img[TD_IMG];
+static int g_nimg;
+static void note_image(uint64_t base, const char *name) {
+    for (int i = 0; i < g_nimg; i++) if (g_img[i].base == base) return;
+    if (g_nimg < TD_IMG) { g_img[g_nimg].base = base; snprintf(g_img[g_nimg].name, sizeof g_img[g_nimg].name, "%s", name); g_nimg++; }
+}
 static void where(uint64_t a, char *b, size_t n) {
     if (s2a_guest_where(a, b, n)) return;   // 装载器（loader.c）：游戏模块，带导出名（#806）
     Dl_info di;
-    if (dladdr((void *)a, &di) && di.dli_sname) { snprintf(b, n, "%s+%#llx（%s）", di.dli_sname, (unsigned long long)(a - (uint64_t)di.dli_saddr), di.dli_fname ? strrchr(di.dli_fname, '/') ? strrchr(di.dli_fname, '/') + 1 : di.dli_fname : "?"); return; }
+    if (dladdr((void *)a, &di) && di.dli_fname) {
+        const char *lib = strrchr(di.dli_fname, '/') ? strrchr(di.dli_fname, '/') + 1 : di.dli_fname;
+        uint64_t off = a - (uint64_t)di.dli_fbase;
+        note_image((uint64_t)di.dli_fbase, lib);
+        if (di.dli_sname) snprintf(b, n, "%s+%#llx（%s+%#llx）", di.dli_sname, (unsigned long long)(a - (uint64_t)di.dli_saddr), lib, (unsigned long long)off);
+        else snprintf(b, n, "?+0（%s+%#llx）", lib, (unsigned long long)off);
+        return;
+    }
     snprintf(b, n, "%#llx", (unsigned long long)a);
+}
+// 库的 UUID：读内存里的 Mach-O 头找 LC_UUID（库已加载、头可读；读不到给空串）。只认两样公开格式常量，不再多引一个系统头（分层规则 R-02 只减不增）：
+//   64 位头 32 字节（magic 0xfeedfacf，第 16 字节起 ncmds），装载命令 {cmd, cmdsize}，LC_UUID = 0x1b 后面跟 16 字节
+static void image_uuid(uint64_t base, char out[40]) {
+    out[0] = 0;
+    const uint32_t *h = (const uint32_t *)(uintptr_t)base;
+    if (!h || h[0] != 0xfeedfacfu) return;
+    uint32_t ncmds = h[4];
+    const uint8_t *p = (const uint8_t *)(uintptr_t)base + 32;
+    for (uint32_t i = 0; i < ncmds && i < 512; i++) {
+        uint32_t cmd = ((const uint32_t *)p)[0], size = ((const uint32_t *)p)[1];
+        if (cmd == 0x1b && size >= 24) {
+            const uint8_t *u = p + 8;
+            snprintf(out, 40, "%02X%02X%02X%02X-%02X%02X-%02X%02X-%02X%02X-%02X%02X%02X%02X%02X%02X", u[0], u[1], u[2], u[3], u[4], u[5], u[6], u[7], u[8], u[9], u[10], u[11], u[12], u[13], u[14], u[15]);
+            return;
+        }
+        if (!size) return;
+        p += size;
+    }
 }
 static int rd(uint64_t a, uint64_t *v) {   // 安全读 8 字节：坏地址返回 0
     vm_size_t got = 0;
@@ -101,6 +136,7 @@ int s2a_dump_threads(const char *why) {
     for (mach_msg_type_number_t i = 0; i < m; i++) collect(&g_td[i]);
     for (mach_msg_type_number_t i = 0; i < m; i++) if (!g_td[i].self) thread_resume(th[i]);
     // 以下全部线程已放行：符号化（dladdr）、取 QoS（pthread）、写日志都安全
+    g_nimg = 0;
     if (n > m) out("线程 %u 条，只记前 %u 条", n, m);
     for (mach_msg_type_number_t i = 0; i < m; i++) {
         td_ent *e = &g_td[i];
@@ -129,6 +165,7 @@ int s2a_dump_threads(const char *why) {
     for (mach_msg_type_number_t i = 0; i < n; i++) mach_port_deallocate(mach_task_self(), th[i]);
     if (n) vm_deallocate(mach_task_self(), (vm_address_t)th, n * sizeof *th);
     mach_port_deallocate(mach_task_self(), self);
+    for (int i = 0; i < g_nimg; i++) { char u[40]; image_uuid(g_img[i].base, u); out("库 %s 基址 %#llx UUID %s", g_img[i].name, (unsigned long long)g_img[i].base, u[0] ? u : "?"); }
     out("===== 现场完 =====");
     if (g_fd >= 0) { close(g_fd); g_fd = -1; }
     pthread_mutex_unlock(&mu);

@@ -1,4 +1,4 @@
-<!-- #783 出包 Vulkan 产物的独立入口：读直连出库同一份着色器包 + 配置档的 shader_map.tsv，逐键走 DshVk.CompileWithSpv（出包模式），只写 <key>_b.json + <key>_b.spv。
+<!-- #783 出包 Vulkan 产物的独立入口：读直连出库同一份着色器包 + 配置档的 shader_map.tsv，逐键走 DshVk.CompileWithSpv（出包模式），只写 <key>_b.json + <key>_b.spv；几何键走 DshVk.CompileGeometry，写 <key>_vg<t>.json + <key>_vg<t>.spv。
      放在 dsh/ 之外：dmsh_chain.py 的 FILES 只收 dsh/*.cs 与 dsh/batch/*.cs，S2A.Dsh.csproj 的 DshXfpInput 只收它自己的 Compile，本工程改了不换翻译指纹（#783 维护方 11-02 建议）。 -->
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
@@ -15,6 +15,8 @@
     <Compile Include="../dsh/batch/PkgRead.cs" Link="PkgRead.cs" />
     <!-- 离线 Vulkan 库打进同一种容器（#783 合入线答 ①：复用 LibPack、只留一份实现）：只引这一个文件 -->
     <Compile Include="../dsh/batch/LibPack.cs" Link="LibPack.cs" />
+    <!-- 跨次复用（11-24）：与 dsh_batch 同一个内容寻址仓与原生工具身份算法（Store / ToolLib），只引这一个文件；它只管存取，不进 VkFp -->
+    <Compile Include="../dsh/batch/Store.cs" Link="Store.cs" />
   </ItemGroup>
   <!-- Vulkan 侧指纹（DshVk.cs + 本目录），生成 VkFp.V -->
   <Import Project="VkFp.targets" />

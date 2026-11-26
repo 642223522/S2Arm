@@ -19,6 +19,8 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[3]
 SOURCE = ROOT / "pack/jobs/winenv.py"
 sys.path.insert(0, str(ROOT / "pack/jobs"))   # 用到真 library / toolchain 的几条（Mac 预检同一份规则）：从仓库根跑时也找得到
+sys.path.insert(0, str(Path(__file__).resolve().parent))   # tests/winenv_test.sh 用 python3 -I 跑，-I 不把脚本目录放进 sys.path：jobcase 要显式找
+import jobcase  # noqa: E402（作业上下文替身统一工厂 jobcase.fake_context）
 
 
 class FakeProbe:
@@ -492,7 +494,9 @@ class EnvironmentTests(unittest.TestCase):
         for text in ("", "Some other compiler version 1", "error: broken\nApple metal version 9"):
             with self.subTest(text=text):
                 self.probe.values["metal"] = {"output": text}
-                self.assertEqual(self.item(self.report(), "metal")["status"], "missing")
+                c = self.item(self.report(), "metal")
+                self.assertEqual(c["status"], "missing")
+                self.assertIn(" / ".join(text.splitlines()) or "（空）", c["message"])   # 认不出时带输出原文（D-NJGH）
 
     def test_cap_metal_missing_message_lists_searched_places(self):
         # 玩家装了还认不出：「复制错误摘要」读 message，要带上找过的每一处和结果
@@ -831,7 +835,7 @@ class EnvironmentTests(unittest.TestCase):
 
     def test_budget_mac_function_body_keeps_direct_result(self):
         self.budget_catalog()
-        context = types.SimpleNamespace(library=self.catalog_path.parent)
+        context = jobcase.fake_context(self.catalog_path.parent, library=self.catalog_path.parent)
         with patch("shutil.disk_usage", return_value=types.SimpleNamespace(free=40_000_000_000)):
             result = self.library_budget(context, self.budget_game)
         self.assertEqual(result["volumes"][0]["needBytes"], 26_770_000_000)   # Mac：解包一份 × 1.1 + 15 GB（单文件镜像不再存进库，#329）
@@ -844,7 +848,7 @@ class EnvironmentTests(unittest.TestCase):
         def shared(packages, **kw):
             calls.append(packages)
             return 12345
-        context = types.SimpleNamespace(library=self.catalog_path.parent)
+        context = jobcase.fake_context(self.catalog_path.parent, library=self.catalog_path.parent)
         with patch("shutil.disk_usage", return_value=types.SimpleNamespace(free=40000)):
             result = self.library_budget(context, self.budget_game, need=shared)
         self.assertEqual(result["volumes"][0]["needBytes"], 12345)

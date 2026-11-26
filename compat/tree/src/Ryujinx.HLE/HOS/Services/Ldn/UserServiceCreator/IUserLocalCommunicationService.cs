@@ -30,6 +30,35 @@ namespace Ryujinx.HLE.HOS.Services.Ldn.UserServiceCreator
         private const string DefaultSubnetMask = "255.255.255.0";
         private const bool IsDevelopment = false;
 
+        private static bool LdnAutoRequested =>
+            !string.Equals(Environment.GetEnvironmentVariable("S2A_LDN_MITM"), "1", StringComparison.Ordinal) &&
+            string.IsNullOrEmpty(Environment.GetEnvironmentVariable("S2A_LDN_SERVER")) &&
+            !string.Equals(Environment.GetEnvironmentVariable("S2A_LDN_AUTO"), "0", StringComparison.Ordinal) &&
+            !S2AHooks.LdnPlatformDiscovery;   // 宿主这一局走了平台局域网发现（iOS）：照旧 RyuLDN，不建双协议自动客户端
+
+        internal static MultiplayerMode SelectAutoMode(MultiplayerMode mode, Func<bool> switchRoomFound)
+        {
+            if (!LdnAutoRequested || mode == MultiplayerMode.LdnMitm)
+            {
+                return mode;
+            }
+
+            if (mode == MultiplayerMode.Disabled)
+            {
+                return MultiplayerMode.LdnMitm;
+            }
+
+            try
+            {
+                return switchRoomFound() ? MultiplayerMode.LdnMitm : mode;
+            }
+            catch (Exception ex)
+            {
+                Logger.Warning?.Print(LogClass.ServiceLdn, $"Auto LDN Switch probe failed, keeping RyuLDN: {ex.Message}");
+                return mode;
+            }
+        }
+
         private readonly KEvent _stateChangeEvent;
         private int _stateChangeEventHandle;
 
@@ -38,6 +67,9 @@ namespace Ryujinx.HLE.HOS.Services.Ldn.UserServiceCreator
         private ResultCode _nifmResultCode;
         private bool _unavailableReported;
         private bool _metadataMissingReported;
+        // S2Arm: Initialize succeeded without touching the network (S2AHooks.LdnDeferInit): the first Scan / OpenAccessPoint / OpenStation
+        // runs the host's on-demand LAN start and builds the real client (S2AActivateLan)
+        private bool _s2aLanDeferred;
 
         private AccessPoint _accessPoint;
         private Station _station;
@@ -214,7 +246,13 @@ namespace Ryujinx.HLE.HOS.Services.Ldn.UserServiceCreator
 
                 if (config.ProxyIp == 0)
                 {
-                    (_, UnicastIPAddressInformation unicastAddress) = NetworkHelpers.GetLocalInterface(context.Device.Configuration.MultiplayerLanInterfaceId);
+                    // ldn_mitm advertises a real LAN address. Use the same address the control
+                    // channel selected, otherwise a second enumeration can hand the game en0 while
+                    // the room TCP connection is bound to en8.
+                    IPAddress ldnAddress = (NetworkClient as LdnMitmClient)?.LocalAddress;
+                    (_, UnicastIPAddressInformation unicastAddress) = NetworkHelpers.GetLocalInterfaceForTarget(
+                        context.Device.Configuration.MultiplayerLanInterfaceId,
+                        ldnAddress);
 
                     if (unicastAddress == null)
                     {
@@ -416,6 +454,8 @@ namespace Ryujinx.HLE.HOS.Services.Ldn.UserServiceCreator
 
             (ulong bufferPosition, ulong bufferSize) = context.Request.GetBufferType0x22(0);
 
+            S2AActivateLan(context);   // S2Arm: a deferred Initialize starts the local network on the first scan
+
             if (_nifmResultCode != ResultCode.Success)
             {
                 Logger.NetLog?.PrintMsg(LogClass.ServiceLdn, $"ScanImpl: _nifmResultCode = {_nifmResultCode}");
@@ -565,6 +605,8 @@ namespace Ryujinx.HLE.HOS.Services.Ldn.UserServiceCreator
         // OpenAccessPoint()
         public ResultCode OpenAccessPoint(ServiceCtx context)
         {
+            S2AActivateLan(context);   // S2Arm: a deferred Initialize starts the local network on the first room / station
+
             if (_nifmResultCode != ResultCode.Success)
             {
                 Logger.NetLog?.PrintMsg(LogClass.ServiceLdn, $"OpenAccessPoint: _nifmResultCode = {_nifmResultCode}");
@@ -906,6 +948,8 @@ namespace Ryujinx.HLE.HOS.Services.Ldn.UserServiceCreator
         // OpenStation()
         public ResultCode OpenStation(ServiceCtx context)
         {
+            S2AActivateLan(context);   // S2Arm: a deferred Initialize starts the local network on the first room / station
+
             if (_nifmResultCode != ResultCode.Success)
             {
                 Logger.NetLog?.PrintMsg(LogClass.ServiceLdn, $"OpenStation: _nifmResultCode = {_nifmResultCode}");
@@ -1212,6 +1256,7 @@ namespace Ryujinx.HLE.HOS.Services.Ldn.UserServiceCreator
             NetworkClient?.Dispose();
             NetworkClient = null;
             S2ANetworkClientServer = null;
+            _s2aLanDeferred = false;
 
             return ResultCode.Success;
         }
@@ -1237,39 +1282,78 @@ namespace Ryujinx.HLE.HOS.Services.Ldn.UserServiceCreator
             {
                 if (_state != NetworkState.Initialized)
                 {
-                    // S2Arm: the host may switch to LAN multiplayer right now (first use of local wireless by this game), before the mode is read
-                    S2AHooks.LdnInitializing?.Invoke();
-
-                    // NOTE: Service calls nn::ldn::detail::NetworkInterfaceManager::NetworkInterfaceMonitor::Initialize() with nifmRequestId as argument,
-                    //       then it stores the result code of it in a global variable. Since we use our own implementation, we can just check the connection
-                    //       and return related error codes.
-                    MultiplayerMode mode = context.Device.Configuration.MultiplayerMode;
-
-                    // S2Arm: with multiplayer disabled the service reports unavailable without touching
-                    // the network, so the host's interfaces are not queried either
-                    if (mode == MultiplayerMode.Disabled || System.Net.NetworkInformation.NetworkInterface.GetIsNetworkAvailable())
+                    if (S2AHooks.LdnDeferInit?.Invoke() == true)
                     {
-                        Logger.Info?.PrintMsg(LogClass.ServiceLdn, $"Initializing with multiplayer mode: {mode}");
-
-                        resultCode = CreateNetworkClient(context, mode);
+                        // S2Arm: many games initialize ldn:u at boot and never play locally; starting discovery / the relay / the ldn_mitm sockets here
+                        // asked every such player for the local-network permission. Succeed with no neighbours; the first scan / room / station starts it
+                        Logger.Info?.PrintMsg(LogClass.ServiceLdn, "Initializing with the local network deferred to the first scan / access point / station");
+                        NetworkClient = new LdnDisabledClient();
+                        _s2aLanDeferred = true;
+                        resultCode = ResultCode.Success;
                         _nifmResultCode = resultCode;
-
-                        if (resultCode == ResultCode.Success)
-                        {
-                            SetState(NetworkState.Initialized);
-                        }
                     }
                     else
                     {
-                        // NOTE: Service returns different ResultCode here related to the nifm ResultCode.
-                        resultCode = ResultCode.DeviceDisabled;
-                        _nifmResultCode = resultCode;
+                        resultCode = S2AStartNetwork(context);
+                    }
+
+                    if (resultCode == ResultCode.Success)
+                    {
+                        SetState(NetworkState.Initialized);
                     }
                 }
             }
 
             Logger.NetLog?.PrintMsg(LogClass.ServiceLdn, $"InitializeImpl: resultCode = {resultCode}");
             return resultCode;
+        }
+
+        // S2Arm: the host picks / starts the multiplayer mode (LdnInitializing: LAN discovery + relay, or ldn_mitm), then the client for it is built.
+        // Initialize runs this directly, or the first Scan / OpenAccessPoint / OpenStation after a deferred Initialize (S2AActivateLan)
+        private ResultCode S2AStartNetwork(ServiceCtx context)
+        {
+            S2AHooks.LdnInitializing?.Invoke();
+
+            // NOTE: Service calls nn::ldn::detail::NetworkInterfaceManager::NetworkInterfaceMonitor::Initialize() with nifmRequestId as argument,
+            //       then it stores the result code of it in a global variable. Since we use our own implementation, we can just check the connection
+            //       and return related error codes.
+            MultiplayerMode mode = context.Device.Configuration.MultiplayerMode;
+            ResultCode resultCode;
+
+            // S2Arm: with multiplayer disabled the service reports unavailable without touching
+            // the network, so the host's interfaces are not queried either
+            if ((mode == MultiplayerMode.Disabled && !LdnAutoRequested) ||
+                System.Net.NetworkInformation.NetworkInterface.GetIsNetworkAvailable())
+            {
+                Logger.Info?.PrintMsg(LogClass.ServiceLdn, $"Initializing with multiplayer mode: {mode}");
+                resultCode = CreateNetworkClient(context, mode);
+            }
+            else
+            {
+                // NOTE: Service returns different ResultCode here related to the nifm ResultCode.
+                resultCode = ResultCode.DeviceDisabled;
+            }
+
+            _nifmResultCode = resultCode;
+            return resultCode;
+        }
+
+        // S2Arm: first local-wireless use after a deferred Initialize. A failure (no network, discovery unavailable, metadata missing) lands in
+        // _nifmResultCode, so this call and the later ones report it the way a failed Initialize would have
+        private void S2AActivateLan(ServiceCtx context)
+        {
+            if (!_s2aLanDeferred)
+            {
+                return;
+            }
+
+            _s2aLanDeferred = false;
+            NetworkClient?.DisconnectAndStop();
+            NetworkClient = null;
+            if (S2AStartNetwork(context) != ResultCode.Success)
+            {
+                NetworkClient = new LdnDisabledClient();
+            }
         }
 
         // S2Arm: the RyuLDN server the current client was built for (null for the other modes); tests read it
@@ -1279,7 +1363,7 @@ namespace Ryujinx.HLE.HOS.Services.Ldn.UserServiceCreator
         {
             S2ANetworkClientServer = null;
 
-            if (mode == MultiplayerMode.Disabled)
+            if (!LdnAutoRequested && mode == MultiplayerMode.Disabled)
             {
                 // S2Arm: local wireless discovery / multiplayer is unavailable. Return
                 // the service's own result code and report once, instead of handing a
@@ -1298,6 +1382,29 @@ namespace Ryujinx.HLE.HOS.Services.Ldn.UserServiceCreator
             if (!TryGetControlProperty(context, out ApplicationControlProperty controlProperty))
             {
                 return ResultCode.InvalidState;
+            }
+
+            if (LdnAutoRequested)
+            {
+                try
+                {
+                    Logger.Info?.PrintMsg(
+                        LogClass.ServiceLdn,
+                        $"Auto LDN branch: envAuto={Environment.GetEnvironmentVariable("S2A_LDN_AUTO")}, " +
+                        $"envMitm={Environment.GetEnvironmentVariable("S2A_LDN_MITM")}, " +
+                        $"envServer={Environment.GetEnvironmentVariable("S2A_LDN_SERVER")}, " +
+                        $"mode={mode}, configServer={context.Device.Configuration.MultiplayerLdnServer}");
+                    NetworkClient = new LdnAutoClient(context.Device.Configuration);
+                    S2ANetworkClientServer = context.Device.Configuration.MultiplayerLdnServer;
+                    NetworkClient.SetGameVersion(controlProperty.DisplayVersion);
+                    return ResultCode.Success;
+                }
+                catch (Exception ex)
+                {
+                    Logger.Error?.Print(LogClass.ServiceLdn, $"Could not initialize automatic LDN: {ex.Message}");
+                    S2AHooks.Red?.Invoke($"ldn: automatic LAN is unavailable, {ex.Message}");
+                    return ResultCode.DeviceNotAvailable;
+                }
             }
 
             switch (mode)
@@ -1326,7 +1433,16 @@ namespace Ryujinx.HLE.HOS.Services.Ldn.UserServiceCreator
 
                     break;
                 case MultiplayerMode.LdnMitm:
-                    NetworkClient = new LdnMitmClient(context.Device.Configuration);
+                    try
+                    {
+                        NetworkClient = new LdnMitmClient(context.Device.Configuration);
+                    }
+                    catch (Exception ex)
+                    {
+                        Logger.Error?.Print(LogClass.ServiceLdn, $"Could not initialize ldn_mitm: {ex.Message}");
+                        S2AHooks.Red?.Invoke($"ldn: ldn_mitm unavailable, {ex.Message}");
+                        return ResultCode.DeviceNotAvailable;
+                    }
                     break;
             }
 

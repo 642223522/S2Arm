@@ -4,9 +4,9 @@
   ② 其余文件：按路径 O(1) 查得到、起点页对齐、字节与源文件相同；查不在的路径 → None；路径重复 → 报红
   ③ RomFS 段：按 Switch 标准 RomFS 公开格式独立解析（本文件 std_romfs，不用 LibHac）——文件集合与夹具目录相同、逐文件字节相同
   ④ write：游戏号取产物根 unpack.tsv；资源包号 = 清单里除着色器库 / 覆盖层以外各行的 SHA-256（测试里按定义独立算）；exefs / ctl / aoc 进其余文件段，
-     romfs*、覆盖层、直连库、清单不进；RomFS 段来自产物根完整 romfs/（含被覆盖层替换的原文件）；有 programs/ → 报红；is_img 认魔数
+     romfs*、覆盖层、直连库、清单不进；RomFS 段来自产物根完整 romfs/（含被覆盖层替换的原文件）；有 programs/ → 进其余文件段（#1545）；is_img 认魔数
   ⑤ convert（出包交付）：资源包目录只剩 game.img + 着色器库 / 覆盖层 + 新清单；index.tsv 首行 game.img<TAB>文件长<TAB>资源包号、其余是原着色器库 / 覆盖层行；
-     manifest v3（format img、imgFile、index_sha256 = 新 index.tsv 的 SHA-256）；着色器库那行变了资源包号不变；多程序合集 → None、目录不动
+     manifest v3（format img、imgFile、index_sha256 = 新 index.tsv 的 SHA-256）；着色器库那行变了资源包号不变；多程序合集照样转（programs/ 进 IMG）、目录不动
   ⑦ 写 IMG 报字节进度（S2A_PROGRESS）：末行已写 = 总数 = 夹具 RomFS 文件 + 其余原始资源字节和
   ⑥ 原件 + 预建偏移表（11-11 真机对比：产物根 romfs 是界面覆盖后版本、有覆盖层时起局重建目录表 138.6 ms）：RomFS 段 = 产物根 romfs，覆盖清单里的文件换回 seed.txt 数据目录的原版
      （数据目录里别的文件变过也不取它）；
@@ -151,11 +151,17 @@ with tempfile.TemporaryDirectory(prefix='img test ') as t:
         try: img.orig_romfs(str(r6), str(T)); ck(False, '⑥ 没有 seed.txt 但叠过覆盖应报红')
         except img.Red: ck(True, '⑥ 没有 seed.txt 但产物根叠过覆盖 → 报红')
         (pk / 'programs/1').mkdir(parents=True); (pk / 'programs/1/a').write_bytes(b'p')
-        (pk / 'index.tsv').write_text((pk / 'index.tsv').read_text() + 'programs/1/a\t1\tx\n')
-        try: img.write(str(root), str(pk), w, romfs_index=cmd); ck(False, '④ 多程序合集应报红')
-        except img.Red: ck(True, '④ 有 programs/ → 报红（这一版不出 IMG）')
-        before = sorted(p.name for p in pk.rglob('*'))
-        ck(img.convert(str(root), str(pk), romfs_index=cmd) is None and sorted(p.name for p in pk.rglob('*')) == before, '⑤ 多程序合集 → None、目录不动')
+        # #1782：序号 1 的 RomFS 行清单里叫 programs/1/romfs.img，库内实际是标准镜像 programs/1/romfs.std（0.6.0 起 RomFS 不落散文件）
+        (pk / 'programs/1/romfs.std').write_bytes(b'STD1')
+        (pk / 'index.tsv').write_text((pk / 'index.tsv').read_text() + 'programs/1/a\t1\tx\nprograms/1/romfs.img\t4\ty\n')
+        # #1545：多程序合集序号 1.. 的 programs/<n>/… 进 IMG 其余文件段（手机解包按原路径解回），不再报红 / 不转
+        got = img.convert(str(root), str(pk), romfs_index=cmd)
+        toc = {r: n for r, _, n in img.entries(got)} if got else {}
+        ck(got and toc.get('programs/1/a') == 1 and img.find(got, 'programs/1/a') is not None, f'④ 多程序合集：programs/1/a 进 game.img 目录表（{sorted(toc)}）')
+        ck(got and toc.get('programs/1/romfs.std') == 4 and 'programs/1/romfs.img' not in toc,
+           f'④ 多程序合集：序号 1 的 RomFS 按库内形态 programs/1/romfs.std 进 IMG（宿主照它读），不再报「romfs.img 不在」（{sorted(toc)}）')
+        ck(not (pk / 'programs').exists() and 'programs/' not in (pk / 'index.tsv').read_text() and json.loads((pk / 'manifest.json').read_text())['format'] == 'img',
+           '⑤ 转完资源包里不留 programs/ 旧文件、index.tsv 不列它、manifest 是 img 形态')
 # ⑧ #711（Windows 大游戏写 game.img 失败）：Windows 的 os.stat 没有 st_blocks，RomFS 段写满 1 秒时进度轮询原先抛 AttributeError、img.py 半路退出、
 #   留下还在写的 romfs_index 进程。用不依赖 dotnet 的假 romfs_index（睡 2.5 秒再写段、打长度）+ 没有 st_blocks 的 stat 模拟：期望照常写成、RomFS 长度等于假工具报的；
 #   等的时候本进程出错 → 假工具进程被收掉（不留在后台）
@@ -326,5 +332,82 @@ try:
     f.close(); ck((pk / 'game.img').read_bytes() == g0, '⑩ 原 game.img 字节不变')
 finally:
     shutil.rmtree(T, ignore_errors=True)
+
+# ⑫ 边写边腾（free_clones）认 RomFS 镜像 romfs.std（单个文件，各版本间是克隆 / 硬链接）：夹具 = 工作目录 work 下 roots/ 里两个版本各有一份 romfs.std
+#   （v0 是 v1 的硬链接，同一族）、解包目录 extract/romfs.std、工作目录外的解包目录 ext/romfs.std。期望手写：
+#   keep = v1 的 romfs.std → 它本身字节不变、v0 与 extract 的那份删掉、工作目录外的不动；keep = 目录形态 v1/romfs → 各份镜像也删（只留 keep 那一份数据）
+for keep_image in (True, False):
+    T = Path(tempfile.mkdtemp(prefix='img test 11 '))
+    try:
+        W = T / 'work'; R = W / 'roots'; blob = os.urandom(5000)
+        for v in ('kuan@v0', 'kuan@v1'): (R / v).mkdir(parents=True)
+        (R / 'kuan@v1' / 'romfs.std').write_bytes(blob); os.link(R / 'kuan@v1' / 'romfs.std', R / 'kuan@v0' / 'romfs.std')
+        (R / 'kuan@现行').write_text('kuan@v1\n')   # 现行指针文件
+        (W / 'extract').mkdir(); (W / 'extract' / 'romfs.std').write_bytes(blob)
+        (T / 'ext').mkdir(); (T / 'ext' / 'romfs.std').write_bytes(blob)
+        if not keep_image: (R / 'kuan@v1' / 'romfs').mkdir(); (R / 'kuan@v1' / 'romfs' / 'a').write_bytes(b'a')
+        root = R / 'kuan@v1'; (root / 'seed.txt').write_text(f'src={W / "extract"}\n', encoding='utf-8')
+        pk = W / 'pack'; pk.mkdir(); (pk / 'index.tsv').write_text('', encoding='utf-8')
+        keep = root / ('romfs.std' if keep_image else 'romfs')
+        img.free_clones(str(root), str(keep), str(pk), str(W))
+        left = sorted(str(p.relative_to(T)) for p in T.rglob('romfs.std'))
+        want = (['ext/romfs.std', 'work/roots/kuan@v1/romfs.std'] if keep_image else ['ext/romfs.std'])
+        ck(left == want and (not keep_image or (root / 'romfs.std').read_bytes() == blob),
+           f'⑫ keep={"镜像" if keep_image else "目录"}：留下的镜像 {left}（期望 {want}）、keep 字节不变')
+    finally:
+        shutil.rmtree(T, ignore_errors=True)
+
+# ⑬ 值不值得出着色器更新包（诊断 #0c0f75：没有着色器库的款导出了一百多 KB、什么都不换的更新包）：
+#    清单里有 shaders/ 或 romfs_overlay/ → 出；只有 romfs.s2aidx / game.imgmap 这类索引 → 不出
+T13 = Path(tempfile.mkdtemp())
+try:
+    for rows, want in ((['game.img', 'romfs.s2aidx', 'shaders/direct/keys.tsv'], True), (['game.img', 'romfs.s2aidx', 'romfs_overlay/ui/a.bflyt'], True),
+                       (['game.img', 'romfs.s2aidx', 'game.imgmap'], False)):
+        (T13 / 'index.tsv').write_text(''.join(f'{r}\t1\tx\n' for r in rows + ['manifest.json']), encoding='utf-8')
+        ck(img.update_worth(str(T13)) == want, f'⑬ 清单 {rows} → 出更新包 {want}')
+finally:
+    shutil.rmtree(T13, ignore_errors=True)
+
+# ⑭ D-X5JB：Windows 上别的程序（杀毒软件、索引）拿着 RomFS 镜像时，边写边腾的截短报 [Errno 13]，原先整单失败。
+#    夹具 = 10 MiB 随机字节的镜像，第 2 次截短起抛 PermissionError（同 Windows 原文）。期望手写：照常写完、段字节 = 原镜像、镜像收尾删掉、打一行黄字
+class _DenyTruncate:
+    def __init__(self, f, after): self._f, self._after, self.calls = f, after, 0
+    def truncate(self, n):
+        self.calls += 1
+        if self.calls > self._after: raise PermissionError(13, 'Permission denied')
+        return self._f.truncate(n)
+    def __getattr__(self, k): return getattr(self._f, k)
+    def __enter__(self): self._f.__enter__(); return self
+    def __exit__(self, *a): return self._f.__exit__(*a)
+T14 = Path(tempfile.mkdtemp())
+try:
+    blob = os.urandom(10 << 20); std = T14 / 'romfs.std'; std.write_bytes(blob); part = T14 / 'out.part'; part.write_bytes(b'')
+    real_open = open
+    def deny_open(path, mode='r', *a, **k):
+        f = real_open(path, mode, *a, **k)
+        return _DenyTruncate(f, 1) if os.path.realpath(path) == os.path.realpath(std) and 'r+' in mode else f
+    import builtins, contextlib, io
+    buf = io.StringIO()
+    img.open = deny_open
+    try:
+        with contextlib.redirect_stdout(buf): n = img.copy_std(str(std), str(part), 16384, lambda d: None, True)
+        ok = True
+    except OSError as e:
+        ok = False; n = None; buf.write(f'抛了 {e!r}')
+    finally:
+        del img.open
+    ck(ok and n == len(blob), f'⑭ 截短被拒照常写完（{buf.getvalue()[-120:]}）')
+    ck(ok and part.read_bytes()[16384:16384 + len(blob)] == blob, '⑭ 段字节 = 原镜像')
+    ck(not std.exists(), '⑭ 镜像收尾照删')
+    ck('🟡 截短 RomFS 镜像被系统拒' in buf.getvalue(), '⑭ 打一行黄字说明不再边写边腾')
+finally:
+    shutil.rmtree(T14, ignore_errors=True)
+
+# ⑮ 系统调用报错（OSError）退出前把出错那一行打进日志（D-X5JB 只剩「[Errno 13] Permission denied」看不出哪一步）：ls 一个不存在的 IMG
+import contextlib, io
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf): rc = img.main(['ls', str(Path(tempfile.gettempdir()) / 's2arm-no-such.img')])
+lines = buf.getvalue().splitlines()
+ck(rc == 1 and len(lines) >= 2 and lines[-2].startswith('出错位置：img.py:') and lines[-1].startswith('【红】'), f'⑮ OSError 先打出错位置、末行仍是红行（{lines[-2:]}）')
 
 print(f'img 单测：{"全通" if not bad else f"{bad} 项不通"}'); sys.exit(1 if bad else 0)

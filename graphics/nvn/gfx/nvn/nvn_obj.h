@@ -29,6 +29,7 @@ FITS(queue_t, NVNqueue);
 typedef struct { NVNdevice *dev; void *mem; uint64_t size; uint32_t flags; } pool_builder_t;  FITS(pool_builder_t, NVNmemoryPoolBuilder);
 typedef struct { uint32_t magic, flags; uint8_t *mem; uint64_t size; int32_t nvmap; uint64_t gva; } pool_t;  FITS(pool_t, NVNmemoryPool);   // nvmap: the pool's nvmap handle, opened on first nvnTextureGetNvRmSurfaceNVX (0 = none yet); gva: 池的 GPU 地址（hle_nvn.c gva_alloc，0 = 没分到，用 CPU 地址）
 uint64_t nvn_ga2ca(uint64_t a);   // 游戏拿到的 GPU 地址 → 池存储的 CPU 地址；窗口外原样返回（hle_nvn.c）
+int nvn_ga_unmapped(uint64_t a);   // 换算后仍是 GPU 地址（换不成 CPU 地址、宿主上没映射）：完成回调不能往这里写（hle_nvn.c）
 int nvn_gva_snapshot(uint64_t *out, int cap);   // GPU 地址表按 {GPU 起点, CPU 起点, 字节数} 三元组写出，返回段数（帧录放 nvn_frame_rec.inc 存 state.bin 用）
 // 缓冲长度查询：CPU 地址所在活 nvnBuffer 的 {起点, 总长度}（1 = 命中）。storage 绑定只给地址、
 // size=0 时用它求精确长度；查不到再退回池尾近似。
@@ -102,7 +103,7 @@ typedef struct { uint32_t magic; volatile uint32_t *val; const pool_t *pool; int
 typedef struct { NVNdevice *dev; void *native; int32_t ntex, interval; NVNtexture *tex[4]; int32_t nactive; } win_builder_t;
 FITS(win_builder_t, NVNwindowBuilder);
 // avail[i]: time at which swapchain image i can be acquired again (ns, monotonic clock) = its display time + one present period; pace: target time of this window's present pacer
-typedef struct { uint32_t magic; void *native; int32_t ntex, interval, next, nactive, crop[4]; NVNtexture *tex[4]; uint64_t presents, avail[4], pace, ticket[4]; int32_t shown, nat; } win_t;   // ticket[i]: ticket of the most recent present of image i; shown: image of the most recent present + 1 (0 = none yet; on the device it stays on screen until the next present flips, so it is not returned)；nat：原生窗口交换间隔同步开着（hle_nvn.c nat_itv）
+typedef struct { uint32_t magic; void *native; int32_t ntex, interval, next, nactive, crop[4]; NVNtexture *tex[4]; uint64_t presents, avail[4], pace, ticket[4]; int32_t shown, nat, present_ll; } win_t;   // ticket[i]: ticket of the most recent present of image i; shown: image of the most recent present + 1 (0 = none yet; on the device it stays on screen until the next present flips, so it is not returned)；nat：原生窗口交换间隔同步开着（hle_nvn.c nat_itv）
 FITS(win_t, NVNwindow);
 
 // Command buffer: records are written into host blocks of each recording (hle_nvn.c, command buffer), handle = first record; a device cursor walks the command memory the game gives
@@ -223,6 +224,7 @@ typedef struct { const prog_t *prog; int32_t stages; uint8_t kok; uint8_t keys[6
 typedef struct { const prog_t *prog; uint64_t serial; int32_t stages, pad; } p_bind_program_id;
 // 宿主按序号的程序快照表（hle_nvn.c）：返回的快照指针长期有效；没有该序号返回空。安卓直连核心可能不带 hle_nvn.c 链接，故弱引用
 const prog_t *nvn_prog_snap_get(uint64_t serial, uint8_t keys[6][8], uint8_t *ok, uint8_t stage[6]) __attribute__((weak));
+uint64_t nvn_prog_set_ns(uint64_t serial) __attribute__((weak));   // 首遇等待诊断（#1001，hle_nvn.c）：这个序号 SetShaders 的时刻（now_ns）；没开 DM_NVN_FU_SETAT / 没记到 = 0
 // 还原完整记录：prog / stages 取自记录，snap / keys / kok / stage_of 按序号查表；表里没有（或载荷长度不对）时快照只带序号、键全缺、阶段 0xff
 static inline const p_bind_program *bind_program_rec(const void *a, uint32_t size, p_bind_program *t) {
     memset(t, 0, sizeof *t); memset(t->stage_of, 0xff, sizeof t->stage_of);
@@ -313,6 +315,8 @@ void nvn_be_exec(const uint8_t *handle);
 void mtl_sub_fill(uint64_t dst, uint64_t n, uint32_t value);   // in-order buffer fill within the submission (OP_CLEAR_BUF)
 void nvn_be_exec_rest(const uint64_t *handles, int n);   // Tells which handles in this submission still follow the current handle (used by the pass lookahead across handles)
 // Present: draw the swapchain texture to the front-end CAMetalLayer (only counts when there is no window)
+void nvn_be_present_prepare(const tex_t *t);   // Under the front end's submit lock: initialize a texture first used by present before handing it to the present thread
+void nvn_be_present_target(int interval, uint64_t set_ns);   // Before each present: the present interval the game asks for right now and when it set it (now_ns); logging only (per-target segments in the 5-second timing lines), never changes pacing
 uint64_t nvn_be_present(const tex_t *t, double period_s, const int crop[4]);   // Enqueue a present and return the ticket immediately; period_s: minimum time this image is displayed (= present period, 0 = unlimited)
 void nvn_be_present_wait(uint64_t ticket);                    // Wait until the present with this ticket has been processed (blit committed to the GPU queue)
 void mtl_present_flush(void);                              // Wait until all enqueued presents have been processed
@@ -352,7 +356,9 @@ uint64_t nvn_be_pkg_same(void);
 void nvn_be_pkg_gpu_stats(uint64_t *writes, uint64_t *kept, uint64_t *partial);
 uint64_t nvn_be_upload_ns_take(void);   // Take and zero: time spent uploading packaged textures on the submit thread since last time   // DM_NVN_DIRTYCHECK diagnostic: number of missed detections   // Packaged textures: number of first uploads, number of re-uploads due to pool content changes
 uint64_t nvn_be_upload_gpu_ns_take(void);   // Take and zero: GPU execution time of upload command buffers (sum of GPUEndTime − GPUStartTime)
-void nvn_be_create_stats(uint64_t *lib, uint64_t *pso);   // Cumulative: number of shader libraries loaded synchronously on the submit thread, number of render + compute pipelines created synchronously (those taken from warm-up do not count)
+uint64_t rp_sync_pipelines_created(void);   // 新回放层后端：前台成功创建的图形和计算管线，进程累计
+// 进程累计。Metal 数提交时现场加载的库，新回放层数提交时取用的现编程序（含 worker 交付）；图形 + 计算管线只数前台现场创建。
+void nvn_be_create_stats(uint64_t *lib, uint64_t *pso);
 // CPU texture read: starting at level / layer0, written into dst with row / img byte strides
 void nvn_be_read_texels(const tex_t *t, unsigned level, unsigned layer0, const NVNcopyRegion *r, uint8_t *dst, size_t row, size_t img);
 // Descriptor pool registration (texture ID / sampler ID → object snapshot), program release
@@ -361,12 +367,14 @@ void nvn_be_unreg_tex_range(int base, int n);   // 贴图池销毁时清它那�
 // textures written by WriteTexels (recorded by serial): the replay layer treats them like packaged textures, uploaded from guest memory and re-uploaded on dirty pages
 void nvn_be_tex_cpu_written(const tex_t *t);
 int nvn_be_tex_gpu_owned(uint64_t serial);                                  // its host texture is a render target or shader-writable: GPU content, never re-uploaded from guest memory
-// A program's per-stage shader key (hle_nvn.c): the first 8 bytes of sha256(first 0x880 bytes of the control section (its own length when shorter) + code area). Computed at SetShaders (NVN lets the caller free the control section once it returns, and Unity does);
+// A program's per-stage shader key (hle_nvn.c): the first 8 bytes of sha256(first 0x880 bytes of the control section (its own length when shorter; two volatile spans zeroed, nvn_key.h) + code area);
+//   an old package keyed without the zeroing gets its old key (keys_hash). Computed at SetShaders (NVN lets the caller free the control section once it returns, and Unity does);
 // a stage whose code area was not yet in any memory pool then is computed the first time it is asked for. Returns 0 = no such stage
 int prog_key(const prog_t *p, unsigned stage, uint8_t key[8]);
 void nvn_be_reg_samp(int id, const samp_par *p);
 void nvn_be_prog_release(prog_t *p);
 void nvn_be_shader_prefetch(const uint8_t key[8]);   // S2Arm: load a stage's shader library in the background (ProgramSetShaders), off the frame path
+void nvn_be_pair_prefetch(const uint8_t (*keys)[8], int n);   // S2Arm: look up the program's vertex / fragment pair's package pulling base in the background (ProgramSetShaders)
 // New serial (> 0, globally increasing)
 uint64_t nvn_new_serial(void);
 void nvn_serial_floor(uint64_t floor);   // 新序号从 floor 之后编（帧回放：避开录像里的序号）

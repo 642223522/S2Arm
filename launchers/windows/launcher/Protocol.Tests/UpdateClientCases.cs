@@ -19,7 +19,8 @@ public static class UpdateClientCases
             Directory.CreateDirectory(Path.Combine(engine, "pack", "jobs"));
             Directory.CreateDirectory(Path.Combine(runtime, "python"));
             var exe = Path.Combine(runtime, "python", "python.exe");
-            if (OperatingSystem.IsWindows()) File.Copy(python, exe); else File.CreateSymbolicLink(exe, python);
+            // Windows 上 python.exe 单拷起不来（同目录的 python3xx.dll 与 Lib 标准库都要在）：整个安装目录拷过去；别的系统软链接即可
+            if (OperatingSystem.IsWindows()) CopyTree(Path.GetDirectoryName(python)!, Path.Combine(runtime, "python")); else File.CreateSymbolicLink(exe, python);
             var pidFile = Path.Combine(root, "pid");
             File.WriteAllText(Path.Combine(engine, "pack", "jobs", "updater.py"),
                 "import json, os, sys, time\n" +
@@ -42,4 +43,13 @@ public static class UpdateClientCases
     private static string? FindPython() =>
         (Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator)
             .Select(d => Path.Combine(d, OperatingSystem.IsWindows() ? "python.exe" : "python3")).FirstOrDefault(File.Exists);
+
+    static void CopyTree(string from, string to)   // 只拷起解释器要的：跳过 site-packages（第三方库，假 updater 只用标准库）与 __pycache__
+    {
+        static bool Skip(string rel) => rel.Split(Path.DirectorySeparatorChar).Any(p => p is "site-packages" or "__pycache__");
+        foreach (var dir in Directory.EnumerateDirectories(from, "*", SearchOption.AllDirectories).Where(d => !Skip(Path.GetRelativePath(from, d))))
+            Directory.CreateDirectory(Path.Combine(to, Path.GetRelativePath(from, dir)));
+        foreach (var file in Directory.EnumerateFiles(from, "*", SearchOption.AllDirectories).Where(f => !Skip(Path.GetRelativePath(from, f))))
+            File.Copy(file, Path.Combine(to, Path.GetRelativePath(from, file)), true);
+    }
 }

@@ -4,7 +4,7 @@
 //   （g_nvn_deswz_gpu = 0），普通池的贴图就走同一段 CPU 路径。
 //   延后编码时第 1 批的提交只是本线程录制块里的一条记录，没交给编码线程之前 GPU 看不到它：旧实现在这里死等（10-26 怪猎崛起真机第 721 帧停住 45 秒，
 //   宿主栈 up_wait_zero ← up_begin ← pkg_upload ← tex_mtl ← encode_args ← draw）。
-// 期望：一次提交里 6 张贴图各拷到池里，逐纹素等于各自写进存储的色值（色值手写，与被测实现无关），整件 20 秒内做完（alarm 判卡死）。
+// 期望：一次提交里 6 张贴图各拷到池里，逐纹素等于各自写进存储的色值（色值手写，与被测实现无关），整件不卡死（alarm 120 秒判卡死；原 20 秒，负载高时整件慢过 20 秒就被误判卡死，旧实现是永久死等，120 秒照样分得开）。
 #include "../gfx/nvn/nvn_mtl.m"
 #include "nvn_protos.h"
 #include <signal.h>
@@ -26,23 +26,23 @@ enum { U_POOL_SIZE = 16 << 20, U_COMMAND_SIZE = 1 << 20, U_READ_OFFSET = 1 << 20
 #define REQUIRE(x) do { checks++; if (!(x)) { fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #x); exit(1); } } while (0)
 static void *load(const char *name) { void *entry = h_nvnBootstrapLoader(name); REQUIRE(entry != NULL); return entry; }
 #define API(name) ((NVNT_##name)load(#name))
-// 照生产调用顺序挂 n 块 32 MB 暂存、提交、等上传做完（最多 2 秒：不进池的块都离开驻留集）；回传进池块数与仍在驻留集的块数（含池里的）
+// 照生产调用顺序挂 n 块 32 MB 暂存、提交、等上传做完（等到不进池的块都离开驻留集，兜底 30 秒；原 2 秒，负载高时完成回调晚跑就假红）；回传进池块数与仍在驻留集的块数（含池里的）
 static void stage_blocks(int n, int *pooled, int *resident) {
     enum { MAXN = 16 }; __weak id<MTLBuffer> wk[MAXN]; if (n > MAXN) n = MAXN;
     for (int i = 0; i < n; i++) { up_begin(); id<MTLBuffer> b = [g_dev newBufferWithLength:32 << 20 options:MTLResourceStorageModePrivate]; REQUIRE(b != nil); res_add(b); up_keep_add(b); wk[i] = b; }
     up_flush(); API(nvnQueueFinish)(&queue);
-    int stray = n; for (int t = 0; t < 200 && stray; t++) { usleep(10000); int inpool[MAXN]; *pooled = 0;
+    int stray = n; for (int t = 0; t < 3000 && stray; t++) { usleep(10000); int inpool[MAXN]; *pooled = 0;
         os_unfair_lock_lock(&g_up_pool_lk); for (int i = 0; i < n; i++) { id<MTLBuffer> x = wk[i]; inpool[i] = x && [g_up_pool containsObject:x]; *pooled += inpool[i]; } os_unfair_lock_unlock(&g_up_pool_lk);
         stray = 0; *resident = 0; pthread_mutex_lock(&g_res_mu); for (int i = 0; i < n; i++) { id<MTLBuffer> x = wk[i]; int in = x && [g_res_objects containsObject:x]; *resident += in; stray += in && !inpool[i]; } pthread_mutex_unlock(&g_res_mu); }
 }
 static int pool_resident(void) { int r = 0; os_unfair_lock_lock(&g_up_pool_lk); NSArray *p = [g_up_pool copy]; os_unfair_lock_unlock(&g_up_pool_lk);
     pthread_mutex_lock(&g_res_mu); for (id x in p) r += [g_res_objects containsObject:x]; pthread_mutex_unlock(&g_res_mu); return r; }
-static void stuck(int sig) { (void)sig; static const char m[] = "FAIL 20 秒没做完：一次提交里连着上传打包贴图卡住（up_begin 等的批次还没交给 GPU）\n✗ t_nvn_updrain\n"; write(1, m, sizeof m - 1); _exit(1); }
+static void stuck(int sig) { (void)sig; static const char m[] = "FAIL 120 秒没做完：一次提交里连着上传打包贴图卡住（up_begin 等的批次还没交给 GPU）\n✗ t_nvn_updrain\n"; write(1, m, sizeof m - 1); _exit(1); }
 
 int main(void) {
     @autoreleasepool {
         setenv("DM_NVN_ENC_THREAD", "1", 1);   // 延后编码：iPhone 上缺省开、Mac 上缺省关（nvn_rec.h rec_on），这里照真机开
-        signal(SIGALRM, stuck); alarm(20);
+        signal(SIGALRM, stuck); alarm(120);
         NVNdeviceBuilder db; API(nvnDeviceBuilderSetDefaults)(&db); REQUIRE(API(nvnDeviceInitialize)(&device, &db));
         NVNqueueBuilder qb; API(nvnQueueBuilderSetDefaults)(&qb); API(nvnQueueBuilderSetDevice)(&qb, &device);
         REQUIRE(API(nvnQueueInitialize)(&queue, &qb)); mtl_init(); g_nvn_deswz_gpu = 0; REQUIRE(posix_memalign(&storage, 65536, U_POOL_SIZE) == 0); memset(storage, 0, U_POOL_SIZE);   // g_nvn_deswz_gpu = 0：CPU 解排布路径（每张一批）
@@ -90,12 +90,12 @@ int main(void) {
             checks++; if (left != 4ull * K_BLK) { fails++; printf("FAIL 挂完 12 块批内留 %llu MB，期望 128 MB（256 MB 提交后又挂 4 块）\n", (unsigned long long)(left >> 20)); }
             // 暂存只被本批上传命令用：上传做完就离开这批，不等提交栅栏（旧实现走 defer_obj_release 等提交栅栏，回放整帧一次提交，攒到 37 GB）。
             //   整块（UP_BLOCK_SIZE）回到暂存池（DM_NVN_UP_POOL_MB，缺省 512 MB）留给下一批，池里的块仍在驻留集；池放不下的移出驻留集。池空闲 5 秒后由 up_pool_trim 整池移出。
-            //   期望：上传做完 2 秒内，不在池里的块都不在驻留集里；12 块 32 MB 共 384 MB 全进池；把池的上次取用时间拨回 0（当作空闲已过 5 秒）后 up_pool_trim，12 块都不在驻留集里
+            //   期望：上传做完后（等到为止，兜底 30 秒），不在池里的块都不在驻留集里；12 块 32 MB 共 384 MB 全进池；把池的上次取用时间拨回 0（当作空闲已过 5 秒）后 up_pool_trim，12 块都不在驻留集里
             int inres = K_N, pooled = 0;
-            for (int t = 0; t < 200 && inres; t++) { usleep(10000); int inpool[K_N]; pooled = 0;
+            for (int t = 0; t < 3000 && inres; t++) { usleep(10000); int inpool[K_N]; pooled = 0;
                 os_unfair_lock_lock(&g_up_pool_lk); for (int i = 0; i < K_N; i++) { id<MTLBuffer> x = wk[i]; inpool[i] = x && [g_up_pool containsObject:x]; pooled += inpool[i]; } os_unfair_lock_unlock(&g_up_pool_lk);
                 inres = 0; pthread_mutex_lock(&g_res_mu); for (int i = 0; i < K_N; i++) { id<MTLBuffer> x = wk[i]; inres += x && !inpool[i] && [g_res_objects containsObject:x]; } pthread_mutex_unlock(&g_res_mu); }
-            checks++; if (inres) { fails++; printf("FAIL 上传做完 2 秒后不在暂存池的块还有 %d 块在驻留集里（期望 0：随上传完成移出，不等提交栅栏）\n", inres); }
+            checks++; if (inres) { fails++; printf("FAIL 上传做完 30 秒后不在暂存池的块还有 %d 块在驻留集里（期望 0：随上传完成移出，不等提交栅栏）\n", inres); }
             else puts("✓ 暂存随上传完成离开这批：不进池的移出驻留集（不等提交栅栏）");
             checks++; if (pooled != K_N) { fails++; printf("FAIL 12 块 32 MB 暂存进池 %d 块（期望 12：384 MB 不到池上限 512 MB）\n", pooled); }
             else puts("✓ 12 块整块暂存回到暂存池，留给下一批");
@@ -138,9 +138,9 @@ int main(void) {
             checks++; if (first != g_up_slot_pblk[s0] || swaps != 1 || off != (1100 - 1024 - 1) * 64) { fails++; printf("FAIL 参数块：首块是槽块 %d、换块 %d 次（期望 1）、末格偏移 %zu（期望 %d）\n", first == g_up_slot_pblk[s0], swaps, off, (1100 - 1024 - 1) * 64); }
             checks++; if (indef) { fails++; printf("FAIL 参数块：写满换下后进了延后释放队列 %d 块（期望 0：跟着本批上传完成退，不挂在回放提交的栅栏上）\n", indef); }
             up_flush(); API(nvnQueueFinish)(&queue);
-            int inres = 1; for (int t = 0; t < 200 && inres; t++) { usleep(10000); pthread_mutex_lock(&g_res_mu); id<MTLBuffer> x = over; inres = x && [g_res_objects containsObject:x]; pthread_mutex_unlock(&g_res_mu); }
+            int inres = 1; for (int t = 0; t < 3000 && inres; t++) { usleep(10000); pthread_mutex_lock(&g_res_mu); id<MTLBuffer> x = over; inres = x && [g_res_objects containsObject:x]; pthread_mutex_unlock(&g_res_mu); }
             pthread_mutex_lock(&g_res_mu); int slot_in = [g_res_objects containsObject:g_up_slot_pblk[s0]]; pthread_mutex_unlock(&g_res_mu);
-            checks++; if (inres || !slot_in) { fails++; printf("FAIL 参数块：上传做完 2 秒后换下的块还在驻留集 %d（期望 0）、槽块在驻留集 %d（期望 1）\n", inres, slot_in); }
+            checks++; if (inres || !slot_in) { fails++; printf("FAIL 参数块：上传做完 30 秒后换下的块还在驻留集 %d（期望 0）、槽块在驻留集 %d（期望 1）\n", inres, slot_in); }
             up_begin(); unsigned s1 = g_up_cur_slot; id<MTLBuffer> second = up_param_alloc(&off); up_flush(); API(nvnQueueFinish)(&queue);
             checks++; if (s1 == s0 || second != g_up_slot_pblk[s1] || second == first || off != 0) { fails++; printf("FAIL 参数块：下一批槽 %u→%u、用的是本槽槽块 %d、与上一槽同一块 %d、首格偏移 %zu（期望 换槽、1、0、0）\n", s0, s1, second == g_up_slot_pblk[s1], second == first, off); }
             if (!indef && !inres && slot_in && swaps == 1 && s1 != s0) puts("✓ 解排布参数块跟着上传批走：写满换下的不进延后释放、上传做完移出驻留集，每槽一块");

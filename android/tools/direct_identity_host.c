@@ -73,7 +73,17 @@ static void strings(const s2a_json_field *f, const char **out, unsigned n,
     if (array(f,n)!=n) fail("wrong string array length");
     for(unsigned i=0;i<n;i++) { item(f,i,&storage[i]); out[i]=string(field(&storage[i],"v")); }
 }
-int main(void) {
+int main(int argc, char **argv) {
+    if (argc == 2 && !strcmp(argv[1], "--check-canonical")) {
+        uint8_t bytes[S2A_INPUT_IDENTITY_MAX + 1];
+        size_t len = fread(bytes, 1, sizeof bytes, stdin);
+        static struct s2a_input_identity_decoded decoded;
+        char reason[192];
+        if (ferror(stdin) || len == sizeof bytes) fail("invalid canonical input length");
+        if (s2a_input_identity_decode(bytes, len, &decoded, reason, sizeof reason)) fail(reason);
+        return 0;
+    }
+    if (argc != 1) fail("usage: direct_identity_host [--check-canonical]");
     static uint8_t raw[65537]; size_t n=fread(raw,1,sizeof raw,stdin);
     if (ferror(stdin) || n==sizeof raw) fail("input read/size");
     static s2a_json_object root, gfx, stages[6], tex[64], strings_store[40], scalar;
@@ -85,6 +95,7 @@ int main(void) {
     in.translator_closure=string(field(&root,"translator_closure"));
     unhex(field(&root,"profile_sha"),in.profile_sha,32);
     in.stage_mask=uint32(field(&root,"stage_mask"));
+    in.requires_linked_varying_interface = s2a_direct_requires_linked_varying_interface(in.stage_mask);
     if(in.stage_mask==0x20) {
         if(root.count!=15) fail("missing compute alignment fields");
         in.compute_has_unaligned_ssbo=integer(field(&root,"compute_has_unaligned_ssbo"));
@@ -172,6 +183,17 @@ int main(void) {
     }
     uint8_t canonical[S2A_INPUT_IDENTITY_MAX], digest[32]; size_t length=0;
     if(s2a_input_identity_encode(&in,canonical,sizeof canonical,&length)) fail("native encoder rejected facts");
+    // Validate the exact production decoder/re-encoder, including v5 policy.
+    // This is not a replacement for captured runtime/W2 cross-path fixtures.
+    static struct s2a_input_identity_decoded decoded;
+    uint8_t roundtrip[S2A_INPUT_IDENTITY_MAX]; size_t roundtrip_length = 0;
+    char reason[192];
+    if (s2a_input_identity_decode(canonical, length, &decoded, reason, sizeof reason))
+        fail("native decoder rejected canonical identity");
+    if (decoded.id.requires_linked_varying_interface != in.requires_linked_varying_interface ||
+        s2a_input_identity_encode(&decoded.id, roundtrip, sizeof roundtrip, &roundtrip_length) ||
+        roundtrip_length != length || memcmp(roundtrip, canonical, length))
+        fail("native identity round-trip mismatch");
     s2a_sha256 h; s2a_sha256_init(&h); s2a_sha256_update(&h,canonical,length); s2a_sha256_final(&h,digest);
     char hex[65]; s2a_sha256_hex(digest,hex);
     printf("{\"identity\":\"%s\",\"canonical\":\"",hex);

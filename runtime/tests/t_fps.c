@@ -16,6 +16,12 @@ static float fs_f32(int off) { float x; uint32_t b = *(uint32_t *)(dm_fps_state 
 static int fails;
 static int g_follow_n, g_follow_last = -1;   // 社区帧率补丁跟随钩子的强定义桩：记调用次数和最后一次的值
 void s2a_cpatch_fps_follow(int on) { g_follow_n++; g_follow_last = on; }
+static int g_cp_n, g_cp_tier;   // 社区帧率补丁份数 / 有没有一档能开（cpatch.c 强定义的桩；缺省 0 = 同没链 cpatch）
+int s2a_cpatch_fps_count(void) { return g_cp_n; }
+int s2a_cpatch_fps_tier_ok(void) { return g_cp_tier; }
+// 等写入线程在「现在」之后再转满 2 整圈（正在转的那圈可能在改动前已读过状态）：按圈数同步，不按墙钟睡（11-19：原先固定睡 250 ms，负载高时没转到 → 读到旧值）。30 秒兜底
+uint64_t s2a_fps_writer_rounds(void);
+static void wait_round(void) { uint64_t r0 = s2a_fps_writer_rounds(); for (int i = 0; i < 3000 && s2a_fps_writer_rounds() < r0 + 2; i++) usleep(10000); }
 static void expect(const char *what, long want, long got) { printf("%s 期望 %ld → 真结果 %ld\n", what, want, got); if (want != got) fails++; }
 int main(void) {
     static uint8_t img[0x8000] __attribute__((aligned(0x4000)));   // 键页在 0x4000（2048 个 8 字节槽），按 16 KB 页对齐才能 mprotect
@@ -38,13 +44,24 @@ int main(void) {
         fflush(stdout); pid_t p = fork(); if (p < 0) return 1;
         if (!p) {
             fails = 0; dm_fps_state = NULL; unsetenv("S2A_CAPS_OWN"); unsetenv("DM_PRESENT_INTERVAL"); unsetenv("S2A_FPS_TABLE"); unsetenv("S2A_FPS"); setenv("S2A_FSTEP", "0", 1); setenv("S2A_FPS60", "1", 1);
-            s2a_fps_start(dir); usleep(250000);
+            s2a_fps_start(dir); wait_round();
             int32_t a; memcpy(&a, img + 0x1000, 4); expect("缺省口径：60 帧开也不写我方 w 行 main+0x1000（仍 0）", 0, a);
             expect("缺省口径：不设 DM_PRESENT_INTERVAL", 0, getenv("DM_PRESENT_INTERVAL") != NULL);
             expect("缺省口径：只有被禁用的我方 present display 表，不强制退回游戏 interval", 0, s2a_fps_present_at(1000000000ull));
             float f2; memcpy(&f2, img + 0x4000 + 2041 * 8, 4); expect("缺省口径：slot 2041 写关时值 100（×1000）", 100000, (long)(f2 * 1000));
             memcpy(&f2, img + 0x4000 + 2040 * 8, 4); expect("缺省口径：速度槽 1.0（×100）", 100, lroundf(f2 * 100));
+            // 11-18 #1607：关着时速度槽按真实帧间隔写（旧包改指令已去掉游戏的 30 帧下限、关着也能跑 60）。期望手算：16.7 ms → 0.5、33.3 ms → 1.0；
+            //   钩子返回值不变（0）。旧实现关时写死 1.0 → 16.7 ms 那项红
+            expect("缺省口径：16.7 ms 一帧时钩子仍返回 0", 0, s2a_fps_present_at(1000000000ull + 16666667));
+            memcpy(&f2, img + 0x4000 + 2040 * 8, 4); expect("缺省口径：游戏跑到 60（16.7 ms）→ 速度槽 0.5（×100）", 50, lroundf(f2 * 100));
+            s2a_fps_present_at(1000000000ull + 50000000); memcpy(&f2, img + 0x4000 + 2040 * 8, 4); expect("缺省口径：游戏自己限 30（33.3 ms）→ 速度槽 1.0（×100）", 100, lroundf(f2 * 100));
             { int s2a_fps_real_source(void); expect("缺省口径：我方帧率表不算真帧率来源", 0, s2a_fps_real_source()); }
+            // 11-25：社区帧率补丁算真帧率来源，要「有一档能开」，不看收了几份。期望手算（60 帧开）：收 1 份但没有能开的档（只带 120 档、自动档）→ 来源 1（补帧可补）；
+            //   有一档能开 → 2（补帧让路）。旧实现按份数判，第一项得 2（补帧也让路，60 帧开关什么都不生效）→ 红
+            {   int s2a_fps_real_source(void), s2a_fps_source(void);
+                g_cp_n = 1; g_cp_tier = 0; expect("只带 120 档、自动档不开：帧率来源 1（补帧可补）", 1, s2a_fps_source());
+                g_cp_tier = 1; expect("有一档能开：帧率来源 2（补帧让路）", 2, s2a_fps_source());
+                g_cp_n = 0; g_cp_tier = 0; }
             _exit(fails);
         }
         int st = 0; waitpid(p, &st, 0); expect("缺省口径子进程：不符项数", 0, WIFEXITED(st) ? WEXITSTATUS(st) : 99);
@@ -93,7 +110,7 @@ int main(void) {
             char dl[300]; memset(dl, 0, sizeof dl); strcpy(dl, "w main 0x101c i32 3 "); while (strlen(dl) < 290) strcat(dl, "* ");
             fprintf(f4, "build 1234abcd5678ef00\nw main 0x1018 i32 5 # %s\nslot 2043 i32 7\n%s\nslot 2044 i32 9\n", cm, dl); fclose(f4);
             char lg[256]; snprintf(lg, sizeof lg, "%s/err.log", d4); fflush(stderr); int se = dup(2); FILE *ef = fopen(lg, "w"); dup2(fileno(ef), 2);
-            s2a_fps_start(d4); usleep(250000); fflush(stderr); dup2(se, 2); fclose(ef);
+            s2a_fps_start(d4); wait_round(); fflush(stderr); dup2(se, 2); fclose(ef);
             int32_t v1, v2; memcpy(&v1, img + 0x1018, 4); memcpy(&v2, img + 0x101c, 4);
             int32_t s3, s4; memcpy(&s3, img + 0x4000 + 2043 * 8, 4); memcpy(&s4, img + 0x4000 + 2044 * 8, 4);
             FILE *rf = fopen(lg, "r"); char buf[8192] = ""; size_t nr = rf ? fread(buf, 1, sizeof buf - 1, rf) : 0; buf[nr] = 0; if (rf) fclose(rf);
@@ -106,6 +123,26 @@ int main(void) {
             fflush(stdout); _exit(fails);
         }
         int ws = 0; waitpid(p, &ws, 0); expect("超长行子进程：不符项数", 0, WIFEXITED(ws) ? WEXITSTATUS(ws) : -1);
+    }
+    // UTF-8 BOM 开头的表（11-21 D-FE44：玩家 mod 目录里 Windows 记事本存的 fps.tsv，首行「BOM # 注释」报「不认的行」红）。各在子进程里起一次，期望手写：
+    //   ① 首行「BOM # 注释」：不报「不认的行」、slot 2045 写 11；② 首行「BOM build …」：照认、不报「整表不用」、slot 2045 写 11。旧实现：①有红；②整表不用、2045 仍 0
+    static const char *bom_tab[2] = {"\xEF\xBB\xBF# 记事本存的表\nbuild 1234abcd5678ef00\nslot 2045 i32 11\n", "\xEF\xBB\xBF" "build 1234abcd5678ef00\nslot 2045 i32 11\n"};
+    for (int i = 0; i < 2; i++) {
+        fflush(stdout); pid_t p = fork(); if (p < 0) return 1;
+        if (!p) {
+            fails = 0; dm_fps_state = NULL; setenv("S2A_FSTEP", "0", 1); setenv("S2A_FPS60", "1", 1);
+            char d5[] = "/tmp/t_fps_bom_XXXXXX"; if (!mkdtemp(d5)) _exit(99);
+            char p5[256]; snprintf(p5, sizeof p5, "%s/fps.tsv", d5); FILE *f5 = fopen(p5, "w"); fputs(bom_tab[i], f5); fclose(f5);
+            char lg[256]; snprintf(lg, sizeof lg, "%s/err.log", d5); fflush(stderr); int se = dup(2); FILE *ef = fopen(lg, "w"); dup2(fileno(ef), 2);
+            s2a_fps_start(d5); wait_round(); fflush(stderr); dup2(se, 2); fclose(ef);
+            FILE *rf = fopen(lg, "r"); char buf[8192] = ""; size_t nr = rf ? fread(buf, 1, sizeof buf - 1, rf) : 0; buf[nr] = 0; if (rf) fclose(rf);
+            int32_t s5; memcpy(&s5, img + 0x4000 + 2045 * 8, 4);
+            expect(i ? "BOM②：首行「BOM build …」不报「不认的行」" : "BOM①：首行「BOM # 注释」不报「不认的行」", 0, strstr(buf, "不认的行") != NULL);
+            expect(i ? "BOM②：不报「整表不用」" : "BOM①：不报「整表不用」", 0, strstr(buf, "整表不用") != NULL);
+            expect(i ? "BOM②：照常写 slot 2045 = 11" : "BOM①：照常写 slot 2045 = 11", 11, s5);
+            fflush(stdout); _exit(fails);
+        }
+        int ws = 0; waitpid(p, &ws, 0); expect("BOM 子进程：不符项数", 0, WIFEXITED(ws) ? WEXITSTATUS(ws) : -1);
     }
     // 起局开关只认 S2A_FPS60（#619 F-fps-cap-disables-table）：起局状态是进程级的，每种组合在子进程里起一次；表目录不存在 = 只走开关那一步。期望手写：
     //   帧率上限 S2A_FPS=30、S2A_FPS60 未设 → 关 0（11-11：默认原帧率、玩家手动开）；S2A_FPS60=0 → 关 0；S2A_FPS=30 且 S2A_FPS60=1 → 开 1；S2A_FPS=120 且 S2A_FPS60=0 → 关 0；
@@ -128,7 +165,7 @@ int main(void) {
         fflush(stdout); pid_t p = fork(); if (p < 0) return 1;
         if (!p) {
             fails = 0; unsetenv("DM_PRESENT_INTERVAL"); unsetenv("S2A_FPS_TABLE"); unsetenv("S2A_FPS"); setenv("S2A_FPS60", "0", 1);
-            s2a_fps_start(dir); usleep(250000);
+            s2a_fps_start(dir); wait_round();
             const char *e = getenv("DM_PRESENT_INTERVAL"); expect("起局关：不设 DM_PRESENT_INTERVAL（L1 交换间隔按游戏）", 0, e != NULL);
             int32_t a; memcpy(&a, img + 0x1000, 4); expect("起局关：w 行 main+0x1000 不写（仍 0）", 0, a);
             memcpy(&a, img + 0x1004, 4); expect("起局关：条件 w 行 main+0x1004 不写（仍 0）", 0, a);
@@ -149,7 +186,7 @@ int main(void) {
         fflush(stdout); pid_t p = fork(); if (p < 0) return 1;
         if (!p) {
             fails = 0; setenv("S2A_FPS_TABLE", p2, 1); unsetenv("S2A_FPS"); setenv("S2A_FPS60", "1", 1);   /* 玩家开了 */
-            s2a_fps_start(dir); usleep(250000);
+            s2a_fps_start(dir); usleep(250000);   // 负对照：整表不用时写入线程不起，等不到圈数，只能等一段时长（负载高只会漏检、不会假红）
             int32_t a; memcpy(&a, img + 0x1000, 4); expect("build 只有 8 位前缀：整表不用，main+0x1000 不写（仍 0）", 0, a);
             float f2; memcpy(&f2, img + 0x4000 + 2041 * 8, 4); expect("build 只有 8 位前缀：slot 2041 不写（仍 0）", 0, (long)(f2 * 1000));
             fflush(stdout); _exit(fails);
@@ -159,11 +196,11 @@ int main(void) {
     }
     unsetenv("DM_PRESENT_INTERVAL"); unsetenv("S2A_FPS"); setenv("S2A_FPS60", "1", 1); unsetenv("S2A_FPS_TABLE");   /* 玩家开了 */
     s2a_fps_start(dir);
-    usleep(250000);
+    wait_round();
     int32_t v; memcpy(&v, img + 0x1000, 4); expect("无条件写 main+0x1000", 60, v);
     { int s2a_fps_source(void); expect("帧率来源：表装上且 60 帧开 → 2（补帧让路）", 2, s2a_fps_source()); }
     memcpy(&v, img + 0x1004, 4); expect("条件标志 0：main+0x1004 写「== 0」那条", 1, v);
-    img[0x1010] = 1; usleep(250000);
+    img[0x1010] = 1; wait_round();
     memcpy(&v, img + 0x1004, 4); expect("条件标志改 1：main+0x1004 写「!= 0」那条", 2, v);
     memcpy(&v, img + 0x1008, 4); expect("条件地址不在数据段的行被拒：main+0x1008 不写", 0, v);
     float fv; memcpy(&fv, img + 0x4000 + 2041 * 8, 4); expect("slot 2041 初值 200（×1000）", 200000, (long)(fv * 1000));
@@ -182,7 +219,7 @@ int main(void) {
     expect("有表：s2a_fps_available", 1, s2a_fps_available());
     expect("起局通知 cpatch 跟随一次（开）", 1, g_follow_n); expect("起局跟随值 1", 1, g_follow_last); expect("起局开：s2a_fps_enabled", 1, s2a_fps_enabled());
     int32_t pre1004; memcpy(&pre1004, img + 0x1004, 4);   // 关之前条件行的开时值（条件选中哪个就是哪个）
-    s2a_fps_set_enabled(0); usleep(250000);
+    s2a_fps_set_enabled(0); wait_round();
     { int s2a_fps_source(void); expect("帧率来源：局中关 60 帧 → 1（补帧可补）", 1, s2a_fps_source()); }
     expect("关：通知 cpatch 跟随（第 2 次）", 2, g_follow_n); expect("关：跟随值 0", 0, g_follow_last);
     s2a_fps_set_enabled(0); expect("重复关：不再通知", 2, g_follow_n);
@@ -192,8 +229,8 @@ int main(void) {
     memcpy(&fv, img + 0x4000 + 2041 * 8, 4); expect("关：slot 2041 写关时值 100（×1000）", 100000, (long)(fv * 1000));
     memcpy(&fv, img + 0x4000 + 2040 * 8, 4); expect("关：速度槽固定 1.0（×100）", 100, lroundf(fv * 100));
     expect("关：钩子返回 1（退回游戏间隔）", 1, s2a_fps_present_at(t += 16666667));
-    s2a_fps_present_at(t += 16666667); memcpy(&fv, img + 0x4000 + 2040 * 8, 4); expect("关：钩子不改速度槽，仍 1.0（×100）", 100, lroundf(fv * 100));
-    s2a_fps_set_enabled(1); usleep(250000);
+    s2a_fps_present_at(t += 16666667); memcpy(&fv, img + 0x4000 + 2040 * 8, 4); expect("关：速度槽跟真实帧间隔（16.7 ms → 0.5，×100；11-18 #1607 起关时也按实测写，原先写死 1.0）", 50, lroundf(fv * 100));
+    s2a_fps_set_enabled(1); wait_round();
     expect("再开：通知 cpatch 跟随（第 3 次）、值 1", 31, g_follow_n * 10 + g_follow_last);
     memcpy(&v, img + 0x1000, 4); expect("再开：main+0x1000 回 60", 60, v);
     memcpy(&fv, img + 0x4000 + 2041 * 8, 4); expect("再开：slot 2041 回 200（×1000）", 200000, (long)(fv * 1000));
@@ -224,15 +261,15 @@ int main(void) {
     }
     // 11-13 起不按热状态 / 低电量自动降档（维护者：不读电量、不设自己挡自己的闸），原降档用例随之删；玩家自己关 60 帧照旧按关生效：
     {   s2a_fps_set_enabled(0);
-        usleep(250000); memcpy(&v, img + 0x1000, 4); expect("用户关着：w 行是关值 30", 30, v);
+        wait_round(); memcpy(&v, img + 0x1000, 4); expect("用户关着：w 行是关值 30", 30, v);
         expect("用户关着：s2a_fps_enabled 0、钩子退回", 10 + 0, s2a_fps_present_at(t += 16666667) * 10 + s2a_fps_enabled());
         expect("原因位读数：玩家关不是降档原因", 0, s2a_fps_cap_reason());
         expect("没有任何降档提示", 0, g_capped_n);
         // 同局 A/B（自动玩家 speed_ab）：阶段 1 = 原因 3、2 / 0 = 照常；普查 A/B 模式（S2A_FPS_AB=1）下 60 帧没开（S2A_FPS60=0）的款平时原因 3，阶段 2 才放开
         s2a_fps_set_enabled(1); s2a_fps_ab_set(1); expect("A/B 阶段 1：原因 3", 3, s2a_fps_cap_reason());
-        usleep(250000); memcpy(&v, img + 0x1000, 4); expect("A/B 阶段 1：w 行写关值 30（同关 60 帧）", 30, v);
+        wait_round(); memcpy(&v, img + 0x1000, 4); expect("A/B 阶段 1：w 行写关值 30（同关 60 帧）", 30, v);
         s2a_fps_ab_set(2); expect("A/B 阶段 2：原因 0", 0, s2a_fps_cap_reason());
-        usleep(250000); memcpy(&v, img + 0x1000, 4); expect("A/B 阶段 2：w 行回 60", 60, v);
+        wait_round(); memcpy(&v, img + 0x1000, 4); expect("A/B 阶段 2：w 行回 60", 60, v);
         s2a_fps_ab_set(0); expect("A/B 测完：原因 0", 0, s2a_fps_cap_reason());
         setenv("S2A_FPS_AB", "1", 1); setenv("S2A_FPS60", "0", 1);
         expect("普查 A/B 模式、60 帧没开：平时原因 3", 3, s2a_fps_cap_reason());

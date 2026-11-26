@@ -2,7 +2,7 @@
 # 直连着色器库·合并抽取（双轨 §12.3，着色器线 10-24）：把 S2Arm 抽取（graphics/tools/shbake/nxsh_extract.py）有、直连抽取（shader_split.py）没有的着色器，
 # 补进直连包目录与着色器表，让直连出库（C# dsh_batch build，graphics/tools/direct/dsh/batch/Build.cs）原样出「两边并集」的直连库；同时出两张给运行时用的表。
 #
-# 键口径一律用直连口径（运行时 nvn_mtl.m prog_key 按它查库）：sha256(控制段[0:L] ‖ 机器码)[:16]，L = 控制段 +0x20 自报长度落在 [0x760, 0x880) 时取它，否则 0x880。
+# 键口径一律用直连口径（运行时 nvn_mtl.m prog_key 按它查库）：sha256(控制段[0:L] ‖ 机器码)[:16]，L = 控制段 +0x20 自报长度落在 [0x760, 0x880) 时取它，否则 0x880；第 2 代哈希前把两段易变字段置零（translator/nvn_key.py）。
 #   S2Arm 抽取取完整自报长度，控制段长于 0x880 的两边键不同（10-24 动森 9794 个里 28 个），所以 S2Arm 那边的键在这里按直连口径重算，不直接用。
 #
 # 用法：merge_extract.py <S2Arm 抽取目录（含 src/ 与 index.tsv）> <直连包目录（*.bin）> <直连抽取 shader_map.tsv> <输出目录>
@@ -16,24 +16,20 @@
 #                   （同 shader_split.py：+0x748 起 3 个 u32 线程组、+0x754 共享字节数按 16 对齐；配置档已有的字段优先）。原先只有直连抽取抽到的计算着色器有这两项，
 #                   S2Arm 独有的没有 → 翻译按 1×1×1 编、反射线程组为空，运行时整次派发被跳过（10-25 暗黑2 直连场景全黑：库里 26 个计算着色器全是 S2Arm 独有）
 #   merge.json      读数：两边各多少、交集、各自独有、并集
+# 另一用法：merge_extract.py --alias <包目录> <shader_map.tsv> <输出 key_alias.tsv>：出包内第 1 代 → 第 2 代键别名表（直连库收表时与 shader_map.tsv 同处随包，见 alias）
 import hashlib, json, os, shutil, struct, subprocess, sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'shbake'))
 import srcpack   # S2Arm 抽取的着色器字节存放（src/*.pk）
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', '..', 'translator'))
 import ns2_shaders as ns2   # Switch 2（NVN2，控制段版本 0xc9）的键规则与控制段字段，与 shader_split.py / 宿主 nvn2_key 同一份
+import nvn_key   # Switch 1 键规则，与 shader_split.py / 宿主 nvn_key.h 同一份
 
 STAGE_WORD = {'vs': 'vertex', 'hs': 'hull', 'ds': 'domain', 'gs': 'geometry', 'ps': 'pixel', 'cs': 'compute', 'ts': 'task', 'ms': 'mesh'}   # = shader_split.py STAGE_NAME
 SEP = b'BTCDBTCD'
 
 
-def ctl_len(ctl):
-    n = struct.unpack_from('<I', ctl, 0x20)[0]
-    return n if 0x760 <= n < 0x880 else 0x880
-
-
-def nx_key(ctl, code):
-    if ns2.is_nvn2(ctl): return hashlib.sha256(ns2.key_ctl(ctl) + code).hexdigest()[:16]
-    return hashlib.sha256(ctl[:ctl_len(ctl)] + code).hexdigest()[:16]
+ctl_len = nvn_key.ctl_len
+nx_key = nvn_key.skey   # 第 2 代键（两段易变字段置零，translator/nvn_key.py）
 
 
 def records(d):   # 同出库 Build.cs Records：按分隔符切
@@ -76,6 +72,22 @@ def read_map(path):
     return head, rows
 
 
+def alias(pkg, mapf, outf):
+    """包内键别名表 key_alias.tsv（随包，与 shader_map.tsv 同处）：表里每支着色器按记录的控制段 + 代码重算第 1 代键（不置零），与第 2 代键不同的写一行「第 1 代键<TAB>第 2 代键」。
+    宿主读档恢复存档里的第 1 代键、读本机管线记录时按它换成第 2 代（nvn_mtl.m nvn_be_shader_key_canon）。Switch 2 着色器两代同键、不进表。→ 写入行数"""
+    recs, out = {}, {}
+    for r in read_map(mapf)[1]:
+        name, idx, key = r[0], int(r[1]), r[3]
+        if name not in recs: recs[name] = records(open(os.path.join(pkg, name), 'rb').read())
+        code, ctl = split_rec(recs[name][idx])
+        if nvn_key.skey(ctl, code) != key: continue   # 表行与记录对不上的不作别名（合并时已报过）
+        v1 = nvn_key.skey(ctl, code, gen=1)
+        if v1 != key: out[v1] = key
+    with open(outf, 'w', encoding='utf-8', newline='\n') as f:
+        f.write('# 第 1 代键\t第 2 代键（translator/nvn_key.py）\n'); f.writelines(f'{a}\t{b}\n' for a, b in sorted(out.items()))
+    return len(out)
+
+
 def main(a):
     s2x, nxpkg, nxmap, out = a
     red, yellow = [], []
@@ -115,7 +127,7 @@ def main(a):
         if f.endswith('.bin'):
             if f.endswith('_s2a.bin'): red.append(f'直连包目录里已有 {f}（与本工具新增的文件重名）')
             s, d = os.path.join(nxpkg, f), os.path.join(pd, f)
-            if subprocess.run(['cp', '-c', s, d], capture_output=True).returncode: shutil.copyfile(s, d)   # APFS 克隆，不支持就普通拷
+            if sys.platform != 'darwin' or subprocess.run(['cp', '-c', s, d], capture_output=True).returncode: shutil.copyfile(s, d)   # macOS APFS 克隆，不支持就普通拷；别的系统直接普通拷（Windows 原生进程的 PATH 上没有 cp）
     add, per = [], {}
     for nk in only:
         k, st, code, ctl = s2[nk]
@@ -135,7 +147,7 @@ def main(a):
         st = word_stage.get(word)
         if not st: red.append(f'直连键 {nk} 阶段 {word} 不认识'); continue
         if st in ('ts', 'ms'): no_s2a += 1; continue   # NVN2 任务 / 网格：S2Arm 抽取格式（nxsh_extract 六阶段）与通用模式都没有这两个阶段，不反向补
-        sk = hashlib.sha256(ctl + code).hexdigest()[:16]
+        sk = hashlib.sha256(nvn_key.key_bytes(ctl) + code).hexdigest()[:16]   # S2Arm 口径（整段控制段，nxsh_extract key_of），同样第 2 代置零
         sw.put(sk, code, ctl)
         nx_only_rows.append(f'{sk}\t{st}\t{src}\t0\n'); key_map[sk] = nk
     sw.flush()
@@ -172,5 +184,7 @@ def main(a):
 
 
 if __name__ == '__main__':
+    if len(sys.argv) == 5 and sys.argv[1] == '--alias':   # merge_extract.py --alias <包目录> <shader_map.tsv> <输出 key_alias.tsv>
+        print(f'键别名：{alias(*sys.argv[2:])} 支第 1 代键 → 第 2 代'); sys.exit(0)
     if len(sys.argv) != 5: sys.exit(__doc__ or '用法：merge_extract.py <S2Arm 抽取目录> <直连包目录> <直连抽取 shader_map.tsv> <输出目录>')
     sys.exit(main(sys.argv[1:]))

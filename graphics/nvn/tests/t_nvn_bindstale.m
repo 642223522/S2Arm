@@ -104,15 +104,19 @@ int main(void) {
         __unsafe_unretained NvProg *c8 = p8 ? serial_get(p8->serial) : nil;
         VERIFY(c8 && c8->sh[0] == vs_g && c8->sh[1] == fs_f && !c8->sh[2], "⑦ 只有片元的程序按 0x1f 绑：顶点留 vs_g、片元 fs_f、几何解绑 → %s / %s / %s", k0(p8), k1(p8), c8 && c8->sh[2] ? c8->sh[2]->key : "-");
 
-        // 反证：旧实现在组合时对 S.bst 里的失效对象调 prog_get，子进程里照做必须崩
+        // 反证：旧实现在组合时对 S.bst 里的失效对象调 prog_get，取不回绑定时的顶点着色器 vs_a（所以组合必须按绑定时序号取，见 ②）。
+        //   原先断言「子进程里必崩」：失效对象的代码区指针是 0x20200ffffffff，旧 prog_get 取键读野地址就崩。11-17 aad3c7407 起取键前先查游戏映射、
+        //   读不了就不取键按缺阶段报，不再崩——崩不崩已不是旧路径错不错的判据。现在判结果：子进程里拿到 vs_a 退出 1（反证不成立），
+        //   拿不到退出 0；照旧崩了也算旧路径取不回（子进程里做，崩了不连累本进程）
         fflush(stdout);
         pid_t pid = fork();
-        if (pid == 0) { prog_get(&a); _exit(0); }
+        if (pid == 0) { __unsafe_unretained NvProg *o = prog_get(&a); _exit(o && o->sh[0] == vs_a ? 1 : 0); }
         int ws = 0; waitpid(pid, &ws, 0);
-        VERIFY(WIFSIGNALED(ws), "反证：对失效对象 prog_get（旧实现的路径）→ %s", WIFSIGNALED(ws) ? strsignal(WTERMSIG(ws)) : "没崩");
+        VERIFY(WIFSIGNALED(ws) || (WIFEXITED(ws) && WEXITSTATUS(ws) == 0), "反证：对失效对象 prog_get（旧实现的路径）取不回绑定时的 vs_a → %s",
+               WIFSIGNALED(ws) ? strsignal(WTERMSIG(ws)) : WEXITSTATUS(ws) == 0 ? "没取回（顶点阶段缺）" : "竟取回了 vs_a");
     }
     unlink(getenv("DM_NVN_SHMAP"));
     if (failures) printf("✗ t_nvn_bindstale：%u 项里 %u 项不过\n", checks, failures);   // 原生门禁按「✓ t_ / ✗ t_」逐组判（runtime/gate.sh）
-    else printf("✓ t_nvn_bindstale：%u 项全过（沿用阶段的程序失效后按绑定时序号取着色器；旧路径读失效对象必崩）\n", checks);
+    else printf("✓ t_nvn_bindstale：%u 项全过（沿用阶段的程序失效后按绑定时序号取着色器；旧路径读失效对象取不回绑定时的着色器）\n", checks);
     return failures ? 1 : 0;
 }

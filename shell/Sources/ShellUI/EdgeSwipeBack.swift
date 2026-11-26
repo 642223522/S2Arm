@@ -1,3 +1,4 @@
+#if !os(tvOS)   // tvOS 不编本文件：屏幕边缘右滑返回（电视版库界面见 TVLibraryView.swift，UPSTREAM.md「我方改动」）
 import SwiftUI
 
 #if canImport(UIKit)
@@ -78,3 +79,4 @@ struct EdgeSwipeBack: View {
     var body: some View { Color.clear.frame(width: 0, height: 0) }
 }
 #endif
+#endif   // !os(tvOS)

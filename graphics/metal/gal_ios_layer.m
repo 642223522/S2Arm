@@ -12,13 +12,25 @@ UIView *s2a_ios_root_view(void) __attribute__((weak_import));
 CGRect s2a_ios_game_area(void) __attribute__((weak_import));
 void s2a_ios_attach_game_layer(UIView *root, CALayer *game) __attribute__((weak_import));
 static CAMetalLayer *g_ios_layer;
+// 出图缩放（屏幕点 → 像素）。Apple TV（11-15，参考 brad-n/TVPort front_ios.m，MIT）：可绘制宽度封顶 1920（NXGAL_TV_MAX_WIDTH 可改），
+//   4K 电视由电视硬件放大——三个画面缓冲从约 100 MB 降到 25 MB（Apple TV 约 2.1 GB 被系统结束）；iPhone 照旧按原生像素
+static CGFloat out_scale(CGRect b, CGFloat s) {
+#if TARGET_OS_TV
+    static double cap = -1;
+    if (cap < 0) { const char *e = getenv("NXGAL_TV_MAX_WIDTH"); cap = e && atof(e) > 0 ? atof(e) : 1920; }
+    if (b.size.width * s > cap && b.size.width > 0) s = cap / b.size.width;
+#else
+    (void)b;
+#endif
+    return s;
+}
 // 主线程布局，不接触游戏纹理；渲染线程经已有 SetSize 锁读取新 drawable 尺寸。
 NXGAL_API void nxgal_window_relayout_ios(void) {
     UIView *v=g_ios_layer && s2a_ios_root_view ? s2a_ios_root_view() : nil;
     if (!v || UIApplication.sharedApplication.applicationState==UIApplicationStateBackground) return;
     CGRect b=s2a_ios_game_area ? s2a_ios_game_area() : v.bounds;
     if (CGRectIsEmpty(b)) b=v.bounds;
-    CGFloat s=v.window.screen.nativeScale ?: UIScreen.mainScreen.nativeScale;
+    CGFloat s=out_scale(b, v.window.screen.nativeScale ?: UIScreen.mainScreen.nativeScale);
     [CATransaction begin]; [CATransaction setDisableActions:YES];
     g_ios_layer.frame=b; g_ios_layer.contentsScale=s;
     [CATransaction commit];
@@ -39,8 +51,9 @@ NXGAL_API int32_t nxgal_window_attach_ios(void) {
     __block CAMetalLayer *L = nil; __block CGSize px = {0, 0};
     void (^mk)(void) = ^{
         UIView *v = s2a_ios_root_view(); if (!v) return;
-        L = [CAMetalLayer layer]; CGFloat s = v.window.screen.nativeScale ?: UIScreen.mainScreen.nativeScale;
+        L = [CAMetalLayer layer];
         CGRect b=s2a_ios_game_area ? s2a_ios_game_area() : v.bounds; if (CGRectIsEmpty(b)) b=v.bounds;
+        CGFloat s = out_scale(b, v.window.screen.nativeScale ?: UIScreen.mainScreen.nativeScale);
         L.frame = b; L.contentsScale = s; px = CGSizeMake(round(b.size.width * s), round(b.size.height * s));
         L.drawableSize = px;
         g_ios_layer=L;

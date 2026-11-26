@@ -3,7 +3,7 @@
 # 玩家机上出包不许写 ~/.s2arm/run（10-26 交付线：Spare-host 斯普拉遁3 出包后数据目录外多出直连缓存 6.5 GB + 翻译缓存 5.3 GB，清数据目录 / 删游戏都清不到）：
 #   出包链脚本里落到 ~/.s2arm/run 的缺省必须经 S2A_RUN_ROOT（bash `${S2A_RUN_ROOT:-$HOME/.s2arm/run}`、Python `os.environ.get('S2A_RUN_ROOT') or …`），
 #   启动器作业环境（pack/jobs/core.py Context.env）把 S2A_RUN_ROOT 指到私有目录下。我方开发机不设，照旧 ~/.s2arm/run。
-# 11-07 启动器零配置（联合开发者反馈：direct_lib.sh 回退 ~/.s2arm/venv、改写器依赖报错列 ${S2A_RUN_ROOT:-$HOME/.s2arm/run}、字体依赖提示指向 ~/.s2arm/venv）：
+# 11-07 启动器零配置（联合开发者反馈：当时的 direct_lib.sh 回退 ~/.s2arm/venv、改写器依赖报错列 ${S2A_RUN_ROOT:-$HOME/.s2arm/run}、字体依赖提示指向 ~/.s2arm/venv）：
 #   玩家路径（出包 / 起局链）与「从源码构建」路径不许出现开发机专用路径：~/.s2arm 下的 venv / data / toolchain / S2Arm / wt / build / gate_data / sw、
 #   s2arm-wt、.s2arm/rw、/Users/<我方账号>。开发机靠 tools/machine.local / 环境变量显式声明（bash tools/machine.sh get <名>），代码里不写死。
 # 期望（按规则手写）：① 扫出包链 + 构建路径全部 .sh / .py（不含 tests/ 与测试 / 门禁壳）的非注释行，裸写 ~/.s2arm/run 的 0 处；远端机路径（$RH / {home}，gate-host 上的队列）不算
@@ -16,7 +16,7 @@
 #   ⑧ 行为：C 改写器固定依赖全缺时报错列出实际查过的路径（在 S2A_RUN_ROOT 下）并指向一键准备 prepare_build.py，不出现「$HOME」字面量
 #   扫描范围 = refresh.sh 及它真正调到的脚本（runtime/run_mac.sh 经直连抽取的 Vulkan 抓取局、维护方工具 / mac_save / 维护方工具 经 run_mac.sh、维护方工具 经出包入口的盘判定、
 #     mem_admit 经 dsh_batch.py build、csproj_closure 经 shader_pack.sh）+ 从源码构建（launchers/macos 的 build_app / bundle_* / runtime/rewriter / pack/fonts / tools/doctor.sh）
-import os, re, subprocess, sys, tempfile
+import os, re, shutil, subprocess, sys, tempfile
 from pathlib import Path
 R = Path(__file__).resolve().parent.parent
 bad = 0
@@ -107,10 +107,14 @@ with tempfile.TemporaryDirectory() as t:
     clean = dict(base, HOME=str(home), S2A_MACHINE_NO_LOCAL='1')
     got = subprocess.run(['bash', '-c', 'source "$1/pack/stage_keyfiles.sh"; _sd_py', '_', str(R)], env=clean, capture_output=True, text=True).stdout.strip()
     ml = T / 'm.local'; ml.write_text('S2A_PY=$HOME/from-machine-local\nS2A_CPU_LEDGER=1\n')
-    def mget(extra):
-        return subprocess.run(['bash', str(R / 'tools/machine.sh'), 'get', 'S2A_PY'], env=dict(base, HOME=str(home), **extra), capture_output=True, text=True).stdout.strip()
+    # machine.sh 显式路径不存在时会继续找同目录 / 主检出（git 公共目录）/ 当前目录的 machine.local（开发机上这几处有真文件）：
+    # 「没声明」一项必须把脚本拷到没有 machine.local、不在任何 git 检出里的孤立目录去跑，否则结果随跑测试的机器而变
+    iso = T / 'iso'; (iso / 'tools').mkdir(parents=True); shutil.copy(R / 'tools/machine.sh', iso / 'tools/machine.sh')
+    def mget(extra, isolated=False):
+        sh, cwd = (iso / 'tools/machine.sh', iso) if isolated else (R / 'tools/machine.sh', None)
+        return subprocess.run(['bash', str(sh), 'get', 'S2A_PY'], cwd=cwd, env=dict(base, HOME=str(home), **extra), capture_output=True, text=True).stdout.strip()
     m_env, m_file, m_no, m_none = (mget(dict(S2A_PY='/env/py', S2A_MACHINE_LOCAL=str(ml))), mget(dict(S2A_MACHINE_LOCAL=str(ml))),
-                                   mget(dict(S2A_MACHINE_LOCAL=str(ml), S2A_MACHINE_NO_LOCAL='1')), mget(dict(S2A_MACHINE_LOCAL=str(T / 'none'))))
+                                   mget(dict(S2A_MACHINE_LOCAL=str(ml), S2A_MACHINE_NO_LOCAL='1')), mget(dict(S2A_MACHINE_LOCAL=str(T / 'none')), isolated=True))
     idx = subprocess.run([sys.executable, '-c', 'import sys; sys.path.insert(0, sys.argv[1]); import community; print(len(community._indexes()))', str(R / 'pack/jobs')],
                          env=clean, capture_output=True, text=True)
     ck(got == 'python3' and m_env == '/env/py' and m_file == str(home / 'from-machine-local') and m_no == '' and m_none == '' and idx.stdout.strip() == '0',

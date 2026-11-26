@@ -4,7 +4,9 @@
 // 之后的启动：只有图标、标题和一个小转圈，首帧上屏就淡出。素材取本地资源包（icon.jpg、ctl/control.nacp），不外传。
 // 主线程每 0.25 秒读一次模型快照；页面压在根视图最上层（虚拟手柄等后挂的视图也压不住它），首帧后 0.35 秒淡出并移除。
 #import <UIKit/UIKit.h>
+#import "tv_compat.h"
 #import "s2a_l10n.h"
+#import "bundle_icon.h"
 #include "s2a_loadprog.h"
 uint64_t now_ns(void);
 
@@ -36,8 +38,8 @@ static NSString *nacp_title(void) {
 static UIImage *game_icon(void) {
     UIImage *im = [UIImage imageWithContentsOfFile:[game_data_dir() stringByAppendingPathComponent:@"icon.jpg"]];
     if (im) return im;
-    NSDictionary *icons = [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleIcons"];   // 包里的 AppIcon（pack/app_bundle.py 用同一张游戏图标缩的）
-    NSString *name = [icons[@"CFBundlePrimaryIcon"][@"CFBundleIconFiles"] lastObject];
+    // 包里的 AppIcon（pack/app_bundle.py 用同一张游戏图标缩的；Apple TV 包是品牌资源名，见 bundle_icon.h）
+    NSString *name = s2a_bundle_icon_name([NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleIcons"]);
     return name ? [UIImage imageNamed:name] : nil;
 }
 
@@ -76,7 +78,7 @@ static UILabel *label(CGFloat size, UIFontWeight w, UIColor *c) {
     _backdrop = [[UIImageView alloc] initWithImage:ic]; _backdrop.contentMode = UIViewContentModeScaleAspectFill; _backdrop.clipsToBounds = YES;
     _backdrop.frame = self.bounds; _backdrop.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight; _backdrop.alpha = 0.9;
     [self addSubview:_backdrop];
-    UIVisualEffectView *blur = [[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemMaterialDark]];
+    UIVisualEffectView *blur = [[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:S2A_BLUR_MATERIAL_DARK]];
     blur.frame = self.bounds; blur.autoresizingMask = _backdrop.autoresizingMask; [self addSubview:blur];
 
     _icon = [[UIImageView alloc] initWithImage:rounded]; _icon.translatesAutoresizingMaskIntoConstraints = NO; _icon.contentMode = UIViewContentModeScaleAspectFill;
@@ -113,7 +115,7 @@ static UILabel *label(CGFloat size, UIFontWeight w, UIColor *c) {
     _stepDots = dots; _stepLabels = labs;
     UIStackView *steps = [[UIStackView alloc] initWithArrangedSubviews:items]; steps.spacing = 22; steps.alignment = UIStackViewAlignmentCenter;
 
-    _bar = [[UIProgressView alloc] initWithProgressViewStyle:UIProgressViewStyleBar]; _bar.translatesAutoresizingMaskIntoConstraints = NO;
+    _bar = [[UIProgressView alloc] initWithProgressViewStyle:S2A_PROGRESS_BAR]; _bar.translatesAutoresizingMaskIntoConstraints = NO;
     _bar.progressTintColor = [UIColor colorWithWhite:1 alpha:0.92]; _bar.trackTintColor = [UIColor colorWithWhite:1 alpha:0.14];
     _bar.layer.cornerRadius = 2; _bar.clipsToBounds = YES;
     _detail = label(13, UIFontWeightRegular, UIColor.secondaryLabelColor);
@@ -172,16 +174,28 @@ static UILabel *label(CGFloat size, UIFontWeight w, UIColor *c) {
 @end
 
 static S2ALoadPage *g_page;
+static void page_build(UIView *root, int first);
 // 场景连上、根视图建好时调（ios/app.m）：首次与否取模型（host_main.c main 里 s2a_load_begin 定）
 void s2a_loadpage_attach(UIView *root) {
     if (g_page || !root) return;
     s2a_load_view v; s2a_load_snapshot(now_ns(), &v);
     if (v.stage == S2A_LOAD_DONE) return;
-    g_page = [[S2ALoadPage alloc] initWithFrame:root.bounds firstRun:v.first_run];
+    page_build(root, v.first_run);
+}
+// 建页面、挂上、起 0.25 秒刷新。简短启动画面期间模型把这一局升成首次（loadprog.c：之后的启动却还要编很久，11-23 #2133）时，
+//   换成完整加载页（进度 + 先开始玩），同一个根视图、同一套刷新
+static void page_build(UIView *root, int first) {
+    g_page = [[S2ALoadPage alloc] initWithFrame:root.bounds firstRun:first];
     [root addSubview:g_page]; [g_page refresh];
-    { void s2a_report_gear_attach(UIView *); s2a_report_gear_attach(g_page); }   // 左上角小齿轮：故障报修（加载 / 解包时也找得到上传入口）
+    { void s2a_report_gear_attach(UIView *); s2a_report_gear_attach(g_page); }   // 左上角「故障报修」按钮（加载 / 解包时也找得到上传入口）
     __weak S2ALoadPage *w = g_page;
-    g_page.timer = [NSTimer scheduledTimerWithTimeInterval:0.25 repeats:YES block:^(NSTimer *t) { (void)t; [w refresh]; }];
+    g_page.timer = [NSTimer scheduledTimerWithTimeInterval:0.25 repeats:YES block:^(NSTimer *t) { (void)t;
+        S2ALoadPage *pg = w; if (!pg) return;
+        if (!pg.firstRun && pg.superview) { s2a_load_view v; s2a_load_snapshot(now_ns(), &v);
+            if (v.first_run && v.stage != S2A_LOAD_DONE) { UIView *r = pg.superview; [pg.timer invalidate]; pg.timer = nil; [pg removeFromSuperview];
+                if (g_page == pg) g_page = nil;
+                page_build(r, 1); return; } }
+        [pg refresh]; }];
 }
 // 根视图上后挂的视图（虚拟手柄、开发浮层）挂完后调：加载页压回它们上面
 void s2a_loadpage_front(void) { if (g_page.superview) [g_page.superview bringSubviewToFront:g_page]; }

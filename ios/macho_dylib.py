@@ -53,7 +53,7 @@ def _adhoc_sig(pages, code_limit, text_size, ident=b"S2AImages\0"):
     return struct.pack(">IIIII", 0xFADE0CC0, 20 + len(cd), 1, 0, 20) + cd
 
 
-def write(dst, install_name, text, data=None, minos=(18, 0)):
+def write(dst, install_name, text, data=None, minos=(18, 0), platform=2):
     tsec, tend = _place(PAGE, text)                     # 头页之后放 __TEXT 各节
     tsize = _up(tend, PAGE)
     dname, dsec_in = data if data else (None, [])
@@ -73,7 +73,7 @@ def write(dst, install_name, text, data=None, minos=(18, 0)):
     cmds += [_seg("__LINKEDIT", le, _up(cs_off + cs_size - le, PAGE), le, cs_off + cs_size - le, 1, []),
              (struct.pack("<IIIIII", LC_ID_DYLIB, idz, 24, 2, 0x10000, 0x10000) + name).ljust(idz, b"\0"),
              struct.pack("<II16s", LC_UUID, 24, b"\0" * 16),     # 占位：写完按内容回填（同输入在哪台机器上出都逐字节相同）
-             struct.pack("<IIIIII", LC_BUILD_VERSION, 24, 2, v, v, 0),   # 平台 2 = iOS
+             struct.pack("<IIIIII", LC_BUILD_VERSION, 24, platform, v, v, 0),   # 平台 2 = iOS、3 = tvOS
              struct.pack("<IIIIII", LC_SYMTAB, 24, 0, 0, le, len(strtab)),
              struct.pack("<II18I", LC_DYSYMTAB, 80, *([0] * 18)),
              struct.pack("<IIII", LC_CODE_SIGNATURE, 16, cs_off, cs_size)]   # 最后一条，与 ld 一致

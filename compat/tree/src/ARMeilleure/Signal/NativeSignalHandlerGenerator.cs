@@ -276,7 +276,7 @@ namespace ARMeilleure.Signal
                         pcCtxAddress = context.Add(ucontextPtr, Const(440UL));
                         baseRegsOffset = 184UL;
                     }
-                    else if (OperatingSystem.IsMacOS() || OperatingSystem.IsIOS())
+                    else if (OperatingSystem.IsMacOS() || (OperatingSystem.IsIOS() || OperatingSystem.IsTvOS()))   // 平台例外：tvOS 与 iOS 走同一分支
                     {
                         ucontextPtr = context.Load(OperandType.I64, context.Add(ucontextPtr, Const(48UL)));
 
@@ -335,7 +335,7 @@ namespace ARMeilleure.Signal
 
         private static bool SupportsFaultAddressPatchingForHostOs()
         {
-            return OperatingSystem.IsLinux() || OperatingSystem.IsMacOS() || OperatingSystem.IsIOS();
+            return OperatingSystem.IsLinux() || OperatingSystem.IsMacOS() || (OperatingSystem.IsIOS() || OperatingSystem.IsTvOS());   // 平台例外：tvOS 与 iOS 走同一分支
         }
     }
 }

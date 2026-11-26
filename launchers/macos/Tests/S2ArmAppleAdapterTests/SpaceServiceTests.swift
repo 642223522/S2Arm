@@ -118,8 +118,6 @@ final class LibraryChangeTests: XCTestCase {
         XCTAssertEqual(saved["libraryId"] as? String, "new-id")
         XCTAssertEqual(saved["developerDir"] as? String, "/X")   // 别的字段原样
         XCTAssertEqual(saved["docked"] as? Bool, true)
-        let mode = (try FileManager.default.attributesOfItem(atPath: prefs.path)[.posixPermissions] as? NSNumber)?.intValue
-        XCTAssertEqual(mode, 0o600)
         // 重新读回来也是新库
         XCTAssertEqual(JobEnvironment.load(privateRoot: box.privateRoot, resources: box.resources).libraryId, "new-id")
     }

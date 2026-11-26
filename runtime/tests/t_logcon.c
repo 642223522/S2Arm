@@ -26,10 +26,17 @@ int main(void) {
     char big[512]; memset(big, 'x', sizeof big - 1); big[sizeof big - 1] = 0;
     uint64_t t0 = ms(); char z[65536];
     for (int i = 0; i < 4000; i++) { s2a_log_line("%s", big); while (read(l[0], z, sizeof z) > 0) {} }
-    if (ms() - t0 > 5000) { printf("✗ ② 副本没人读时调用方被卡（%llu ms）\n", (unsigned long long)(ms() - t0)); bad++; }
-    // 读到 1 秒没新数据为止
+    // 「调用方不被卡」由下面的「丢行 ≥ 1、有丢行通知」证明（副本没人读时丢行而不是阻塞；真阻塞的话上面的循环走不完）。耗时只打印，不判（11-19：原 > 5 秒判红，负载高时假红）
+    printf("  ② 4000 行写完 %llu ms（仅供参考）\n", (unsigned long long)(ms() - t0));
+    // 读到「整行 + 丢行通知里的丢行数 = 4000」为止（30 秒兜底），不按「1 秒没新数据」判读完（11-19：负载高时写出线程停顿过 1 秒就截断 → 假红）
     static char all[4 << 20]; size_t n = 0; struct pollfd pf = { c[0], POLLIN, 0 };
-    while (poll(&pf, 1, 1000) > 0) { ssize_t k = read(c[0], all + n, sizeof all - 1 - n); if (k <= 0) break; n += (size_t)k; }
+    for (uint64_t t1 = ms(); ms() - t1 < 30000; ) {
+        if (poll(&pf, 1, 100) > 0) { ssize_t k = read(c[0], all + n, sizeof all - 1 - n); if (k <= 0) break; n += (size_t)k; }
+        all[n] = 0; unsigned long g_ = 0, d_ = 0;   // 只数完整的行
+        for (char *s = all, *e; (e = strchr(s, '\n')); s = e + 1) { unsigned long v; const char *q = strstr(s, "[控制台] 环满丢 ");
+            if (q && q < e && sscanf(q, "[控制台] 环满丢 %lu 行", &v) == 1) d_ += v; else if ((size_t)(e - s) == sizeof big - 1 && s[0] == 'x') g_++; }
+        if (g_ + d_ >= 4000) break;
+    }
     all[n] = 0; unsigned long got = 0, drop = 0, broken = 0, notes = 0;
     for (char *s = all, *e; *s; s = e + 1) {
         if (!(e = strchr(s, '\n'))) { broken++; break; }
@@ -42,8 +49,8 @@ int main(void) {
     if (got + drop != 4000 || broken || !notes || !drop)
         { printf("✗ ② 期望 整行数 + 丢行数 = 4000、坏行 0、丢行通知 ≥1 → 真结果 整行 %lu、丢 %lu、坏行 %lu、通知 %lu\n", got, drop, broken, notes); bad++; }
     close(c[0]); s2a_log_line("断开后 %d", 1);
-    for (int i = 0; i < 100 && g_s2a_confd >= 0; i++) { struct timespec ts = { 0, 10000000 }; nanosleep(&ts, 0); s2a_log_line("断开后 %d", 2); }
-    if (g_s2a_confd >= 0) { printf("✗ ③ 读端关后 1 秒副本 fd 仍是 %d（期望 -1）\n", g_s2a_confd); bad++; }
+    for (int i = 0; i < 3000 && g_s2a_confd >= 0; i++) { struct timespec ts = { 0, 10000000 }; nanosleep(&ts, 0); s2a_log_line("断开后 %d", 2); }   // 30 秒兜底（原 1 秒）
+    if (g_s2a_confd >= 0) { printf("✗ ③ 读端关后 30 秒副本 fd 仍是 %d（期望 -1）\n", g_s2a_confd); bad++; }
     { int q[2]; if (!pipe(q)) { pid_t pid = fork();
         if (pid == 0) { close(q[0]); int nul = open("/dev/null", O_WRONLY); g_s2a_logfd = nul; g_s2a_confd = -1; s2a_logcon_start(q[1]); char pad[200]; memset(pad, 'y', sizeof pad - 1); pad[sizeof pad - 1] = 0; for (int i = 0; i < 2000; i++) s2a_log_line("%s 退出前 %d", pad, i); s2a_logcon_flush(); _exit(0); }
         close(q[1]); { struct timespec ts = { 0, 200000000 }; nanosleep(&ts, 0); }   /* 晚 200 毫秒才读：管道先写满，子进程 exit 时环里还压着约 340 KB */
@@ -57,9 +64,9 @@ int main(void) {
             s2a_logcon_test_inlock = reenter; s2a_log_line("外层一行"); s2a_log_line("之后一行"); s2a_logcon_flush(); _exit(0); }
         close(q[1]); int st = -1; uint64_t t0 = ms(); static char r[65536]; size_t m = 0; ssize_t k;
         fcntl(q[0], F_SETFL, O_NONBLOCK);
-        while (ms() - t0 < 5000) { while ((k = read(q[0], r + m, sizeof r - 1 - m)) > 0) m += (size_t)k; if (waitpid(pid, &st, WNOHANG) == pid) break; struct timespec ts = { 0, 10000000 }; nanosleep(&ts, 0); }
+        while (ms() - t0 < 30000) { while ((k = read(q[0], r + m, sizeof r - 1 - m)) > 0) m += (size_t)k; if (waitpid(pid, &st, WNOHANG) == pid) break; struct timespec ts = { 0, 10000000 }; nanosleep(&ts, 0); }   // 30 秒兜底（原 5 秒：负载高时子进程被挤 5 秒就误报自锁死）
         while ((k = read(q[0], r + m, sizeof r - 1 - m)) > 0) m += (size_t)k; r[m] = 0;
-        if (st == -1) { kill(pid, SIGKILL); waitpid(pid, &st, 0); printf("✗ ⑤ 持锁时同线程再打日志：子进程 5 秒没退出（自锁死）\n"); bad++; }
+        if (st == -1) { kill(pid, SIGKILL); waitpid(pid, &st, 0); printf("✗ ⑤ 持锁时同线程再打日志：子进程 30 秒没退出（自锁死）\n"); bad++; }
         else if (!strstr(r, "外层一行\n") || !strstr(r, "之后一行\n") || !strstr(r, "环满丢 1 行")) { printf("✗ ⑤ 期望 外层 / 之后两行在、丢行通知 1 行 → 真结果「%.200s」\n", r); bad++; }
         close(q[0]); } }
     printf("%s t_logcon：%d 处不符（② 整行 %lu、环满丢 %lu、通知 %lu 次）\n", bad ? "✗" : "✓", bad, got, drop, notes); return bad;

@@ -24,7 +24,10 @@ sys.path.insert(0, str(REPO / "pack/jobs"))
 import layout
 import saves
 
-DOTNET, DRIVER = sys.argv[1:]
+# 第一个参数选段：jit = 托管（JIT）互操作全部断言，不含 NativeAOT；aot = 只跑到 NativeAOT 两组断言为止（它们要的存档夹具在此之前建好）。
+#   两段由 save_transfer_interop_test.sh / save_transfer_aot_test.sh 各跑一次，单段各自守在单测预算内（11-23 拆开前合在一起 59～81 秒）。
+MODE, DOTNET, DRIVER, AOT_DRIVER, *space_faults = sys.argv[1:]
+assert MODE in ("jit", "aot"), MODE
 GAME_ID = "0100000000000000"
 USER = "00000000000000010000000000000000"
 OTHER_USER = "00000000000000020000000000000000"
@@ -108,18 +111,23 @@ with tempfile.TemporaryDirectory(prefix="s2arm-public-save-interop-") as tempora
     exported = snapshot(source, exported=True)
 
     def csharp_call(operation, path=None, *, root=source, game_identity=identity,
-                    expected_code=None, env=None, **extra):
+                    expected_code=None, env=None, expected_stderr=(), forbidden_stderr=(), native_aot=False, **extra):
         request = dict(operation=operation, dataRoot=str(root), workRoot=str(scratch / "csharp-work"),
                        game=game_identity, path=str(path) if path else None) | extra
         write_json(request_path, request)
-        process = subprocess.run([DOTNET, DRIVER, "--request", str(request_path)],
-                                 capture_output=True, text=True, check=True, timeout=60,
+        command = ([AOT_DRIVER, "--request", str(request_path), "--require-aot"] if native_aot
+                   else [DOTNET, DRIVER, "--request", str(request_path)])
+        process = subprocess.run(command, capture_output=True, text=True, check=True, timeout=60,
                                  env=None if env is None else os.environ | env)
         response = json.loads(process.stdout)
+        for line in expected_stderr:
+            assert line in process.stderr, (line, response, process.stderr)
+        for text in forbidden_stderr:
+            assert text not in process.stderr, (text, response, process.stderr)
         if expected_code:
-            assert not response["ok"] and response["error"]["code"] == expected_code, response
+            assert not response["ok"] and response["error"]["code"] == expected_code, (response, process.stderr)
             return expected_code
-        assert response["ok"], response
+        assert response["ok"], (response, process.stderr)
         return response["result"]
 
     python_archive, csharp_archive = scratch / "g05.s2asave", scratch / "g06.s2asave"
@@ -165,9 +173,17 @@ with tempfile.TemporaryDirectory(prefix="s2arm-public-save-interop-") as tempora
     assert snapshot(target) == exported
     print(f"PASS G05 -> G06 restore/export -> G05 restore; {p['fileCount']} files, directories, SHA256 and owners match")
 
-    def compare(path, code="save_invalid", *, root=source):
-        assert python_call("saveInspect", path=str(path), expected=code) == csharp_call(
-            "inspect", path, root=root, expected_code=code)
+    def compare(path, code="save_invalid", *, root=source, **extra):
+        assert python_call("saveInspect", path=str(path), expected=code, **extra) == csharp_call(
+            "inspect", path, root=root, expected_code=code, **extra)
+
+    # 维护者 11-17：版本 / DLC 组合、账号归属对不上不再拒绝手动恢复——两种实现都照常检查、各给一句提示（作业层 warning 诊断 + notice；
+    #   服务层 warnings）；带 sync（云存档自动同步）两边照旧以同一个码拒绝
+    def compare_warn(path, code, *, root=source):
+        compare(path, code, root=root, sync=True)
+        py = python_call("saveInspect", path=str(path))
+        assert py["notice"], py
+        assert len(csharp_call("inspect", path, root=root)["warnings"]) == 1
 
     def rewrite(name, mutate=None, extra=None, duplicate=False):
         path = scratch / (name + ".s2asave")
@@ -188,21 +204,111 @@ with tempfile.TemporaryDirectory(prefix="s2arm-public-save-interop-") as tempora
         return path
 
     compare(rewrite("wrong-game", lambda m: m["game"].update(id="0100000000000001")), "save_wrong_game")
-    compare(rewrite("wrong-version", lambda m: m["game"].update(version=2)), "save_version")
-    compare(rewrite("wrong-content", lambda m: m["game"].update(contentIdentity="0" * 64)), "save_version")
+    compare_warn(rewrite("wrong-version", lambda m: m["game"].update(version=2)), "save_version")
+    compare_warn(rewrite("wrong-content", lambda m: m["game"].update(contentIdentity="0" * 64)), "save_version")
     compare(rewrite("path-traversal", extra="payload/../escape"))
     compare(rewrite("duplicate-path", duplicate=True))
-    print("PASS both implementations reject wrong game/version/content, traversal and duplicate paths with identical reason codes")
+    print("PASS both implementations reject wrong game, traversal and duplicate paths with identical reason codes; version/content mismatch warns (sync rejects alike)")
+
+    # 维护者 11-17：备份里个别存档文件 CRC / SHA 坏了不再整份拒绝。期望手写：坏一个用户存档文件 → 两种实现都照常检查、各给一句提示
+    #   （作业层 notice 点名它；服务层 warnings 一条）；带 sync 两边照旧拒绝（save_invalid）；坏账号索引两边照旧拒绝
+    def corrupt(name, pick):
+        path = scratch / (name + ".s2asave")
+        with zipfile.ZipFile(python_archive) as src, zipfile.ZipFile(path, "w") as dst:
+            target = pick([e.filename for e in src.infolist()])
+            for entry in src.infolist():
+                content = src.read(entry)
+                if entry.filename == target:
+                    content = content[:-1] + bytes([content[-1] ^ 0xFF])
+                dst.writestr(entry.filename, content)
+        return path, target[len("payload/"):]
+    bad, bad_name = corrupt("damaged-save", lambda names: next(n for n in names if n.startswith("payload/bis/user/save/") and n.endswith(".md")))
+    compare(bad, "save_damaged", sync=True)
+    assert bad_name in python_call("saveInspect", path=str(bad))["notice"]
+    assert len(csharp_call("inspect", bad)["warnings"]) == 1
+    compare(corrupt("damaged-index", lambda names: "payload/bis/system/save/8000000000000000/0/imkvdb.arc")[0])
+    print("PASS both warn on one damaged save file (sync rejects alike) and reject a damaged account index")
 
     other = scratch / "other-user"
     subprocess.run([DOTNET, DRIVER, "--create", str(other), str(REPO), OTHER_USER], check=True, timeout=60)
     original = scratch / "original"
     shutil.move(source, original)
     shutil.copytree(other, source)
-    compare(python_archive, "save_wrong_user", root=other)
+    compare_warn(python_archive, "save_wrong_user", root=other)
     shutil.rmtree(source)
     shutil.move(original, source)
-    print("PASS both reject independently API-created different account owner: save_wrong_user")
+    print("PASS both warn on independently API-created different account owner (sync rejects alike: save_wrong_user)")
+
+    android_root = scratch / "android-state"
+    shutil.copytree(source, android_root)
+    previous = next(android_root.glob("bis/user/save/*/0/nested/readme.md"))
+    previous.write_bytes(b"previous synthetic Android progress")
+    old_android = snapshot(android_root)
+    android_identity = identity | dict(version=0, contentIdentity="e" * 64)
+    android = dict(root=android_root, game_identity=android_identity, androidRevisionIdentity=True,
+                   unattendedRestore=True, workRoot=str(scratch / "android-work"))
+    for archive, code, overrides in (
+        (rewrite("android-wrong-title", lambda m: m["game"].update(id="0100000000000001")), "save_wrong_game", {}),
+        (bad, "save_damaged", {}),
+        (python_archive, "save_wrong_user", {"root": other}),
+    ):
+        csharp_call("inspect", archive, expected_code=code, **(android | overrides))
+    preview = csharp_call("inspect", python_archive, **android)
+    if MODE == "aot":
+        aot_preview = csharp_call("inspect", python_archive, native_aot=True, **android)
+        assert aot_preview == preview and len(aot_preview["warnings"]) == 1, aot_preview
+        print("PASS NativeAOT Android inspect accepts a valid archive and returns the version warning")
+        for archive, options in ((bad, {}), (python_archive, {"root": other})):
+            aot_warning = csharp_call("inspect", archive, native_aot=True, **options)
+            assert len(aot_warning["warnings"]) == 1 and aot_warning == csharp_call("inspect", archive, **options)
+        print("PASS NativeAOT inspect returns the actual damaged-file and different-owner warnings")
+        print("NativeAOT inspect interoperability passed; no game or player progress was tested.")
+        sys.exit(0)
+    confirmation = dict(archiveSha256=preview["archiveSha256"], targetFingerprint=preview["targetFingerprint"])
+    if os.geteuid() != 0:
+        lock_file = Path(android["workRoot"]) / "save-transfer.lock"
+        original_mode = lock_file.stat().st_mode & 0o777
+        lock_file.chmod(0)
+        try:
+            csharp_call("inspect", python_archive, expected_code="save_invalid",
+                        expected_stderr=("code=save_invalid", "type=UnauthorizedAccessException", "SaveTransfer.Execute"),
+                        forbidden_stderr=(str(scratch),), **android)
+        finally:
+            lock_file.chmod(original_mode)
+        assert snapshot(android_root) == old_android
+        print("PASS Android inspect reports denied transfer-lock open with exception site and no path")
+    csharp_call("restore", python_archive, expected_code="save_changed",
+                **(confirmation | {"targetFingerprint": "0" * 64}), **android)
+    assert snapshot(android_root) == old_android
+    csharp_call("restore", python_archive, expected_code="save_invalid",
+                env={"SAVE_TRANSFER_FAIL_AT": "oldMoved"}, **confirmation, **android)
+    assert snapshot(android_root) == old_android
+    no_mounts = {"DYLD_INSERT_LIBRARIES": space_faults[0]} if space_faults else None
+    result = csharp_call("restore", python_archive, env=no_mounts, **confirmation, **android)
+    assert result["committed"] and snapshot(android_root, exported=True) == exported
+    if no_mounts:
+        print("PASS Android restore commits with mount enumeration denied")
+    backup = Path(result["previousBackup"])
+    with zipfile.ZipFile(backup) as saved:
+        assert saved.read("payload/" + previous.relative_to(android_root).as_posix()) == b"previous synthetic Android progress"
+        assert json.loads(saved.read("manifest.json"))["platform"] == "android"
+    csharp_call("recover", **android)
+    assert backup.is_file()
+    print("PASS Android restore shares G06 verification: title, owner, damage, stale preview, rollback, backup")
+
+    if no_mounts:
+        preview = csharp_call("inspect", python_archive, **android)
+        confirmation = dict(archiveSha256=preview["archiveSha256"], targetFingerprint=preview["targetFingerprint"])
+        before = snapshot(android_root), snapshot(Path(android["workRoot"]))
+        for mode, code, log in (
+            ("denied", "save_space_unknown", ("fixture: statfs denied", "UnauthorizedAccessException")),
+            ("full", "save_space", ("fixture: statfs no available blocks",)),
+        ):
+            csharp_call("restore", python_archive, expected_code=code, expected_stderr=log,
+                        env=no_mounts | {"S2A_TEST_SPACE_PATH": android["workRoot"], "S2A_TEST_SPACE_MODE": mode},
+                        **confirmation, **android)
+            assert (snapshot(android_root), snapshot(Path(android["workRoot"]))) == before
+            print(f"PASS Android restore returns {code} and leaves saves and transactions unchanged")
 
     # 本地玩家（#623）：一边多一个玩家（账号集合是包含关系：另一台设备还没建这个玩家、恢复建玩家之前的备份）→ 两种实现都照常检查、C# 照常恢复；
     #   上面「各有对方没有的账号」照旧拒绝。期望手写：恢复后目标的账号就是备份里的那几个
@@ -275,15 +381,17 @@ with tempfile.TemporaryDirectory(prefix="s2arm-public-save-interop-") as tempora
     for name, transformed in cases.items():
         path = scratch / (name + ".s2asave")
         path.write_bytes(transformed)
+        # payload-crc-corruption 坏的是第一个非空条目，即账号索引 imkvdb.arc：账号元数据坏了照旧整份拒绝（普通存档文件坏了只提示，见上面 damaged-save）
         compare(path)
         print("PASS both reject " + name + ": save_invalid")
     assert snapshot(source) == expected
     # 审计 P2-11：失败原因转人话。期望手算：errno 28 / 69 → 空间不足（save_space）；无权限类型或 errno 13 → 没有权限；
-    #   InvalidData / Json → 备份损坏；其它 IOException（errno 5）→ 读写出错；ArgumentException → 数据不符；且都不带异常类型名
+    #   InvalidData / Json → 备份损坏；其它 IOException（errno 5）→ 读写出错；未分类异常 → 内部错误；说明都不带异常类型名
     want = [("IOException", "save_space", "空间不足"), ("IOException", "save_space", "空间不足"),
             ("UnauthorizedAccessException", "save_invalid", "没有权限"), ("IOException", "save_invalid", "没有权限"),
             ("InvalidDataException", "save_invalid", "损坏"), ("JsonException", "save_invalid", "损坏"),
-            ("IOException", "save_invalid", "读写存档时出错"), ("ArgumentException", "save_invalid", "数据不符")]
+            ("IOException", "save_invalid", "读写存档时出错"), ("ArgumentException", "save_internal", "内部错误"),
+            ("InvalidOperationException", "save_internal", "内部错误")]
     got = [json.loads(l) for l in subprocess.run([DOTNET, DRIVER, "--describe"], check=True, timeout=60, capture_output=True, text=True).stdout.splitlines()]
     assert len(got) == len(want), got
     for g, (t, code, word) in zip(got, want):
@@ -302,6 +410,9 @@ with tempfile.TemporaryDirectory(prefix="s2arm-public-save-interop-") as tempora
     print(f"PASS 失败原因按 language 出英文：{len(en_got)} 条同码、无中文、与中文 {len(pairs)} 句一一对应")
     # 整个请求走一遍：同一份坏备份，不带 language 回中文、带 en 回英文，码相同
     bad = scratch / "language-probe.s2asave"; bad.write_bytes(b"not a zip")
+    csharp_call("inspect", bad, expected_code="save_invalid",
+                expected_stderr=("code=save_invalid", "type=Failure", "ZipBounds:"),
+                forbidden_stderr=(str(scratch),))
     def reject(**extra):
         request = dict(operation="inspect", dataRoot=str(source), workRoot=str(scratch / "csharp-work"), game=identity, path=str(bad)) | extra
         write_json(request_path, request)
@@ -364,4 +475,49 @@ with tempfile.TemporaryDirectory(prefix="s2arm-public-save-interop-") as tempora
     left = subdirs()
     assert left == dirs_before and snapshot(tx_root) == before, (dirs_before, left, snapshot(tx_root) == before)
     print("PASS 恢复记录写出前失败：事务 / 备份目录不残留、活存档根不变（审计 P2-177）")
+    # #2070：iPad「存档管理」导入其他模拟器 / 工具的存档（请求带 saveFolder 才走这条；期望手写）
+    #   ① 访达压的 zip（两个裸存档文件 + __MACOSX/._*）：检查认出、2 个文件 5 + 3 = 8 字节；恢复后存档位置里只有这两个文件（旧内容整份换掉、
+    #      没有 __MACOSX），当前存档先备份成 before-restore.s2asave，活存档根不动（下次起局才读入）
+    community = scratch / "community"
+    community.mkdir()
+    melonx = community / "melonx.zip"
+    with zipfile.ZipFile(melonx, "w") as z:
+        z.writestr("0.celeste", b"slot0")
+        z.writestr("settings.celeste", b"cfg")
+        z.writestr("__MACOSX/._0.celeste", b"junk")
+    folder = scratch / "Documents" / "SaveData"
+    folder.mkdir(parents=True)
+    (folder / "save").mkdir()
+    (folder / "save" / "old.bin").write_bytes(b"old")
+    com_root = scratch / "community-root"
+    shutil.copytree(source, com_root)
+    live = snapshot(com_root)
+    seen = csharp_call("inspect", melonx, root=com_root, saveFolder=str(folder))
+    assert (seen["community"], seen["fileCount"], seen["totalBytes"]) == (True, 2, 8), seen
+    done = csharp_call("restore", melonx, root=com_root, saveFolder=str(folder),
+                       archiveSha256=seen["archiveSha256"], targetFingerprint=seen["targetFingerprint"])
+    assert done["pending"] and done["hadOriginal"] and Path(done["previousBackup"]).name == "before-restore.s2asave", done
+    assert sorted(p.relative_to(folder).as_posix() for p in folder.rglob("*")) == ["0.celeste", "settings.celeste"]
+    assert (folder / "0.celeste").read_bytes() == b"slot0" and snapshot(com_root) == live
+    assert not (folder.parent / "SaveData.next").exists() and not (folder.parent / "SaveData.old").exists()
+    print("PASS #2070 社区 zip：认出 2 个文件 8 字节，恢复前备份、整份放进存档位置、不带 __MACOSX、活存档根不动")
+    # ② 不带 saveFolder（Mac / iCloud 同步等别的调用方）：照旧只收 .s2asave
+    csharp_call("inspect", melonx, root=com_root, expected_code="save_invalid")
+    # ③ 只选了单个存档文件 → save_single_file；④ 认不出（只有金手指）→ save_not_recognized；⑤ 检查后来源变了 → save_changed
+    single = community / "0.celeste"
+    single.write_bytes(b"slot0")
+    csharp_call("inspect", single, root=com_root, saveFolder=str(folder), expected_code="save_single_file")
+    cheats = community / "cheats.zip"
+    with zipfile.ZipFile(cheats, "w") as z:
+        z.writestr("cheats/a.txt", b"[x]")
+    csharp_call("inspect", cheats, root=com_root, saveFolder=str(folder), expected_code="save_not_recognized")
+    seen = csharp_call("inspect", melonx, root=com_root, saveFolder=str(folder))
+    with zipfile.ZipFile(melonx, "a") as z:
+        z.writestr("1.celeste", b"slot1")
+    csharp_call("restore", melonx, root=com_root, saveFolder=str(folder), archiveSha256=seen["archiveSha256"],
+                targetFingerprint=seen["targetFingerprint"], expected_code="save_changed")
+    # ⑥ 带 saveFolder 选我方备份：照旧走 .s2asave（有 manifest、没有 community 标记）
+    own = csharp_call("inspect", python_archive, root=com_root, saveFolder=str(folder))
+    assert "manifest" in own and "community" not in own, own
+    print("PASS #2070 不带 saveFolder 照旧拒、单个文件 / 认不出 / 检查后变了各有原因码、我方备份照旧")
     print("Public-file G05/G06 interoperability passed; no game or player progress was tested.")

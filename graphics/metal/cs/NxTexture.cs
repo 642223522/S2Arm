@@ -1,6 +1,7 @@
 // ITexture / ISampler / ITextureArray / IImageArray（第 3 块）。
 using Ryujinx.Common.Memory;
 using Ryujinx.Graphics.GAL;
+using Ryujinx.Graphics.Texture;
 using System;
 using System.Runtime.InteropServices;
 
@@ -19,6 +20,8 @@ namespace NxGal
         [DllImport(Lib)] public static extern void nxgal_tex_copy_region(uint src, uint dst, NRect* srcRect, NRect* dstRect, int linear);
         [DllImport(Lib)] public static extern void nxgal_tex_copy_to_buffer(uint src, NBufRange* dst, int layer, int level, int stride);
         [DllImport(Lib)] public static extern void nxgal_tex_set_storage(uint tex, NBufRange* buf);
+        [DllImport(Lib)] public static extern int nxgal_bce_active();
+        [DllImport(Lib)] public static extern int nxgal_tex_set_bc(uint tex, int layer, int level, NRect* region, void* data, ulong len);
         [DllImport(Lib)] public static extern uint nxgal_sampler_create(NSamplerInfo* info);
         [DllImport(Lib)] public static extern void nxgal_sampler_release(uint smp);
         [DllImport(Lib)] public static extern uint nxgal_tarr_create(int size, int isBuffer, int isImage);
@@ -33,7 +36,11 @@ namespace NxGal
         public readonly TextureCreateInfo Info;
         public int Width => Info.Width;
         public int Height => Info.Height;
-        NxTexture(uint id, TextureCreateInfo info) { Id = id; Info = info; }
+        // BC 经 ASTC 预转包（gal_tex.m「BC → ASTC」：设备不支持 BC 且设了 NXGAL_ASTC_PACK 时能力表照报 BC，Gpu 层交来原始 BC）：
+        //   上传先交渲染器查包（nxgal_tex_set_bc），没命中再用 Ryujinx 原解码器（BCnDecoder，旧路 Gpu 层用的同一个）解压后照常上传
+        static readonly bool BceOn = N.nxgal_bce_active() != 0;
+        readonly bool _bc;
+        NxTexture(uint id, TextureCreateInfo info) { Id = id; Info = info; _bc = info.Format >= Format.Bc1RgbaUnorm && info.Format <= Format.Bc6HUfloat && BceOn; }
 
         internal static NxTexture Create(NxRenderer r, TextureCreateInfo info) { NTexInfo n = Conv.TexInfo(info); return new NxTexture(N.nxgal_tex_create(&n), info); }
         public ITexture CreateView(TextureCreateInfo info, int firstLayer, int firstLevel) { NTexInfo n = Conv.TexInfo(info); return new NxTexture(N.nxgal_tex_view(Id, &n, firstLayer, firstLevel), info); }
@@ -62,10 +69,42 @@ namespace NxGal
 
         void Set(MemoryOwner<byte> data, int layer, int level, NRect* region)
         {
-            using (data) { Span<byte> s = data.Span; fixed (byte* p = s) N.nxgal_tex_set_data(Id, layer, level, region, p, (ulong)s.Length); }
+            using (data)
+            {
+                Span<byte> s = data.Span;
+                if (_bc) { SetBc(s, layer, level, region); return; }
+                fixed (byte* p = s) N.nxgal_tex_set_data(Id, layer, level, region, p, (ulong)s.Length);
+            }
+        }
+        void SetBc(ReadOnlySpan<byte> s, int layer, int level, NRect* region)
+        {
+            int r; fixed (byte* p = s) r = N.nxgal_tex_set_bc(Id, layer, level, region, p, (ulong)s.Length);
+            if (r == 1) return;   // 包里全命中，已传 ASTC
+            if (r < 0) { fixed (byte* p = s) N.nxgal_tex_set_data(Id, layer, level, region, p, (ulong)s.Length); return; }   // 不是经包的 BC 贴图（建时包还没开）：照常
+            // 没命中：贴图已是解压格式（同旧路 TextureCompatibility.ToHostCompatibleFormat），按这次上传的范围解压（同 Texture.ConvertToHostCompatibleFormat）
+            int w, h, levels, layers, depth = 1;
+            if (region != null) { w = region->W; h = region->H; levels = layers = 1; }
+            else if (layer >= 0 && level >= 0) { w = Math.Max(1, Info.Width >> level); h = Math.Max(1, Info.Height >> level); levels = layers = 1; }
+            else { w = Info.Width; h = Info.Height; levels = Info.Levels; layers = Info.GetLayers(); if (Info.Target == Target.Texture3D) { depth = Info.Depth; layers = 1; } }
+            using MemoryOwner<byte> d = Info.Format switch
+            {
+                Format.Bc1RgbaUnorm or Format.Bc1RgbaSrgb => BCnDecoder.DecodeBC1(s, w, h, depth, levels, layers),
+                Format.Bc2Unorm or Format.Bc2Srgb => BCnDecoder.DecodeBC2(s, w, h, depth, levels, layers),
+                Format.Bc3Unorm or Format.Bc3Srgb => BCnDecoder.DecodeBC3(s, w, h, depth, levels, layers),
+                Format.Bc4Unorm or Format.Bc4Snorm => BCnDecoder.DecodeBC4(s, w, h, depth, levels, layers, Info.Format == Format.Bc4Snorm),
+                Format.Bc5Unorm or Format.Bc5Snorm => BCnDecoder.DecodeBC5(s, w, h, depth, levels, layers, Info.Format == Format.Bc5Snorm),
+                Format.Bc6HSfloat or Format.Bc6HUfloat => BCnDecoder.DecodeBC6(s, w, h, depth, levels, layers, Info.Format == Format.Bc6HSfloat),
+                _ => BCnDecoder.DecodeBC7(s, w, h, depth, levels, layers),
+            };
+            Span<byte> ds = d.Span;
+            fixed (byte* q = ds) N.nxgal_tex_set_data(Id, layer, level, region, q, (ulong)ds.Length);
         }
         public void SetData(MemoryOwner<byte> data) => Set(data, -1, -1, null);
-        public void S2ASetData(S2AUploadLease lease) => N.nxgal_tex_set_data_lease(Id, -1, -1, null, lease.Id, (ulong)lease.Size);
+        public void S2ASetData(S2AUploadLease lease)
+        {
+            if (!_bc) { N.nxgal_tex_set_data_lease(Id, -1, -1, null, lease.Id, (ulong)lease.Size); return; }
+            try { SetBc(lease.Span, -1, -1, null); } finally { N.nxgal_upload_drop(lease.Id); }   // 原始 BC 在租约里：查包 / 解压都当场读完，用完退租
+        }
         public void SetData(MemoryOwner<byte> data, int layer, int level) => Set(data, layer, level, null);
         public void SetData(MemoryOwner<byte> data, int layer, int level, Rectangle<int> region) { NRect r = new() { X = region.X, Y = region.Y, W = region.Width, H = region.Height }; Set(data, layer, level, &r); }
         public void SetStorage(BufferRange buffer) { NBufRange r = Conv.Range(buffer); N.nxgal_tex_set_storage(Id, &r); }

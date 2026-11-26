@@ -96,11 +96,16 @@ namespace Ryujinx.Graphics.Nvdec.Apple
         // 没有带外注入通道：概率增量只能走位流——真压缩头必须随帧带上（上游 Vp9CompressedHeader.Check 已拦下写不出的段）。
         public bool NeedsCompressedHeader => true;
 
-        // 缺省关（S2A_NVDEC_VP9_VT=1 才开）：合成流里硬解只接得住 28/134 个作业，其余退到托管软件解码器（更费 CPU，宽高不是 64 倍数的流会画错），
-        //   libvpx 134/134 全对——缺省保持 libvpx 原生；S2A_NVDEC_VP9=managed 关掉整条原生路径。
+        // 链了真 libvpx 时缺省关（S2A_NVDEC_VP9_VT=1 才开）：合成流里硬解只接得住 28/134 个作业，其余退到托管软件解码器（更费 CPU，宽高不是
+        //   64 倍数的流会画错），libvpx 134/134 全对——缺省保持 libvpx 原生；S2A_NVDEC_VP9=managed 关掉整条原生路径。
+        //   宿主链的是空垫片（S2A_VPX 探测到本机可走系统 VP9、不链真身，tools/vp9hw.sh；s2a_vpx_linked() = 0）时默认开——
+        //   原生段不存在，不开就只剩托管；S2A_NVDEC_VP9_VT=0 强制关（垫片下 VP9 落托管；iOS 没有 VP9 系统路线，本来就落托管）。
+        [DllImport("s2a_native")] private static extern int s2a_vpx_linked();
         public static VideoToolboxVp9Backend TryCreate()
         {
-            if (Environment.GetEnvironmentVariable("S2A_NVDEC_VP9_VT") != "1") return null;
+            string v = Environment.GetEnvironmentVariable("S2A_NVDEC_VP9_VT");
+            if (v == "0") return null;
+            if (v != "1" && s2a_vpx_linked() != 0) return null;
             return Available() ? new VideoToolboxVp9Backend() : null;
         }
 

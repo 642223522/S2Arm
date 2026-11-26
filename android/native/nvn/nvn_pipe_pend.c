@@ -28,6 +28,7 @@ void nvk_pp_init(nvk_pp *t, size_t key_bytes) {
 void nvk_pp_reset(nvk_pp *t) {
     if (!t) return;
     pthread_mutex_lock(&t->mu);
+    t->reset_seq++;
     for (int i = 0; i < NVK_PP_MAX; i++) {
         struct nvk_pp_ent *e = &t->ent[i];
         if (!e->used) continue;
@@ -155,18 +156,22 @@ int nvk_pp_wait(nvk_pp *t, const void *key, int (*eq)(const void *, const void *
     int at = t->ready ? pp_find_locked(t, key, eq) : -1;
     if (at < 0) { pthread_mutex_unlock(&t->mu); return NVK_PP_WAIT_ABSENT; }
     struct nvk_pp_ent *e = &t->ent[at];
+    const uint64_t reset_seq = t->reset_seq;
     if (e->state == NVK_PP_COMPILING && wait_ms) {
         struct timespec dl;
         clock_gettime(CLOCK_REALTIME, &dl);
         dl.tv_sec += (time_t)(wait_ms / 1000);
         dl.tv_nsec += (long)(wait_ms % 1000) * 1000000L;
         if (dl.tv_nsec >= 1000000000L) { dl.tv_sec++; dl.tv_nsec -= 1000000000L; }
-        while (e->state == NVK_PP_COMPILING) {
+        while (t->reset_seq == reset_seq && e->state == NVK_PP_COMPILING) {
             if (pthread_cond_timedwait(&e->cv, &t->mu, &dl) == ETIMEDOUT) break;
         }
     }
     int rc;
-    if (e->state == NVK_PP_READY) {
+    // reset 已取消本次等待；新一轮条目即使已完成，也不是旧等待的结果。
+    if (t->reset_seq != reset_seq) {
+        rc = NVK_PP_WAIT_ABSENT;
+    } else if (e->state == NVK_PP_READY) {
         rc = NVK_PP_WAIT_READY;
         pp_set_out(e->obj, 0, NULL, why, why_cap, obj, code);
     } else if (e->state == NVK_PP_FAILED) {

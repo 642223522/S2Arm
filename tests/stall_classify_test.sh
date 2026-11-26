@@ -101,6 +101,11 @@ ck "14 也不得被渲染线程的 gal_pso_job_wait 带成管线作业等待" '!
 r "$F/15_gpu_abort_module_only.log"
 ck "15 符号被抹成 <redacted>、只剩模块 AGXMetalG18P → GPU 驱动中止" \
    '[ "$(kinds "$T/out.json")" = "GPU 驱动中止" ]' 'GPU 驱动中止'
+# 11-16 起现场帧括号里带库内偏移（runtime/src/tdump.c）：「<redacted>+0xd0（AGXMetalG18P+0x1b2c40）」，模块仍要认成 AGXMetalG18P
+sed -E 's/（([A-Za-z0-9_.]+)）/（\1+0x1b2c40）/g' "$F/15_gpu_abort_module_only.log" > "$T/15b.log"
+r "$T/15b.log"
+ck "15b 帧括号带库内偏移（新格式）→ 仍判 GPU 驱动中止" \
+   '[ "$(kinds "$T/out.json")" = "GPU 驱动中止" ] && grep -q "+0x1b2c40）" "$T/15b.log"' 'GPU 驱动中止'
 
 # 服务线程只在「在跑」时算票：空闲的 AudioRendererManager.Worker / {AudioMain} 不算。
 r "$F/13_own_abort_idle_audio.log"

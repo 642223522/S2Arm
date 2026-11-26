@@ -1,0 +1,6 @@
+# 01006BB00C6F0000（一款 Switch 1 动作冒险，引擎带 PhysX）1.1.0 main 909e904af78ac1b8deefe97ab2ccdb51
+# 物理步（主线程）每步原地重建世界的完成任务（PxLightCpuTask，world+0xc8）；工作线程跑完它（fetchResults、done = 1、通知、解锁）后才调 release，
+# release 调任务自己的析构（虚表退回基类、mTm = 0）。30 帧时一帧两步：解锁把世界锁交给被唤醒的主线程，工作线程被调度走期间主线程已把任务重建好，
+# 迟到的析构清掉新任务，下一次模拟读 mTm = 0 崩在 main+0x10ccf28（lr main+0x13c236c；玩家 iPhone 20 份诊断，都在游戏把出图间隔 1 → 2 之后）。
+# release 改 ret：析构只复位虚表和 mTm（不放资源），物理步每步重建全部字段；这个 release 只被这一张虚表用。同 nxnative（MIT）dm/games/01006BB00C6F0000/patches.py
+c	main	10cd070	word	f9400008	d65f03c0	# 物理完成任务 release：ldr x8,[x0] → ret

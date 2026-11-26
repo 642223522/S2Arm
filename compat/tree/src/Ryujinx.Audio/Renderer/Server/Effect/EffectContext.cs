@@ -14,6 +14,7 @@ namespace Ryujinx.Audio.Renderer.Server.Effect
         /// Storage for <see cref="BaseEffect"/>.
         /// </summary>
         private BaseEffect[] _effects;
+        public int S2ACount => _effects?.Length ?? 0;   // S2Arm 即时存档
 
         /// <summary>
         /// The total effect count.

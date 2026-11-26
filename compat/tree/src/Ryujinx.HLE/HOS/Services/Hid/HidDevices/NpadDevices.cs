@@ -14,6 +14,7 @@ namespace Ryujinx.HLE.HOS.Services.Hid
     public class NpadDevices : BaseDevice
     {
         private const int NoMatchNotifyFrequencyMs = 2000;
+        private const ulong SixAxisSamplePeriodNs = 5_000_000;
         private int _activeCount;
         private long _lastNotifyTimestamp;
 
@@ -42,9 +43,9 @@ namespace Ryujinx.HLE.HOS.Services.Hid
         // sensor：双 Joy-Con 左右各有读数时 0 = 左只、1 = 右只；-1 = 单一体感源（NpadImu.Push）
         public void PushImu(PlayerIndex player, System.Numerics.Vector3 accelerationG, System.Numerics.Vector3 angularVelocityDegrees, ulong timestampUs, int sensor = -1)
         {
-            bool joyDual = player <= PlayerIndex.Handheld && Base(_device.Hid.SharedMemory.Npads[(int)player].InternalState.StyleSet) == NpadStyleTag.JoyDual;
+            NpadStyleTag style = player <= PlayerIndex.Handheld ? Base(_device.Hid.SharedMemory.Npads[(int)player].InternalState.StyleSet) : NpadStyleTag.None;
 
-            Imu.Push(player, joyDual, accelerationG, angularVelocityDegrees, timestampUs, sensor);
+            Imu.Push(player, style, accelerationG, angularVelocityDegrees, timestampUs, sensor);
         }
 
         public void SetSixAxisActive(long userId, int handle, bool active)
@@ -230,7 +231,10 @@ namespace Ryujinx.HLE.HOS.Services.Hid
 
                 ControllerType currentType = (ControllerType)Base(nPadsSpan[i].InternalState.StyleSet);
 
-                if (currentType != ControllerType.None && StyleSupported(npad, acceptedTypes) && _supportedPlayers[i])   // S2Arm：连着 Joy-Con 2 时只收 Joy-Con 2 位也算（手柄设置小程序原先判不收、游戏反复重开）
+                // S2Arm：连着 Joy-Con 2 时只收 Joy-Con 2 位也算（手柄设置小程序原先判不收、游戏反复重开）。
+                //   样式按游戏实际看到的那个判（Remap 已把 Pro / 双 Joy-Con 按游戏声明互换过）：配的是 Pro、游戏只收 掌机 / 双 Joy-Con 时
+                //   共享内存里已是双 Joy-Con，原先照配置表判 Pro 不收，小程序回 0 人（#1671）
+                if (npad != ControllerType.None && currentType != ControllerType.None && StyleSupported(currentType, acceptedTypes) && _supportedPlayers[i])
                 {
                     configuredCount++;
                     if (primaryIndex == PlayerIndex.Unknown)
@@ -497,6 +501,7 @@ namespace Ryujinx.HLE.HOS.Services.Hid
         {
             ref SixAxisSensorState previousEntry = ref lifo.GetCurrentEntryRef();
 
+            state.DeltaTime = SixAxisSamplePeriodNs;
             state.SamplingNumber = previousEntry.SamplingNumber + 1;
 
             lifo.Write(ref state);

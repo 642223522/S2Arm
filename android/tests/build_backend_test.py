@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # #1131：出包入口自动选后端（owner 定）——Darwin arm64 一律 host 原生；
-# Linux 一律 docker，缺 docker 或 daemon 不健康直接报红，不退 host；其它系统报红。
+# Linux 一律 docker，缺 docker 命令直接报红（daemon 不预检），不退 host；其它系统报红。
 # Darwin x86_64 宿主路径未实机验证，明确报红「未验证」而不是放行半通状态（owner 复审二选一口径）。
 # 两个方向都没有自动回退，也没有手工开关。
 import sys
@@ -45,18 +45,14 @@ class BuildBackendTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.select('Linux', 'aarch64', docker=False)
 
-    def test_linux_docker_unhealthy_is_red(self):
-        with self.assertRaises(ValueError):
-            self.select('Linux', 'x86_64', docker=True, docker_rc=1)
-
-    def test_linux_docker_timeout_is_red(self):
+    def test_linux_does_not_precheck_docker_daemon(self):
+        # 不跑 docker info 预检（负载高时会把好的 Docker 判坏）：daemon 不健康也选 docker，真跑时失败报真原因
         with mock.patch.object(package.platform, 'system', return_value='Linux'), \
              mock.patch.object(package.platform, 'machine', return_value='x86_64'), \
              mock.patch.object(package.shutil, 'which', return_value='/usr/bin/docker'), \
-             mock.patch.object(package.subprocess, 'run',
-                               side_effect=package.subprocess.TimeoutExpired('docker', 10)):
-            with self.assertRaises(ValueError):
-                package.build_backend(env())
+             mock.patch.object(package.subprocess, 'run', side_effect=AssertionError('docker info precheck')) as run:
+            self.assertEqual('docker', package.build_backend(env()))
+            run.assert_not_called()
 
     def test_unknown_system_is_red(self):
         with self.assertRaises(ValueError):

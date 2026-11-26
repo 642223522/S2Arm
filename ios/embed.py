@@ -68,9 +68,12 @@ def blocks(bs):   # 每块：前导零、文件里的一段、尾部补零
     return out
 def write_dylib(dst, names):
     code, data, idx = layout(names)
+    # Apple TV（S2A_APPLE_OS=tvos，pack/jobs/tvos.py 组装时设）：标 tvOS 平台与 tvOS 下限，tvOS 的 dyld 不加载标成 iOS 的库
+    tv = os.environ.get('S2A_APPLE_OS') == 'tvos'
     off = macho_dylib.write(dst, '@rpath/S2AImages.dylib',
                             text=[('__swcode', 14, macho_dylib.PURE_INSTRUCTIONS, blocks(code)), ('__swidx', 3, 0, [index_bytes(idx)])],
-                            data=('__SWDATA', [('__img', 14, 0, blocks(data) or [PG])]))
+                            data=('__SWDATA', [('__img', 14, 0, blocks(data) or [PG])]),
+                            **(dict(minos=(26, 0), platform=3) if tv else {}))
     assert off[('__TEXT', '__swcode')] % PG == 0 and off[('__SWDATA', '__img')] % PG == 0, off
 if len(set(n.split('=', 1)[0] for n in names)) != len(names): sys.exit(f'【红】模块名重复：{names}')
 write_dylib(dst, names)

@@ -93,12 +93,16 @@ class Image(unittest.TestCase):
         self.build(); mt = (self.out / 'index.tsv').stat().st_mtime_ns; self.build()
         self.assertEqual((self.out / 'index.tsv').stat().st_mtime_ns, mt)
 
-    def test_materialize_rejects_changed_file(self):
-        # 资源包里的文件被改过（同长不同内容）：现拼核 sha256 对不上 → 报红、不留半份
+    def test_materialize_warns_on_changed_file_and_continues(self):
+        # 维护者 11-17（按新规矩改：原先报红、不留半份）：资源包里的文件被改过（同长不同内容），现拼核 sha256 对不上 → 黄字说清、照常拼出这份
+        #   （坏也只坏这款的包）。期望（手写）：不抛错；提示里有「与索引不符」；拼出的镜像在、长度对、内容是改过之后的那份；不留 .part
         self.build(); f = self.out / 'romfs.files/z.bin'; f.unlink(); f.write_bytes(b'YY')
         row = {l.split('\t')[0]: l.split('\t') for l in (self.out / 'index.tsv').read_text().splitlines()}['romfs.img']
-        with self.assertRaises(romfs_image.Red): romfs_image.materialize(self.out, 'romfs.img', int(row[1]), row[2], say=lambda *_: None)
-        self.assertFalse((self.out / 'romfs.img').exists()); self.assertFalse((self.out / 'romfs.img.part').exists())
+        said = []
+        got = Path(romfs_image.materialize(self.out, 'romfs.img', int(row[1]), row[2], say=said.append))
+        self.assertTrue(any('与索引不符' in s for s in said), said)
+        self.assertTrue(got.is_file()); self.assertEqual(got.stat().st_size, int(row[1])); self.assertIn(b'YY', got.read_bytes())
+        self.assertFalse((self.out / 'romfs.img.part').exists())
 
 
 if __name__ == '__main__':

@@ -17,7 +17,7 @@ namespace S2A.ShBake
             var o = new Dictionary<string, (byte[], byte[])>(StringComparer.Ordinal);
             string dir = Path.Combine(xdir, "src");
             if (!Directory.Exists(dir)) return o;
-            foreach (string p in Directory.EnumerateFiles(dir, "*.pk").OrderBy(x => x, StringComparer.Ordinal))
+            foreach (string p in Directory.EnumerateFiles(dir, "*.pk").Where(x => !Path.GetFileName(x).StartsWith("._", StringComparison.Ordinal)).OrderBy(x => x, StringComparer.Ordinal))   // ._：exFAT 上的 AppleDouble 附属文件
             {
                 byte[] d = File.ReadAllBytes(p); int i = 0;
                 while (i + 2 <= d.Length)

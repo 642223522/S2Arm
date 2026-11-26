@@ -100,6 +100,11 @@ public sealed class MilestoneTrack
     /// 不再按当前计数器自己拼（11-11 维护者：「百分比反复到 91% 又跳回 40%」）。没有的作业为 null，照旧</summary>
     public double? Overall { get; private set; }
     public string Message { get; private set; } = "";
+    /// <summary>上次前进时刻（Unix 秒，作业事件 advancedAt，pack/jobs/core.py emit：换了一步或计数变了才更新，心跳不算）。
+    /// 给「上次前进 N 秒前」：玩家据此分得清后台还在走、只是慢，还是卡住了（#1770 / #1773，同 Mac JobProgress.advancedAt）。旧事件没有为 null</summary>
+    public double? AdvancedAt { get; private set; }
+    /// <summary>距上次前进的秒数（now 为 Unix 秒）</summary>
+    public double? SinceAdvance(double now) => AdvancedAt is { } a ? Math.Max(0, now - a) : null;
     /// <summary>当前计数器的速率起点（时刻、完成数）与总数；换计数器（总数变 / 从头数 / 换步）就从这一条重算（同 Mac JobProgress）</summary>
     private (double T, double Done, double Total)? rateOrigin;
     /// <summary>按实测速率算的本步还需（秒）与算出它的时刻：两次事件之间倒数</summary>
@@ -123,6 +128,7 @@ public sealed class MilestoneTrack
         }
         if (e.TryGetProperty("overall", out var o) && o.ValueKind == JsonValueKind.Number)
             Overall = Math.Max(Overall ?? 0, Math.Min(1, o.GetDouble()));
+        if (e.TryGetProperty("advancedAt", out var adv) && adv.ValueKind == JsonValueKind.Number) AdvancedAt = adv.GetDouble();
         if (type is "stage" or "message" or "cache") Fraction = null;   // 新的一句说明 = 上一个百分比不再代表当前在做的事（社区贡献者补丁 #8）
         if (type == "progress" && e.TryGetProperty("totalUnits", out var total) && total.ValueKind == JsonValueKind.Number && total.GetDouble() > 0 &&
             e.TryGetProperty("doneUnits", out var done) && done.ValueKind == JsonValueKind.Number)
@@ -174,10 +180,12 @@ public sealed record PackSpace(long? NeedBytes, long? FreeBytes, string Basis)
 }
 
 /// <summary>One line of the pre-install checklist (pack/jobs/install.py readiness). Official URL only from the backend's own field.
-/// Action is a closed set of launcher-local steps (openImpactor: open the Impactor bundled with the launcher); the backend never sends a path.</summary>
+/// Action is a closed set of launcher-local steps and the only source of the item's button (11-19 landing contract, same names as Mac):
+/// openExport (this game's export page), openImpactor (open the Impactor bundled with the launcher), devCertSettings (settings, signing identity).
+/// The backend never sends a path.</summary>
 public sealed record InstallItem(string Id, bool Ok, bool Waiting, string Title, string Detail, string Who, Uri? OfficialUrl, string? Action = null)
 {
-    public static readonly IReadOnlySet<string> Actions = new HashSet<string>(StringComparer.Ordinal) { "openImpactor" };
+    public static readonly IReadOnlySet<string> Actions = new HashSet<string>(StringComparer.Ordinal) { "openExport", "openImpactor", "devCertSettings" };
 }
 
 /// <summary>DeviceKind：连着的设备是 "ipad" / "iphone"，读不出为 ""（#487：入口写「装到 iPad」；后端按 USB 产品号认）。</summary>

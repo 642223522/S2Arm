@@ -33,6 +33,15 @@ public sealed partial class EnvironmentWindow
     private Control GameSizesLine(GameSizes? sizes)
     {
         var s = sizes ?? new GameSizes(0, 0, 0, 0, 0, false);
+        if (s.Categories is { } cat && s.Measured)
+        {   // 0.6.0 四类（作业层带了 categories）：资源 · 程序 · 玩家数据 · 缓存 · 原件；悬停逐类写「删了会怎样」与盘上真实占用的说明（同 Mac GameSizesList）
+            var cats = GameSizes.CategoryOrder.Select(k => T("library.sizes." + k) + " " + FormatBytes(cat.TryGetValue(k, out var b) ? b : 0))
+                .Append(T("library.sizes.sources") + " " + FormatBytes(s.Sources));
+            var catLine = Muted(string.Join(" · ", cats), 12);
+            ToolTip.SetTip(catLine, string.Join("\n", GameSizes.CategoryOrder.Select(k => T("library.sizes." + k) + "：" + T("library.sizes." + k + "Note"))
+                .Append(T("library.sizes.sourcesNote")).Append(T("storage.finderNote"))));
+            return catLine;
+        }
         // 没量过的项不显示（原先写「-」，一行「iPhone 版 - · 存档 - · 缓存 -」看着像坏了；11-14 体验梳理）：没量过只剩有数的原件那项，悬停说明照旧
         var parts = SizeParts.Where(p => s.Measured || p == "sources").Select(p => T("library.sizes." + p) + " " + FormatBytes(SizeOf(s, p)));
         var line = Muted(string.Join(" · ", parts), 12);
@@ -65,7 +74,7 @@ public sealed partial class EnvironmentWindow
 
     private async Task FreeAsync(string gameId, string name, IReadOnlyList<string> parts, long bytes)
     {
-        if (jobs.Any(j => j.Blocks(gameId))) { freeNote = T("space.busy"); Render(); return; }
+        if (jobs.Any(j => j.Blocks(gameId)) || PackHoldsAll) { freeNote = T("space.busy"); Render(); return; }   // 出包时不论哪款都挡：见 PackHoldsAll
         var body = T("space.free_body").Replace("{0}", string.Join("、", parts.Select(p => T("space.part." + p)))).Replace("{1}", name);
         if (!await ConfirmInstallActionAsync("space.free", body.Replace("{2}", FormatBytes(bytes)))) return;
         var front = BeginJob(JobKind.Space, gameId); freeNote = ""; Render();

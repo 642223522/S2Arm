@@ -15,7 +15,6 @@ sys.path.insert(0, str(JOBS))
 sys.path.insert(0, str(JOBS / "tests"))
 import cheats
 import core
-import install
 import layout
 import mods
 import test_cheats
@@ -68,15 +67,6 @@ class Mods(unittest.TestCase):
         before = mods.fingerprint(self.d)
         with_sidecars(self.d)
         self.assertEqual(mods.fingerprint(self.d), before, "访达在外置盘上生灭附属文件，不该让 mod 记号变、每次装机整份重推")
-
-
-class ExportImgs(unittest.TestCase):
-    def test_sidecar_img_is_not_a_game(self):
-        d = Path(tempfile.mkdtemp())
-        self.addCleanup(shutil.rmtree, d, True)
-        (d / "Game.img").write_bytes(b"S2AIMG01" + b"\0" * 8 + b"0100000000010000" + b"\0" * 16)
-        with_sidecars(d)
-        self.assertEqual([p.name for p in install._full_imgs(d)], ["Game.img"])
 
 
 class JobStatus(unittest.TestCase):

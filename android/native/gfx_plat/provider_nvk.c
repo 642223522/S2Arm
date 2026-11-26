@@ -30,6 +30,8 @@
 #include "direct/compile_worker.h"
 // direct 会话挂新回放层：回放核心 graphics/nvn/replay + Vulkan 后端 nvn_gpu_*，会话装配在 gfx_plat/nvk_session.c。
 #include "gfx_plat/nvk_session.h"
+#include "nvn/nvn_vk_frame_log.h"
+#include "nvn/nvn_vk_land_auto.h"
 #include "nvn/nvn_vk_lifecycle.h"
 #include "wsi_lease.h"
 #include "profile_compose.h"
@@ -406,11 +408,6 @@ void s2a_direct_vk_on_window_offered(void) {
     ctl_wake();   // owner poll 醒来处理新窗口，不必等下一次 present
 }
 
-// 兼容只有“晚挂”入口的旧构建：返回 0 = 已挂上，非 0 = 没有窗口。
-int s2a_direct_vk_try_attach_window(void) {
-    return s2a_direct_vk_sync_window() == 0 ? 0 : -1;
-}
-
 // 窗口撤销（surfaceDestroyed）：surface 的合同要求 revoke 返回后没有线程再用它。
 // 必须先在 g_mu 下拆后端交换链并观察最后一帧的 present fence，成功后才 release_window +
 // released 归还租约；拿不到呈现退休证明时保留 swapchain/present fence 与租约（不 ACK），
@@ -628,6 +625,8 @@ static int32_t request_stop_impl(void *context) {
         set_window_error(ctx, ctx->reason);
         g_retained_context = ctx;
         pthread_mutex_unlock(&g_window_mu);
+        nvn_vk_land_auto_report_exit();
+        nvn_vk_frame_log_dump_retained();   // 会话保留到退出，不会走 nvk_session_close 的转储
         (void)nvk_session_wait_compiles();
         nvk_session_flush_pipe_cache();   // 不走 close 就没有收尾写：保留路径上照样把驱动管线缓存交后台落盘（#856 的收益不丢）
         __android_log_print(ANDROID_LOG_INFO, TAG, "direct stop: %s", ctx->reason);
@@ -795,6 +794,8 @@ static int32_t destroy_impl(void *context) {
         ctx->stopping_engine = 1;
         g_retained_context = ctx;
         pthread_mutex_unlock(&g_window_mu);
+        nvn_vk_land_auto_report_exit();
+        nvn_vk_frame_log_dump_retained();
         (void)nvk_session_wait_compiles();
         nvk_session_flush_pipe_cache();   // 同 request_stop：保留路径上把驱动管线缓存交后台落盘
         __android_log_print(ANDROID_LOG_INFO, TAG,
@@ -805,7 +806,8 @@ static int32_t destroy_impl(void *context) {
     g_retained_context = ctx; // 等待期间也不允许新 prepare 覆盖 owner。
     pthread_mutex_unlock(&g_window_mu);
     uint64_t deadline = nvk_session_stop_deadline();
-    if (!deadline || device_idle_bounded(ctx, deadline)) return S2A_DIRECT_RES_RETIREMENT;
+    if (!deadline || nvk_session_wait_compiles() || device_idle_bounded(ctx, deadline))
+        return S2A_DIRECT_RES_RETIREMENT;
     if (ctx->device_ok) {
         if (s2a_vk_device_destroy(&ctx->device, 1)) return S2A_DIRECT_RES_RETIREMENT;
         ctx->device_ok = 0;

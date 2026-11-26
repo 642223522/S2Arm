@@ -102,7 +102,7 @@ struct SideBarProbe: View {
     let report: (SideBar) -> Void
     var body: some View {
         #if canImport(SwiftUI, _version: 8.1)
-        if #available(iOS 27.1, macOS 27.1, *) { SideBarReader(report: report) } else { Color.clear }
+        if #available(iOS 27.1, macOS 27.1, tvOS 27.1, *) { SideBarReader(report: report) } else { Color.clear }
         #else
         Color.clear
         #endif
@@ -110,7 +110,7 @@ struct SideBarProbe: View {
 }
 
 #if canImport(SwiftUI, _version: 8.1)
-@available(iOS 27.1, macOS 27.1, *)
+@available(iOS 27.1, macOS 27.1, tvOS 27.1, *)
 private struct SideBarReader: View {
     let report: (SideBar) -> Void
     @Environment(\.toolbarVerticalEdge) private var edge
@@ -123,6 +123,7 @@ private struct SideBarReader: View {
 }
 #endif
 
+#if !os(tvOS)   // tvOS：侧边条（iPhone Duo）的按钮依赖触屏库界面的 ControllerChip / ShellSettingsChip，电视上不编
 /// The Controllers and Settings chips stacked in the side column.
 struct SideBarChips: View {
     let controllers: Int
@@ -156,6 +157,7 @@ struct SideBarTopChip: View {
         .shellTarget(target, radius: 22, action: action)
     }
 }
+#endif   // !os(tvOS)
 
 extension View {
     /// Puts a side-column chip at `frame`, given in the screen's coordinates, inside a view laid out in the safe area.

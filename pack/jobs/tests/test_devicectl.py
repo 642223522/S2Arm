@@ -58,5 +58,26 @@ class DevicectlTests(JobCase):
         self.assertFalse((self.root / "xcodebuild-called").exists())
 
 
+    def test_devicectl_reports_full_disk(self):
+        # 玩家 Mac 磁盘满（截图 [Errno 28]）：结果文件建不出 → 不再冒 OSError；devicectl 自己报没空间 → 不再混成「问不出设备」。
+        #   两种都回 DEVICECTL_NOSPACE（28），调用方据此说「Mac 空间不够」；别的失败照旧原样返回退出码
+        import errno, tempfile
+        import diag
+        fw = self.root / "CoreDevice"; (fw / "Resources/bin").mkdir(parents=True)
+        tool = fw / "Resources/bin/devicectl"
+        tool.write_text('#!/bin/sh\necho "$DCTL_ERR" >&2\nexit "$DCTL_RC"\n'); tool.chmod(0o755)
+        def full(*a, **k): raise OSError(errno.ENOSPC, "No space left on device")
+        with patch.object(diag, "COREDEVICE", fw), patch.object(tempfile, "NamedTemporaryFile", full):
+            rc, data, err = diag.devicectl(self.c, "device", "info", "apps", timeout=10)
+        self.assertEqual((rc, data), (28, {})); self.assertIn("磁盘满", err)
+        for msg, want in (("ERROR: The operation couldn’t be completed. No space left on device (NSPOSIXErrorDomain error 28.)", 28),
+                          ("ERROR: Error Domain=NSCocoaErrorDomain Code=640 \"There isn’t enough space\"", 28),
+                          ("ERROR: The device has not been unlocked recently", 1)):
+            env = dict(self.c.env(), DCTL_ERR=msg, DCTL_RC="1")
+            with patch.object(diag, "COREDEVICE", fw), patch.object(self.c, "env", return_value=env):
+                rc, _, err = diag.devicectl(self.c, "device", "info", "apps", timeout=10)
+            self.assertEqual(rc, want, msg); self.assertEqual(err, msg)
+
+
 if __name__ == "__main__":
     unittest.main()

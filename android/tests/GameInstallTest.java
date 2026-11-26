@@ -4,6 +4,7 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -37,7 +38,12 @@ public final class GameInstallTest {
 
     /** A package as tools/make_pack.py writes it; romfs text varies the content root. */
     private static File pack(String romfs, long artifactTitle, boolean withArtifact) throws IOException {
-        Map<String, byte[]> files = new LinkedHashMap<>();
+        return pack(romfs, artifactTitle, withArtifact, java.util.Collections.emptyMap());
+    }
+
+    private static File pack(String romfs, long artifactTitle, boolean withArtifact,
+                             Map<String, byte[]> extra) throws IOException {
+        Map<String, byte[]> files = new LinkedHashMap<>(extra);
         files.put("exefs/main.npdm", new byte[128]);
         files.put("romfs/readme.txt", romfs.getBytes(StandardCharsets.UTF_8));
         files.put("ctl/control.nacp", nacp(0x0100000000ABCDEFL));
@@ -449,7 +455,543 @@ public final class GameInstallTest {
         GameInstall.deleteTree(games);
     }
 
+    private static void crossRootDeltaWithNoLinks() throws Exception {
+        File games = Files.createTempDirectory("s2a-games-delta").toFile();
+        File initial = pack("delta old"), delta = pack("delta new");
+        try {
+            GameInstall.Linker noLinks = (created, existing) -> { throw new IOException("links denied"); };
+            GameInstall.Result first = GameInstall.install(games, GameInstall.directory(initial), null, noLinks);
+            File gameRoot = new File(games, first.titleId);
+            BootContract.Current before = BootContract.readCurrent(gameRoot);
+            String next = root(delta);
+            java.nio.file.Path marker = new File(delta, "game-resource-delta.tsv").toPath();
+            String proof = "s2a-resource-delta-v1\t" + before.contentRoot + "\t" + before.artifactSha256 + "\t" + next + "\n";
+            Files.delete(new File(delta, "exefs/main.npdm").toPath());
+            Files.writeString(marker, proof.replace(before.artifactSha256, "0".repeat(64)));
+            refused(games, delta, "delta wrong base binding", "base root or binding", before.contentRoot);
+            Files.writeString(marker, proof.replace(before.contentRoot, "sha256-" + "0".repeat(64)));
+            refused(games, delta, "delta wrong base root", "base root or binding", before.contentRoot);
+            Files.writeString(marker, proof);
+            java.nio.file.Path changed = new File(delta, "romfs/readme.txt").toPath();
+            Files.delete(changed);
+            refused(games, delta, "delta missing changed payload", "lacks changed file", before.contentRoot);
+            Files.writeString(changed, "bad bytes");
+            refused(games, delta, "delta corrupt changed payload", "does not match index.tsv", before.contentRoot);
+            Files.writeString(changed, "delta new");
+            File oldNpdm = new File(gameRoot, before.revisionDir + "/exefs/main.npdm");
+            byte[] correct = Files.readAllBytes(oldNpdm.toPath());
+            byte[] broken = correct.clone();
+            broken[0] = 1;
+            check(oldNpdm.setWritable(true), "test can perturb private base bytes");
+            Files.write(oldNpdm.toPath(), broken);
+            try {
+                GameInstall.install(games, GameInstall.directory(delta), null, noLinks);
+                check(false, "delta accepted corrupted fallback bytes");
+            } catch (GamePack.BadPack error) {
+                check(error.getMessage().contains("exefs/main.npdm does not match"), error.getMessage());
+            }
+            check(current(gameRoot).equals(before.contentRoot), "failed delta leaves the old activation pointer");
+            Files.write(oldNpdm.toPath(), correct);
+            try {
+                java.io.ByteArrayOutputStream wire = new java.io.ByteArrayOutputStream();
+                wire.write("S2A-IMPORT 1 delta\n".getBytes(StandardCharsets.UTF_8));
+                int bytes = 0;
+                String[] paths = {"manifest.json", "index.tsv", "game-build-artifact.json",
+                                  "ctl/control.nacp", "romfs/readme.txt", "game-resource-delta.tsv"};
+                for (String path : paths) {
+                    byte[] data = Files.readAllBytes(new File(delta, path).toPath());
+                    wire.write(("F " + data.length + " " + path + "\n").getBytes(StandardCharsets.UTF_8));
+                    wire.write(data);
+                    bytes += data.length;
+                }
+                wire.write("END\n".getBytes(StandardCharsets.UTF_8));
+                java.io.ByteArrayOutputStream reply = new java.io.ByteArrayOutputStream();
+                File received = ImportReceiver.receive(new java.io.ByteArrayInputStream(wire.toByteArray()), reply,
+                    new File(games, "inbox"));
+                check(reply.toString(StandardCharsets.UTF_8).equals("READY 1\nOK 6 " + bytes + "\n"),
+                    "receiver acknowledges six delta wire entries");
+                GameInstall.Result updated = GameInstall.install(games, GameInstall.directory(received), null, noLinks);
+                check(next.equals(updated.contentRoot) && next.equals(current(gameRoot)) && !updated.linked && updated.resourceDelta,
+                    "delta fills omitted unchanged file from the old revision when hard links fail");
+                check(!new File(received, "romfs/readme.txt").exists(), "verified changed data is adopted from receiver staging");
+                GameInstall.Result repeated = GameInstall.install(games, GameInstall.directory(delta), null, noLinks);
+                check(repeated.alreadyActive && repeated.resourceDelta, "replaying the complete installed delta is idempotent");
+                Files.writeString(marker, proof.replace(next, "sha256-" + "f".repeat(64)));
+                refused(games, delta, "delta retry wrong target", "target root does not match", next);
+            } catch (GamePack.BadPack | BootContract.BadGame error) {
+                check(false, "delta fills omitted unchanged file: " + error.getMessage());
+            }
+        } finally {
+            GameInstall.deleteTree(games);
+            GameInstall.deleteTree(initial);
+            GameInstall.deleteTree(delta);
+        }
+    }
+
+    private static void markDelta(File pack, BootContract.Current base) throws IOException {
+        Files.writeString(new File(pack, "game-resource-delta.tsv").toPath(),
+            "s2a-resource-delta-v1\t" + base.contentRoot + "\t" + base.artifactSha256 + "\t" + root(pack) + "\n");
+        Files.delete(new File(pack, "exefs/main.npdm").toPath());
+    }
+
+    private static void plainMigration(boolean withdraw) throws Exception {
+        File games = Files.createTempDirectory("s2a-games-plain-migration").toFile();
+        File first = pack("original plain"), next = pack("changed"), last = pack("changed again");
+        try {
+            GameInstall.Result seed = GameInstall.install(games, GameInstall.directory(first), null, NO_HARD_LINKS);
+            File game = new File(games, seed.titleId);
+            BootContract.Current a = BootContract.readCurrent(game);
+            File oldLeaf = new File(game, a.revisionDir + "/exefs/main.npdm");
+            GameFingerprint.Stamp inode = GameFingerprint.stat(oldLeaf);
+            check(!a.managedObjects && !Files.isSymbolicLink(oldLeaf.toPath()) && inode != null,
+                "migration starts with an ordinary private installation");
+            markDelta(next, a);
+            GameInstall.Result b = withdraw
+                ? GameInstall.install(games, GameInstall.directory(next), null, NO_HARD_LINKS)
+                : GameInstall.install(games, GameInstall.directory(next), null);
+            BootContract.Current active = BootContract.readCurrent(game);
+            File newLeaf = new File(game, active.revisionDir + "/exefs/main.npdm");
+            System.out.printf("plain migration: managed=%s stored=%d shared=%d unchanged-read=%d unchanged-write=%d%n",
+                active.managedObjects, b.storedBytes, b.sharedBytes, b.unchangedReadBytes, b.unchangedWriteBytes);
+            check(b.resourceDelta && active.contentRoot.equals(root(next)), "delta activates the verified target root");
+            check(active.managedObjects && b.managedObjects, "plain migration publishes a managed target");
+            check(Files.isSymbolicLink(oldLeaf.toPath()) && Files.isSymbolicLink(newLeaf.toPath())
+                && Files.isSameFile(oldLeaf.toPath(), newLeaf.toPath()) && inode != null
+                && inode.same(GameFingerprint.stat(newLeaf.getCanonicalFile())), "migration reuses the original inode from both revisions");
+            check(b.storedBytes == "changed".length() && b.sharedBytes == 25015 && b.unchangedWriteBytes == 0,
+                "migration stores only changed payload bytes");
+            markDelta(last, active);
+            GameInstall.Result c = GameInstall.install(games, GameInstall.directory(last), null);
+            System.out.printf("after plain migration: managed=%s stored=%d shared=%d unchanged-read=%d unchanged-write=%d%n",
+                c.managedObjects, c.storedBytes, c.sharedBytes, c.unchangedReadBytes, c.unchangedWriteBytes);
+            check(c.resourceDelta && c.managedObjects && c.storedBytes == "changed again".length()
+                && c.sharedBytes == b.sharedBytes && c.unchangedReadBytes == 0 && c.unchangedWriteBytes == 0,
+                "subsequent delta shares all unchanged bytes without rereading or rewriting them");
+            verifyInstalledObjectRevision(game, root(last), "changed again");
+        } finally {
+            GameInstall.deleteTree(games);
+            GameInstall.deleteTree(first);
+            GameInstall.deleteTree(next);
+            GameInstall.deleteTree(last);
+        }
+    }
+
+    private static final GameInstall.Linker NO_HARD_LINKS = (link, target) -> {
+        throw new IOException("hard links refused");
+    };
+
+    private static void relativeLink(File link, File target) throws IOException {
+        Files.createSymbolicLink(link.toPath(), link.getParentFile().toPath().relativize(target.toPath()));
+    }
+
+    private static void syncDirectory(File directory) throws IOException {
+        try (java.nio.channels.FileChannel channel = java.nio.channels.FileChannel.open(directory.toPath(),
+                java.nio.file.StandardOpenOption.READ, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+            channel.force(true);
+        }
+    }
+
+    private static File oldNpdm(File game, BootContract.Current current) {
+        return new File(game, current.revisionDir + "/exefs/main.npdm");
+    }
+
+    private static File npdmObject(File game) {
+        String sha = GamePack.sha256(new byte[128]);
+        return new File(game, "objects/" + sha.substring(0, 2) + "/" + sha);
+    }
+
+    private static void plainMigrationNoSpace() throws Exception {
+        for (boolean afterMove : new boolean[]{false, true}) {
+            File games = Files.createTempDirectory("s2a-plain-enospc").toFile();
+            File old = pack("original plain"), next = pack("changed");
+            try {
+                GameInstall.Result seed = GameInstall.install(games, GameInstall.directory(old), null, NO_HARD_LINKS);
+                File game = new File(games, seed.titleId).getCanonicalFile();
+                BootContract.Current before = BootContract.readCurrent(game);
+                markDelta(next, before);
+                File leaf = oldNpdm(game, before), object = npdmObject(game);
+                GameFingerprint.Stamp original = GameFingerprint.stat(leaf);
+                boolean[] raised = {false};
+                if (afterMove) {
+                    GameInstall.setDirectorySync(dir -> {
+                        if (!raised[0] && dir.equals(object.getParentFile()) && !leaf.exists() && object.isFile()) {
+                            raised[0] = true;
+                            throw new java.nio.file.FileSystemException(dir.getPath(), null, "No space left on device");
+                        }
+                        syncDirectory(dir);
+                    });
+                } else {
+                    GameInstall.setObjectLink((link, target) -> {
+                        if (!raised[0] && link.toPath().startsWith(new File(game, ".plain-migration").toPath())
+                                && Files.isSymbolicLink(leaf.toPath())) {
+                            raised[0] = true;
+                            throw new java.nio.file.FileSystemException(link.getPath(), null, "No space left on device");
+                        }
+                        relativeLink(link, target);
+                    });
+                }
+                GameInstall.Result result = GameInstall.install(games, GameInstall.directory(next), null);
+                System.out.printf("plain migration ENOSPC after-move=%s injected=%s stored=%d shared=%d%n",
+                    afterMove, raised[0], result.storedBytes, result.sharedBytes);
+                check(raised[0] && result.resourceDelta && !result.linked && !result.managedObjects,
+                    "metadata ENOSPC falls back to checked copies");
+                check(result.storedBytes == 25022 && result.sharedBytes == 0, "fallback copies all target bytes");
+                check(original != null && original.same(GameFingerprint.stat(leaf.getCanonicalFile())),
+                    "fallback keeps the original inode readable");
+                check(!new File(game, ".plain-migration").exists() && (afterMove != Files.isSymbolicLink(leaf.toPath())),
+                    "fallback restores a move in flight and keeps a completed alias");
+                File retained = new File(game, before.revisionDir);
+                var retainedEntries = GamePack.readIndex(Files.readAllBytes(new File(retained, "manifest.json").toPath()),
+                    Files.readAllBytes(new File(retained, "index.tsv").toPath()));
+                var verified = GameFingerprint.verifyPlaced(retained, retainedEntries,
+                    java.util.Collections.nCopies(retainedEntries.size(), null));
+                check(verified.recalculated == retainedEntries.size(), "fallback retains every original indexed file");
+                verifyInstalledObjectRevision(game, root(next), "changed");
+            } finally {
+                GameInstall.setDirectorySync(GameInstallTest::syncDirectory);
+                GameInstall.setObjectLink(GameInstallTest::relativeLink);
+                GameInstall.deleteTree(games);
+                GameInstall.deleteTree(old);
+                GameInstall.deleteTree(next);
+            }
+        }
+    }
+
+    private static void plainMigrationRejectsCorruption() throws Exception {
+        for (boolean corruptObject : new boolean[]{false, true}) {
+            File games = Files.createTempDirectory("s2a-plain-corruption").toFile();
+            File old = pack("original plain"), next = pack("changed");
+            try {
+                GameInstall.Result seed = GameInstall.install(games, GameInstall.directory(old), null, NO_HARD_LINKS);
+                File game = new File(games, seed.titleId);
+                BootContract.Current before = BootContract.readCurrent(game);
+                markDelta(next, before);
+                File target = corruptObject ? npdmObject(game) : oldNpdm(game, before);
+                Files.createDirectories(target.getParentFile().toPath());
+                byte[] damage = new byte[128];
+                damage[0] = 1;
+                if (target.exists()) check(target.setWritable(true), "test can perturb old bytes");
+                Files.write(target.toPath(), damage);
+                try {
+                    GameInstall.install(games, GameInstall.directory(next), null);
+                    check(false, "migration accepted corrupt same-size bytes");
+                } catch (IOException expected) {
+                    check(expected.getMessage().contains("fails size / SHA-256"), "same-size corruption fails the SHA check");
+                }
+                check(before.contentRoot.equals(current(game)), "corruption leaves the source root active");
+                check(!Files.isSymbolicLink(oldNpdm(game, before).toPath()), "corruption does not replace the original inode");
+                check(Arrays.equals(Files.readAllBytes(target.toPath()), damage), "corruption is never overwritten by migration");
+            } finally {
+                GameInstall.deleteTree(games);
+                GameInstall.deleteTree(old);
+                GameInstall.deleteTree(next);
+            }
+        }
+    }
+
+    private static void plainMigrationKillChild(File games, File next) throws Exception {
+        File game = new File(games, "0100000000ABCDEF").getCanonicalFile();
+        File leaf = oldNpdm(game, BootContract.readCurrent(game)), object = npdmObject(game);
+        GameInstall.setDirectorySync(dir -> {
+            syncDirectory(dir);
+            if (dir.equals(object.getParentFile()) && !leaf.exists() && object.isFile())
+                waitForKill("plain-moved");
+        });
+        GameInstall.install(games, GameInstall.directory(next), null);
+        throw new IOException("expected checkpoint after moving the original inode");
+    }
+
+    private static void plainMigrationKillRecovery() throws Exception {
+        File games = Files.createTempDirectory("s2a-plain-kill").toFile();
+        File old = pack("original plain"), next = pack("changed");
+        try {
+            GameInstall.Result seed = GameInstall.install(games, GameInstall.directory(old), null, NO_HARD_LINKS);
+            File game = new File(games, seed.titleId).getCanonicalFile();
+            BootContract.Current before = BootContract.readCurrent(game);
+            markDelta(next, before);
+            File leaf = oldNpdm(game, before), object = npdmObject(game);
+            GameFingerprint.Stamp inode = GameFingerprint.stat(leaf);
+            String javaBin = new File(System.getProperty("java.home"), "bin/java").getPath();
+            Process child = new ProcessBuilder(javaBin, "-Djava.io.tmpdir=" + System.getProperty("java.io.tmpdir"),
+                "-cp", System.getProperty("java.class.path"), GameInstallTest.class.getName(),
+                "--plain-kill-child", games.getPath(), next.getPath()).redirectErrorStream(true).start();
+            java.util.concurrent.ExecutorService reader = java.util.concurrent.Executors.newSingleThreadExecutor();
+            try {
+                java.util.concurrent.Future<Boolean> reached = reader.submit(() -> {
+                    try (var output = child.inputReader()) {
+                        for (String line; (line = output.readLine()) != null; ) {
+                            if (line.equals("CHECKPOINT plain-moved")) return true;
+                            System.out.println(line);
+                        }
+                    }
+                    return false;
+                });
+                check(reached.get(20, java.util.concurrent.TimeUnit.SECONDS), "child moved the inode before linking");
+            } finally {
+                child.destroyForcibly();
+                check(child.waitFor(10, java.util.concurrent.TimeUnit.SECONDS) && child.exitValue() != 0,
+                    "installer process killed between the two renames");
+                reader.shutdownNow();
+            }
+            check(!leaf.exists() && object.isFile() && inode != null && inode.same(GameFingerprint.stat(object)),
+                "interrupted original inode survives in the object store");
+            GameInstall.recoverBeforeOpen(games, seed.titleId);
+            check(Files.isSymbolicLink(leaf.toPath()) && Files.isSameFile(leaf.toPath(), object.toPath()),
+                "selected game startup restores the old leaf from the durable journal");
+            check(!new File(game, ".plain-migration").exists(), "recovery clears the journal");
+            verifyInstalledObjectRevision(game, before.contentRoot, "original plain");
+            GameInstall.Result retry = GameInstall.install(games, GameInstall.directory(next), null);
+            check(retry.managedObjects && retry.storedBytes == 7, "retry after process death stores only the changed payload");
+            verifyInstalledObjectRevision(game, root(next), "changed");
+            System.out.println("plain migration kill: original inode preserved, old revision boots, retry managed");
+        } finally {
+            GameInstall.deleteTree(games);
+            GameInstall.deleteTree(old);
+            GameInstall.deleteTree(next);
+        }
+    }
+
+    private static void managedDelta() throws Exception {
+        managedDelta(Files.createTempDirectory("s2a-games-managed").toFile());
+    }
+
+    private static void managedDelta(File games) throws Exception {
+        File oldPack = pack("managed old"), nextPack = pack("managed new"), later = pack("managed third");
+        try {
+            GameInstall.Result first = GameInstall.install(games, GameInstall.directory(oldPack), null);
+            File game = new File(games, first.titleId);
+            BootContract.Current before = BootContract.readCurrent(game);
+            File oldLeaf = new File(game, before.revisionDir + "/exefs/main.npdm");
+            check(Files.isSymbolicLink(oldLeaf.toPath()), "managed installation publishes a relative object leaf");
+            String next = root(nextPack);
+            Files.writeString(new File(nextPack, "game-resource-delta.tsv").toPath(),
+                "s2a-resource-delta-v1\t" + before.contentRoot + "\t" + before.artifactSha256 + "\t" + next + "\n");
+            Files.delete(new File(nextPack, "exefs/main.npdm").toPath());
+            GameInstall.Result update = GameInstall.install(games, GameInstall.directory(nextPack), null);
+            File newLeaf = new File(game, "revisions/" + next + "/exefs/main.npdm");
+            check(next.equals(current(game)) && update.resourceDelta, "managed delta publishes the new root");
+            check(Files.isSymbolicLink(newLeaf.toPath()) && Files.isSameFile(oldLeaf.toPath(), newLeaf.toPath()),
+                "both revisions resolve the unchanged leaf to the same object inode");
+            check(update.storedBytes == "managed new".length(), "managed delta writes only the changed payload bytes");
+            check(update.unchangedReadBytes == 0 && update.unchangedWriteBytes == 0,
+                "managed delta neither reads nor writes unchanged payload");
+
+            BootContract.Current installed = BootContract.readCurrent(game);
+            Files.writeString(new File(later, "game-resource-delta.tsv").toPath(),
+                "s2a-resource-delta-v1\t" + installed.contentRoot + "\t" + installed.artifactSha256 + "\t"
+                    + root(later) + "\n");
+            Files.delete(new File(later, "exefs/main.npdm").toPath());
+            File object = newLeaf.getCanonicalFile();
+            byte[] sound = Files.readAllBytes(object.toPath());
+            byte[] corrupt = sound.clone();
+            corrupt[0] ^= 1;
+            check(object.setWritable(true), "test can perturb an installed object");
+            Files.write(object.toPath(), corrupt);
+            Files.setLastModifiedTime(object.toPath(), java.nio.file.attribute.FileTime.fromMillis(
+                Files.getLastModifiedTime(object.toPath()).toMillis() + 2000));
+            try {
+                GameInstall.install(games, GameInstall.directory(later), null);
+                check(false, "managed delta accepted a stale fingerprint for corrupted bytes");
+            } catch (IOException error) {
+                check(error.getMessage().contains("fails size / SHA-256"), "stale object stamp triggers hashing");
+            }
+            check(current(game).equals(next), "corrupt object leaves current pointer unchanged");
+            Files.write(object.toPath(), sound);
+            GameInstall.Result rechecked = GameInstall.install(games, GameInstall.directory(later), null);
+            check(rechecked.unchangedReadBytes >= sound.length && rechecked.unchangedWriteBytes == 0
+                && root(later).equals(current(game)), "unchanged bytes with a stale stamp are read and never rewritten");
+        } finally {
+            GameInstall.deleteTree(games);
+            GameInstall.deleteTree(oldPack);
+            GameInstall.deleteTree(nextPack);
+            GameInstall.deleteTree(later);
+        }
+    }
+
+    private static void managedParentAliases() throws Exception {
+        Path root = Files.createTempDirectory("s2a-managed-alias");
+        File source = pack("link guards");
+        try {
+            Path actual = Files.createDirectory(root.resolve("actual"));
+            Path systemAlias = Files.createSymbolicLink(root.resolve("system-alias"), actual);
+            managedDelta(systemAlias.resolve("games").toFile());
+            Path outside = Files.createDirectory(root.resolve("outside"));
+            Path objects = Files.createDirectories(actual.resolve("games/0100000000ABCDEF/objects"));
+            String digest = GamePack.sha256(Files.readAllBytes(new File(source, "exefs/main.npdm").toPath()));
+            Files.createSymbolicLink(objects.resolve(digest.substring(0, 2)), outside);
+            try {
+                GameInstall.install(systemAlias.resolve("games").toFile(), GameInstall.directory(source), null);
+                check(false, "managed install accepted an object bucket pointing outside");
+            } catch (IOException error) {
+                check(error.getMessage().contains("object store component is not a directory"),
+                    "object bucket link outside the library is rejected");
+            }
+            try (var children = Files.list(outside)) {
+                check(children.findAny().isEmpty() && !Files.exists(objects.getParent().resolve("current.json")),
+                    "external target and activation pointer remain untouched");
+            }
+        } finally {
+            GameInstall.deleteTree(source);
+            GameInstall.deleteTree(root.toFile());
+        }
+    }
+
+    private static void waitForKill(String checkpoint) throws IOException {
+        System.out.println("CHECKPOINT " + checkpoint);
+        System.out.flush();
+        try {
+            new java.util.concurrent.CountDownLatch(1).await();
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new IOException("expected external process kill", interrupted);
+        }
+    }
+
+    private static void managedKillChild(String phase, File games, File pack) throws Exception {
+        String next = root(pack);
+        File game = new File(games, "0100000000ABCDEF").getCanonicalFile();
+        String incoming = GamePack.sha256(Files.readAllBytes(new File(pack, "romfs/readme.txt").toPath()));
+        int[] leaves = {0};
+        GameInstall.setObjectLink((link, target) -> {
+            boolean projection = !link.getName().equals("link-probe");
+            if (projection && phase.equals("object") && incoming.equals(target.getName())) {
+                if (!target.isFile() || link.exists()) throw new IOException("expected object before its alias");
+                waitForKill(phase);
+            }
+            Files.createSymbolicLink(link.toPath(), link.getParentFile().toPath().relativize(target.toPath()));
+            if (projection && ++leaves[0] == 1 && phase.equals("partial")) waitForKill(phase);
+        });
+        GameInstall.setDirectorySync(directory -> {
+            try (java.nio.channels.FileChannel channel = java.nio.channels.FileChannel.open(directory.toPath(),
+                    java.nio.file.StandardOpenOption.READ, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+                channel.force(true);
+            }
+            if (phase.equals("revision") && directory.getName().equals("revisions")
+                    && new File(directory, next).isDirectory() && !next.equals(current(game))) waitForKill(phase);
+            if (phase.equals("pointer") && directory.equals(game) && next.equals(current(game))) waitForKill(phase);
+        });
+        GameInstall.install(games, GameInstall.directory(pack), null);
+        throw new IOException("expected checkpoint " + phase);
+    }
+
+    private static void verifyInstalledObjectRevision(File game, String expected, String payload) throws Exception {
+        BootContract.Game boot = BootContract.open(game);
+        check(expected.equals(boot.contentRoot), "recovered pointer identifies a complete revision");
+        File revision = new File(game, boot.revisionDir);
+        byte[] index = Files.readAllBytes(new File(revision, "index.tsv").toPath());
+        var entries = GamePack.readIndex(Files.readAllBytes(new File(revision, "manifest.json").toPath()), index);
+        check(Files.readString(new File(revision, "romfs/readme.txt").toPath()).equals(payload),
+            "recovered revision has the expected payload");
+        GameFingerprint.verify(revision, entries, expected.substring(7),
+            GameFingerprint.currentReference(game, expected.substring(7)));
+    }
+
+    private static void managedKillBoundaries() throws Exception {
+        for (String phase : new String[]{"object", "partial", "revision", "pointer"}) {
+            File games = Files.createTempDirectory("s2a-object-kill").toFile();
+            File prior = pack("prior payload"), next = pack("next payload");
+            boolean retainsTarget = phase.equals("revision");
+            try {
+                String nextRoot = root(next);
+                if (retainsTarget) GameInstall.install(games, GameInstall.directory(next), null);
+                GameInstall.Result before = GameInstall.install(games, GameInstall.directory(prior), null);
+                File game = new File(games, before.titleId);
+                File retained = new File(game, "revisions/" + nextRoot + "/retained-root-sentinel");
+                if (retainsTarget) Files.writeString(retained.toPath(), "preserve previous view");
+                String javaBin = new File(System.getProperty("java.home"), "bin/java").getPath();
+                Process child = new ProcessBuilder(javaBin, "-Djava.io.tmpdir=" + System.getProperty("java.io.tmpdir"),
+                    "-cp", System.getProperty("java.class.path"),
+                    GameInstallTest.class.getName(), "--managed-kill-child", phase, games.getPath(), next.getPath())
+                    .redirectErrorStream(true).start();
+                java.util.concurrent.ExecutorService reader = java.util.concurrent.Executors.newSingleThreadExecutor();
+                try {
+                    java.util.concurrent.Future<Boolean> reached = reader.submit(() -> {
+                        try (var output = child.inputReader()) {
+                            for (String line; (line = output.readLine()) != null; ) {
+                                if (line.equals("CHECKPOINT " + phase)) return true;
+                                System.out.println(line);
+                            }
+                        }
+                        return false;
+                    });
+                    check(reached.get(20, java.util.concurrent.TimeUnit.SECONDS), "real child reached " + phase);
+                } finally {
+                    child.destroyForcibly();
+                    check(child.waitFor(10, java.util.concurrent.TimeUnit.SECONDS) && child.exitValue() != 0,
+                        "child process killed at " + phase);
+                    reader.shutdownNow();
+                }
+                boolean committed = phase.equals("pointer");
+                verifyInstalledObjectRevision(game, committed ? nextRoot : before.contentRoot,
+                    committed ? "next payload" : "prior payload");
+                GameInstall.sweep(games);
+                if (retainsTarget) check(Files.readString(retained.toPath()).equals("preserve previous view"),
+                    "sweep restores the replaced previous revision while old current is active");
+                GameInstall.install(games, GameInstall.directory(next), null);
+                verifyInstalledObjectRevision(game, nextRoot, "next payload");
+                check(new File(game, "revisions/" + before.contentRoot).isDirectory(),
+                    "retry retains the old revision after " + phase);
+            } finally {
+                GameInstall.deleteTree(games);
+                GameInstall.deleteTree(prior);
+                GameInstall.deleteTree(next);
+            }
+        }
+    }
+
+    /** Feed the native warm reader the installed revision, including the actual object links. */
+    private static void installWarmSeeds(Path source, Path games, Path result) throws Exception {
+        Map<String, byte[]> extra = new LinkedHashMap<>();
+        try (java.util.stream.Stream<Path> paths = Files.walk(source)) {
+            for (Path path : (Iterable<Path>) paths.filter(Files::isRegularFile)::iterator)
+                extra.put(source.relativize(path).toString(), Files.readAllBytes(path));
+        }
+        File input = pack("native warm reader", 0x0100000000ABCDEFL, true, extra);
+        try {
+            GameInstall.Result install = GameInstall.install(games.toFile(), GameInstall.directory(input), null);
+            Path game = games.resolve(install.titleId);
+            Path revision = game.resolve(BootContract.readCurrent(game.toFile()).revisionDir);
+            for (String name : extra.keySet())
+                if (!Files.isSymbolicLink(revision.resolve(name))) throw new IOException("expected object link: " + name);
+            Files.writeString(result, revision.toString());
+        } finally {
+            GameInstall.deleteTree(input);
+        }
+    }
+
     public static void main(String[] args) throws Exception {
+        if (args.length == 4 && "--install-warm-seeds".equals(args[0])) {
+            installWarmSeeds(Path.of(args[1]), Path.of(args[2]), Path.of(args[3]));
+            return;
+        }
+        if (args.length == 3 && "--plain-kill-child".equals(args[0])) {
+            plainMigrationKillChild(new File(args[1]), new File(args[2]));
+            return;
+        }
+        if (args.length == 1 && ("--plain-migration".equals(args[0]) || "--withdraw-plain-migration".equals(args[0]))) {
+            boolean withdraw = "--withdraw-plain-migration".equals(args[0]);
+            plainMigration(withdraw);
+            if (!withdraw) {
+                plainMigrationNoSpace();
+                plainMigrationRejectsCorruption();
+                plainMigrationKillRecovery();
+            }
+            if (failures != 0) System.exit(1);
+            System.out.println("GameInstall plain migration: ok (" + assertions + " checks)");
+            return;
+        }
+        if (args.length == 4 && "--managed-kill-child".equals(args[0])) {
+            managedKillChild(args[1], new File(args[2]), new File(args[3]));
+            return;
+        }
+        if (args.length == 1 && "--managed-object-fs".equals(args[0])) {
+            managedDelta();
+            managedParentAliases();
+            managedKillBoundaries();
+            if (failures != 0) System.exit(1);
+            System.out.println("GameInstall managed objects: ok (" + assertions + " checks)");
+            return;
+        }
         if (args.length == 3 && "--locked-import-child".equals(args[0])) {
             File internal = new File(args[1]), external = new File(args[2]);
             try {
@@ -535,8 +1077,8 @@ public final class GameInstallTest {
         check(b.linked && b.storedBytes == 4 && b.sharedBytes > 4096,
               "update stores only the changed file: stored " + b.storedBytes + ", shared " + b.sharedBytes + ", linked " + b.linked);
         java.nio.file.Path link = new File(gameRoot, "revisions/" + r2 + "/modules/main.patched.bin").toPath();
-        check(!Files.isSymbolicLink(link) && Files.isRegularFile(link, java.nio.file.LinkOption.NOFOLLOW_LINKS),
-              "revision file is a regular file, not a symbolic link");
+        check(Files.isSymbolicLink(link) && !Files.readSymbolicLink(link).isAbsolute(),
+              "revision file is a relative object link");
         String moduleSha = GamePack.sha256(new byte[4096]);
         check(Files.isSameFile(link, new File(gameRoot, "objects/" + moduleSha.substring(0, 2) + "/" + moduleSha).toPath()),
               "revision file shares the objects/ inode");
@@ -557,7 +1099,9 @@ public final class GameInstallTest {
         for (java.nio.file.Path p = packFile; p.startsWith(new File(gameRoot, "revisions/" + r2).toPath()); p = p.getParent())
             packClean &= !Files.isSymbolicLink(p);
         check(packClean, "no symbolic link in any offline pack path component");
-        check(!new File(gameRoot, "revisions/" + r2 + "/romfs/readme.txt").canWrite(), "stored objects are read-only");
+        // 看权限位，不用 canWrite()：root 跑时 canWrite() 对只读文件也是 true
+        check(java.nio.file.Files.getPosixFilePermissions(new File(gameRoot, "revisions/" + r2 + "/romfs/readme.txt").toPath()).stream()
+            .noneMatch(p -> p.name().endsWith("_WRITE")), "stored objects are read-only");
         String[] both = {r1, r2};
         Arrays.sort(both);
         check(Arrays.equals(revisions(gameRoot), both), "upgrade keeps the previous revision: " + Arrays.toString(revisions(gameRoot)));
@@ -629,6 +1173,14 @@ public final class GameInstallTest {
         check(BootContract.open(plainRoot).modules.size() == 1, "copied revision opens");
         GameInstall.deleteTree(plainGames);
         sharedObjectRehashed();
+        crossRootDeltaWithNoLinks();
+        plainMigration(false);
+        plainMigrationNoSpace();
+        plainMigrationRejectsCorruption();
+        plainMigrationKillRecovery();
+        managedDelta();
+        managedParentAliases();
+        managedKillBoundaries();
 
         if (args.length == 1) {   // a package from tools/make_pack.py
             File real = Files.createTempDirectory("s2a-games-real").toFile();

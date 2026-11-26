@@ -15,6 +15,16 @@ namespace S2Arm.Launcher;
 
 public sealed partial class EnvironmentWindow
 {
+    /// <summary>「导出 S2Arm.ipa」：不连手机、不经总控台，组不带游戏的通用 S2Arm.ipa 放进「S2Arm 游戏包」
+    /// （作业 installUpdate + mode export → export_shell_ipa），给 LiveContainer / SideStore / AltStore 自签（11-21 维护者；同总控台那台手机下的同名按钮）</summary>
+    private Control ExportShellIpaEntry()
+    {
+        var b = new Button { Content = T("console.button.exportShellIpa"), IsEnabled = !libraryBusy, Padding = new Thickness(12, 6) };
+        b.Click += (_, _) => _ = UpdatePhoneAsync(false, [], mode: "export");
+        Avalonia.Automation.AutomationProperties.SetAutomationId(b, "library.exportShellIpa");
+        return b;
+    }
+
     private string page = "library";
     private string libraryFolder = "";
     private string? libraryMoveFrom;
@@ -25,16 +35,19 @@ public sealed partial class EnvironmentWindow
     private Task? libraryOperation;
     private TextBox libraryFolderBox = new();
     private readonly Dictionary<string, Bitmap> covers = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> badImages = new(StringComparer.OrdinalIgnoreCase);   // 解不开的图（CachedImage）
     private readonly string privateRoot = ResolvePrivateRoot();
 
     private void Navigate(string destination)
     {
         CapturePaths();
+        presented = null;   // 清单按钮的落点只算当前这一页（ExportPages.cs RunInstallAction 换页后再记）
         if (page == "library") libraryFolder = libraryFolderBox.Text ?? "";
         messagesOpen = false;   // 顶栏导航离开「消息」页
         sgradeOpen = false;     // 也离开「S 级优化升级」页
         cheatsFor = null;       // 和「金手指」页
         modsFor = null;         // 和「Mod」页
+        if (destination == "settings" && page != "settings") settingsFrom = page;   // 设置页左上「返回」回到这里（出包页点「更改」进来就回出包页）
         page = destination;
         if (destination != "library") welcomeHome = false;   // 品牌名带去的欢迎页只管这一次回首页，去了别的页就回到平常
         // 环境检查页每次打开读一次装到 iPhone 的方式和开发者证书（InstallModePage.cs / DevCertPage.cs）
@@ -50,6 +63,7 @@ public sealed partial class EnvironmentWindow
     /// </summary>
     private void ClearCovers()
     {
+        badImages.Clear();
         if (covers.Count == 0) return;
         retiredCovers.Add((Content, covers.Values.ToList()));
         covers.Clear();
@@ -70,12 +84,13 @@ public sealed partial class EnvironmentWindow
 
     private async void CloseLibraryAsync(object? sender, WindowClosingEventArgs args)
     {
-        if (!libraryBusy) return;
+        if (!libraryBusy || closeAnyway) return;
         args.Cancel = true;
-        if (closingLibrary) return;
+        if (closingLibrary) return;   // 第一次进来的那份在等，等完它自己再关
         closingLibrary = true;
-        CancelJob(JobKind.Library);
-        if (libraryOperation is { } operation) await operation;
+        CloseLog("关窗口：游戏库作业在跑，先取消、等它收尾再关");
+        await WaitJobsEndAsync(JobKind.Library);
+        closingLibrary = false;
         Close();
     }
 
@@ -92,27 +107,66 @@ public sealed partial class EnvironmentWindow
         {
             if (new FileInfo(path).Length > 16 * 1024 * 1024) return null;
             // 缓存键另起：没有自带图标的款 cover 也指向 banner.jpg，封面卡片按 240 宽解码的那份不能拿来铺大图
-            if (!covers.TryGetValue(path + "#hero", out var image))
-            {
-                using var file = File.OpenRead(path);
-                image = Bitmap.DecodeToWidth(file, 1600);
-                covers.Add(path + "#hero", image);
-            }
-            return image;
+            return CachedImage(path + "#hero", path, 1600);
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException) { return null; }
     }
 
+    /// <summary>解码这款文件夹里的一张图并缓存（键 key）；解不开 → null，并记下这个键，之后的重画不再解它（重新连库 / 刷新时 ClearCovers 一并清掉再试）。
+    /// 坏图（空文件、截断、不是图片）Skia 解出空图，Avalonia ImmutableBitmap 构造里抛 NullReferenceException，不在 IO 类异常里：原先一路抛出 RenderLibrary，
+    /// 整页重画中断、出错后的重画又炸，界面停在上一页（D-97FT：Windows 0.6.9 一分钟 15 次 NullReferenceException）。一张图解不开只该让那一格用占位图</summary>
+    private Bitmap? CachedImage(string key, string path, int width)
+    {
+        if (covers.TryGetValue(key, out var image)) return image;
+        if (badImages.Contains(key)) return null;
+        try
+        {
+            using var file = File.OpenRead(path);
+            image = Bitmap.DecodeToWidth(file, width);
+        }
+        catch (Exception error)   // noqa：玩家文件夹里的图，任何解码失败都只回落占位图，不能拖垮整页
+        {
+            badImages.Add(key);
+            LauncherCrash.Log(null, $"图片解不开，用占位图：{path}（{error.GetType().Name}: {error.Message}）");
+            return null;
+        }
+        covers.Add(key, image);
+        return image;
+    }
+
     /// <summary>封面 + 已打上 S 级优化的左上角金色 S（同 Mac LauncherView+Library SGradeBadge：只有 S、没有框和底色，叠三层更实、加投影）</summary>
+    /// <summary>数据校验不过的说明（作业层原句，六种语言在对照表；同 Mac LauncherView+Home integritySkippedNote）</summary>
+    private const string IntegritySkippedNote = "这份游戏文件里有数据和原版对不上（多半是改版 / 整合版，或个别块损坏），已跳过完整性校验照常导入。";
+
     private Control GameCover(LibraryGame game, int size)
     {
-        var cover = GameCoverImage(game, size);
+        var cover = WithSGradeProgress(game, WithUpdateHintBadge(game, WithIntegrityBadge(game, GameCoverImage(game, size), size), size), size);
         if (!game.SGrade) return cover;
         var s = Math.Max(20, size / 3.2);
         var badge = new Panel { Width = s, Height = s, Margin = new Thickness(3), HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Top,
             Effect = new DropShadowEffect { Color = Color.FromArgb(115, 0, 0, 0), BlurRadius = s * 0.24, OffsetX = 0, OffsetY = s * 0.04 } };
         for (var k = 0; k < 3; k++) badge.Children.Add(new Image { Source = SGoldImage(), Stretch = Stretch.Uniform });
         Avalonia.Automation.AutomationProperties.SetAutomationId(badge, "card.sgrade");
+        return new Panel { Width = size, Height = size, Children = { cover, badge } };
+    }
+
+    /// <summary>选中区的黄字说明（同 Mac 状态行下那句）：卡片角标只有「!」，手柄玩家看不到悬停说明</summary>
+    private Control? IntegrityLine(LibraryGame game) => game.IntegritySkipped
+        ? new TextBlock { Text = "⚠ " + B(IntegritySkippedNote), Foreground = Brush.Parse("#FFD60A"), FontSize = 13, TextWrapping = TextWrapping.Wrap, MaxWidth = 720, HorizontalAlignment = HorizontalAlignment.Left }
+        : null;
+
+    /// <summary>导入时数据校验不过、照常导入的款（11-17）：封面右下角黄色「!」，悬停说明</summary>
+    private Control WithIntegrityBadge(LibraryGame game, Control cover, int size)
+    {
+        if (!game.IntegritySkipped) return cover;
+        var d = Math.Max(16, size / 5.0);
+        var badge = new Border { Width = d, Height = d, CornerRadius = new CornerRadius(d / 2), Margin = new Thickness(4),
+            Background = Brush.Parse("#99000000"), HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Bottom,
+            Child = new TextBlock { Text = "!", FontWeight = FontWeight.Bold, FontSize = d * 0.62, Foreground = Brush.Parse("#FFD60A"),
+                HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center } };
+        ToolTip.SetTip(badge, B(IntegritySkippedNote));
+        Avalonia.Automation.AutomationProperties.SetName(badge, B(IntegritySkippedNote));
+        Avalonia.Automation.AutomationProperties.SetAutomationId(badge, "card.integritySkipped");
         return new Panel { Width = size, Height = size, Children = { cover, badge } };
     }
 
@@ -124,13 +178,8 @@ public sealed partial class EnvironmentWindow
             // 只认这款自己文件夹里的封面（LibraryGame.CoverFile：按 catalog 给的文件夹认，英文名文件夹也行，#330）
             if (connectedFolder is not null && game.CoverFile() is { } path && new FileInfo(path).Length <= 16 * 1024 * 1024)
             {
-                if (!covers.TryGetValue(path, out var image))
-                {
-                    using var file = File.OpenRead(path);
-                    image = Bitmap.DecodeToWidth(file, 240);
-                    covers.Add(path, image);
-                }
-                return new Image { Source = image, Width = size, Height = size, Stretch = Stretch.UniformToFill };
+                if (CachedImage(path, path, 240) is { } image)
+                    return new Image { Source = image, Width = size, Height = size, Stretch = Stretch.UniformToFill };
             }
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException) { }
@@ -149,6 +198,26 @@ public sealed partial class EnvironmentWindow
         if (wordmarkBitmap is not null) return wordmarkBitmap;
         using var stream = Avalonia.Platform.AssetLoader.Open(new Uri("avares://S2Arm/Assets/Wordmark.png"));
         return wordmarkBitmap = Bitmap.DecodeToWidth(stream, 480);
+    }
+
+    /// <summary>顶部选中游戏的主操作（有横图的大图叠加、无横图的封面卡片两分支共用）：只有两件事——更新（做过 iPhone 版才有，ExportFlow.cs）+「导出…」
+    /// （0.6.4 改版，维护者 11-21：原先的「推到 iPhone」「导出自签包」「更新这款 = 推」并进导出确认页；出包页只从右键菜单「出包」进，给其它平台用）。</summary>
+    private StackPanel HeroActions(LibraryGame hero)
+    {
+        var heroActions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10, Margin = new Thickness(0, 6, 0, 0) };
+        heroActions.Children.Add(LiveSlot(() => UpdateButton(hero)));   // 更新中只换这一格（进度事件）
+        var upgrading = SGradeUpgrading(hero);   // 这款在升 S 级优化：按钮上直接写进度、不可点（11-18 维护者）
+        var exportEnabled = !PhoneBlockedFor(hero) && !upgrading && hero.LocationState is not ("missing" or "offline");   // 出包 / 手机作业在跑也能去（导出那一单自己排队）
+        var exportText = upgrading ? SGradeUpgradingTitle(hero) : T("library.hero.export");
+        // 一次只一颗主色：建议更新时更新是主色、导出退成次按钮
+        var export = UpdateStateOf(hero) == ExportChoice.Update.Suggested
+            ? Action("library.hero.export", () => OpenExport(hero), exportEnabled)
+            : Primary(exportText, () => OpenExport(hero), exportEnabled);
+        if (upgrading) export.Content = exportText;
+        export.VerticalAlignment = VerticalAlignment.Center;
+        AutomationId(export, "library.hero.export");
+        heroActions.Children.Add(export);
+        return heroActions;
     }
 
     private void RenderLibrary(StackPanel body)
@@ -182,8 +251,10 @@ public sealed partial class EnvironmentWindow
                 Padding = new Thickness(16, 12), Child = capsuleBar });
         }
 
+        EnsureUpdateHints();
         var games = catalog?.Games.Where(g => !g.Hidden).ToArray() ?? [];
-        var hero = games.FirstOrDefault(g => g.Id == selectedGame) ?? games.FirstOrDefault();
+        var hero = ConsoleSelected ? null : games.FirstOrDefault(g => g.Id == selectedGame) ?? games.FirstOrDefault();
+        if (ConsoleSelected) body.Children.Add(ConsolePanel());   // 选中首位「S2Arm」：大图区换成 iPhone 总控台
         if (hero is not null && HeroBanner(hero) is { } heroBanner)
         {
             // 顶部大图（11-14 维护者：「换成用 banner」）：商店横图 1920×1080 铺满整条，标题压在底部渐变上；没有横图的款退回下面的封面卡片
@@ -195,6 +266,12 @@ public sealed partial class EnvironmentWindow
             overlay.Children.Add(Muted(T(selectedGame is null ? "library.title" : "library.selected"), 14));
             overlay.Children.Add(Label(hero.Name, 32));
             overlay.Children.Add(Muted(T("library.version") + " · " + hero.Version, 14));
+            if (IntegrityLine(hero) is { } heroNote) overlay.Children.Add(heroNote);
+            if (SGradeLine(hero) is { } sgNote) overlay.Children.Add(sgNote);
+            if (UpdateReasonLines(hero) is { } heroHint) overlay.Children.Add(heroHint);
+            overlay.Children.Add(HeroActions(hero));   // 有横图时按钮也叠在底部渐变上（v0.4.5 修：说明写着「常驻」，之前只画了大图）
+            if (UpdateRepackNote(hero) is { } heroRepack) overlay.Children.Add(heroRepack);   // #1961：按钮下一行「要整款重新出包」
+            if (UpdateOutcomeLines(hero) is { } heroDone) overlay.Children.Add(heroDone);
             art.Children.Add(overlay);
             body.Children.Add(new Border { CornerRadius = new CornerRadius(16), ClipToBounds = true, Child = art });
         }
@@ -206,27 +283,12 @@ public sealed partial class EnvironmentWindow
             title.Children.Add(Label(T(selectedGame is null ? "library.title" : "library.selected")));
             title.Children.Add(Label(hero.Name, 28));
             title.Children.Add(Label(T("library.version") + " · " + hero.Version));
-            // 大卡的主操作（11-14 体验梳理，开发甲定：照 Mac 大卡，两端一套体验；Windows 没有「开始游戏」）：装到 iPhone（iPhone 版做好才有）+ 出包。
-            //   走和下面列表卡片同一套流程（Navigate("install") / OpenBuild），列表上的按钮留作次要入口
-            var heroActions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10, Margin = new Thickness(0, 6, 0, 0) };
-            var heroBusy = BusyFor(hero) || hero.LocationState is "missing" or "offline";
-            if (hero.IphoneReady)
-            {
-                var install = Primary(T("library.hero.install"),
-                    () => { libraryFolder = libraryFolderBox.Text ?? libraryFolder; selectedGame = hero.Id; readinessFor = null; if (!installBusy) installExport = false; Navigate("install"); }, !PhoneBlockedFor(hero));   // 出包在跑也能去装（装机页里排队）
-                AutomationId(install, "library.hero.install");
-                heroActions.Children.Add(install);
-            }
-            // 导出自签包（11-15 维护者：导出不是装法，常驻一个看得见的次按钮；没出过包的点了先出包再导出）
-            var selfSign = Action("library.hero.selfSign", () => ExportSelfSign(hero),   // 能直接导出的走手机作业（出包在跑也行）；要先出包的照旧
-                hero.IphoneExportable ? !PhoneBlockedFor(hero) && hero.LocationState is not ("missing" or "offline") : !heroBusy && !installBusy);
-            selfSign.VerticalAlignment = VerticalAlignment.Center;
-            AutomationId(selfSign, "library.hero.selfSign");
-            heroActions.Children.Add(selfSign);
-            var build = Action("nav.build", () => { libraryFolder = libraryFolderBox.Text ?? libraryFolder; selectedGame = hero.Id; OpenBuild(); }, !heroBusy);
-            build.VerticalAlignment = VerticalAlignment.Center;
-            heroActions.Children.Add(build);
-            title.Children.Add(heroActions);
+            if (IntegrityLine(hero) is { } heroNote) title.Children.Add(heroNote);
+            if (SGradeLine(hero) is { } sgNote) title.Children.Add(sgNote);
+            if (UpdateReasonLines(hero) is { } heroHint) title.Children.Add(heroHint);
+            title.Children.Add(HeroActions(hero));
+            if (UpdateRepackNote(hero) is { } heroRepack) title.Children.Add(heroRepack);   // #1961：按钮下一行「要整款重新出包」
+            if (UpdateOutcomeLines(hero) is { } heroDone) title.Children.Add(heroDone);
             Grid.SetColumn(title, 1); banner.Children.Add(title); body.Children.Add(Card(banner, 20));
         }
 
@@ -260,8 +322,14 @@ public sealed partial class EnvironmentWindow
         if (catalog is null || libraryBusy || librarySummary is "library.failed" or "library.invalid_result" or "library.interrupted")
             body.Children.Add(Card(status));
 
-        if (catalog is not null && games.Length > 0)   // 「S 级优化升级」入口（同 Mac 游戏库标题行，v0.4.0）
-            body.Children.Add(new StackPanel { HorizontalAlignment = HorizontalAlignment.Right, Children = { SGradeUpgradeEntry() } });
+        if (catalog is not null)   // 游戏库标题行：「导出 S2Arm.ipa」+「S 级优化升级」（同 Mac 游戏库标题行，v0.4.0）
+        {
+            var head = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, HorizontalAlignment = HorizontalAlignment.Right };
+            head.Children.Add(ExportShellIpaEntry());
+            if (games.Length > 0) head.Children.Add(SGradeUpgradeEntry());
+            body.Children.Add(head);
+        }
+        if (catalog is not null && phoneOverview is not null) body.Children.Add(ConsoleRow());   // 首位固定「S2Arm」（0.6.0 开关后面），不算进游戏数
         foreach (var game in games)
         {
             var line = new Grid { ColumnDefinitions = new ColumnDefinitions("72,*,Auto"), ColumnSpacing = 18 };
@@ -278,14 +346,12 @@ public sealed partial class EnvironmentWindow
             if (game.Location is { State: "ok", IsDefault: false } where)
                 detail.Children.Add(Muted(T("library.location.at").Replace("{0}", where.Folder.Length > 0 ? where.Folder : where.Path), 12));
             Grid.SetColumn(detail, 1); line.Children.Add(detail);
-            // Primary button: if iPhone pack is ready → install; otherwise export (storage not connected → disabled, game files missing → relink / remove)
-            var primaryKey = game.IphoneReady ? "library.hero.install" : "library.select";
-            var primaryAction = game.IphoneReady
-                ? (Action)(() => { libraryFolder = libraryFolderBox.Text ?? ""; selectedGame = game.Id; readinessFor = null; if (!installBusy) installExport = false; Navigate("install"); })
-                : game.LocationState == "missing" ? () => _ = MissingAsync(game)
-                : () => { libraryFolder = libraryFolderBox.Text ?? ""; selectedGame = game.Id; OpenBuild(); };
-            // 装机在跑时别的游戏照常能选、看详情、出包（只锁正在装的那款；同时只装一款：点别的「装到 iPhone」进装机页提示「另一款正在装 · 查看那一款」）
-            var select = Action(primaryKey, primaryAction, (game.IphoneReady ? !PhoneBlockedFor(game) : !BusyFor(game)) && (game.IphoneReady || game.LocationState != "offline"));   // 装到 iPhone：出包在跑也能去（排队）
+            // 卡片上的按钮只有「导出…」（同大卡；0.6.4 改版拆掉「推到 iPhone」，原先没出过包的款这里写「选择这款游戏」却打开出包页）；游戏文件找不到 → 重新指定 / 移除
+            var missing = game.LocationState == "missing";
+            var select = missing
+                ? Action("library.select", () => _ = MissingAsync(game), !BusyFor(game))
+                : Action("library.hero.export", () => OpenExport(game), !PhoneBlockedFor(game) && game.LocationState != "offline" && !SGradeUpgrading(game));   // 出包 / 手机作业在跑也能去（排队）；升 S 级优化中不可点
+            if (SGradeUpgrading(game)) select.Content = SGradeUpgradingTitle(game);
             select.VerticalAlignment = VerticalAlignment.Center;
             // secondary: show past result if one exists and game is not currently running
             if (finishedPacks.TryGetValue(game.Id, out _) && !(packRunning && packGame?.Id == game.Id))
@@ -303,9 +369,14 @@ public sealed partial class EnvironmentWindow
             }
             var card = Card(line, 12);
             card.ContextMenu = CardMenu(game);
-            // 找不到游戏文件：点卡片（按钮以外）弹「重新指定文件夹 / 从游戏库移除」
-            if (game.LocationState == "missing")
-                card.Tapped += (_, e) => { if ((e.Source as Visual)?.FindAncestorOfType<Button>(includeSelf: true) is null) _ = MissingAsync(game); };
+            // 点卡片（按钮以外）= 选中这款，顶部大卡换成它（更新按钮在那里；0.6.4 前列表卡只能点按钮进出包页）；找不到游戏文件时弹「重新指定文件夹 / 从游戏库移除」
+            if (!ConsoleSelected && game.Id == hero?.Id) { card.BorderBrush = Accent; card.BorderThickness = new Thickness(1.5); }
+            card.Tapped += (_, e) =>
+            {
+                if ((e.Source as Visual)?.FindAncestorOfType<Button>(includeSelf: true) is not null) return;
+                if (game.LocationState == "missing") _ = MissingAsync(game); else SelectGame(game);
+            };
+            AutomationId(card, "library.card." + game.Id);
             body.Children.Add(card);
         }
         if (catalog is not null && games.Length == 0) body.Children.Add(Label(T("library.empty"), 18));
@@ -320,6 +391,8 @@ public sealed partial class EnvironmentWindow
     private Control GameStatusLine(LibraryGame game)
     {
         string text; string color;
+        // 免费签名还剩几天（作业层只在那台手机现在用的就是启动器免费签的那份时给；玩家关了「免费签名到期提醒」→ null，只写「已推到 iPhone」）
+        var freeDays = FreeSignReminder.On(privateRoot) ? game.FreeSignDaysLeft(DateTimeOffset.UtcNow) : null;
         // Running or queued
         if (packRunning && packGame?.Id == game.Id)
         {
@@ -342,17 +415,9 @@ public sealed partial class EnvironmentWindow
             {
                 if (game.IphoneInstalledAt is not null)
                 {
-                    // days left (free signing = 7 days from install)
-                    if (game.IphoneFree)
-                    {
-                        var daysLeft = (int)Math.Ceiling((game.IphoneInstalledAt.Value + 7 * 86400 - DateTimeOffset.UtcNow.ToUnixTimeSeconds()) / 86400.0);
-                        daysLeft = Math.Max(0, daysLeft);
-                        if (daysLeft == 0)
-                            parts.Add(T("library.status.expired"));
-                        else
-                            parts.Add(T("library.status.installed").Replace("{0}", daysLeft.ToString()));
-                    }
-                    else parts.Add(T("library.status.installedPaid"));
+                    if (freeDays is { } daysLeft)
+                        parts.Add(daysLeft == 0 ? T("library.status.expired") : T("library.status.installed").Replace("{0}", daysLeft.ToString()).Replace("{1}", SharedText.DeviceKind(game.IphoneInstallKind)));
+                    else parts.Add(T("library.status.installedPaid").Replace("{0}", SharedText.DeviceKind(game.IphoneInstallKind)));   // #1962：推到的是 iPad 就写 iPad
                 }
                 else parts.Add(T("library.status.iphone"));
             }
@@ -362,9 +427,7 @@ public sealed partial class EnvironmentWindow
                 goto render;
             }
             text = string.Join(" · ", parts);
-            color = game.IphoneInstalledAt is not null && game.IphoneFree &&
-                (int)Math.Ceiling((game.IphoneInstalledAt.Value + 7 * 86400 - DateTimeOffset.UtcNow.ToUnixTimeSeconds()) / 86400.0) == 0
-                ? "#E05C5C" : "#52C87A";
+            color = game.IphoneInstalledAt is not null && freeDays == 0 ? "#E05C5C" : "#52C87A";
         }
         render:
         var dot = new Border { Width = 7, Height = 7, CornerRadius = new CornerRadius(4),
@@ -372,6 +435,16 @@ public sealed partial class EnvironmentWindow
         var lbl = new TextBlock { Text = text, FontSize = 12, Foreground = Brush.Parse(color), TextWrapping = TextWrapping.Wrap };
         var row = new StackPanel { Orientation = Orientation.Horizontal };
         row.Children.Add(dot); row.Children.Add(lbl);
+        if (game.IphoneReady && game.IphoneInstalledAt is not null && freeDays is not null && !(packRunning && packGame?.Id == game.Id) && game.LocationState is not ("offline" or "missing"))
+        {
+            // 「×」= 不再提醒（关掉设置里的「免费签名到期提醒」，重新打开恢复；维护者 11-20：玩家换成自签后提醒挂着取消不了）
+            var dismiss = new Button { Content = "✕", FontSize = 10, Padding = new Thickness(5, 0), Margin = new Thickness(6, 0, 0, 0), MinHeight = 0,
+                Background = Brushes.Transparent, Foreground = Brush.Parse("#8C8A85"), VerticalAlignment = VerticalAlignment.Top };
+            ToolTip.SetTip(dismiss, T("library.banner.dismiss"));
+            Avalonia.Automation.AutomationProperties.SetAutomationId(dismiss, "library.renew.dismiss");
+            dismiss.Click += (_, e) => { e.Handled = true; SetFreeSignReminder(false); };
+            row.Children.Add(dismiss);
+        }
         return row;
     }
 
@@ -396,11 +469,12 @@ public sealed partial class EnvironmentWindow
         menu.Items.Add(new Separator());
         Add(T("library.menu.revealWindows"), "reveal", () => RevealGame(game), (game.Location?.Path ?? "").Length > 0 && game.LocationState != "offline");
         Add(T("library.menu.move"), "move", () => BeginPicker(() => MoveGameAsync(game)), idle && game.Reachable && game.LocationState != "none");
-        Add(T("library.menu.clearCache"), "clearCache", () => BeginGameJob("clean", game, new() { ["kind"] = "cache" }), idle && game.Reachable);
+        Add(T("library.menu.clearCache"), "clearCache", () => BeginGameJob("clean", game, new() { ["kind"] = "cache" }), idle && game.Reachable && !PackHoldsAll);
         menu.Items.Add(new Separator());
         Add(T("install.remove_game"), "remove", () => { libraryFolder = libraryFolderBox.Text ?? ""; selectedGame = game.Id; Navigate("install"); _ = ConfirmRemoveAsync(game); },
             !libraryBusy && !PhoneQueued(game.Id));
-        Add(T("game.diag"), "diag", () => _ = UploadDiagnosticsAsync(game.Id, null, () => ""), idle);   // 同 Mac「更多 → 上传给开发者」；上传没成在弹窗里退回导出
+        // 上传诊断只读日志：出包这款时照样能传（不看出包作业）
+        Add(T("game.diag"), "diag", () => _ = UploadDiagnosticsAsync(game.Id, null, () => ""), !jobs.Any(j => j.Kind != JobKind.Pack && j.Blocks(game.Id)));   // 同 Mac「更多 → 上传给开发者」；上传没成在弹窗里退回导出
         Add(T("game.delete"), "delete", () => _ = ConfirmDeleteAsync(game), idle);
         return menu;
     }
@@ -605,7 +679,7 @@ public sealed partial class EnvironmentWindow
         finally
         { EndJob(front); Render(); }
         if (!succeeded || closingLibrary) return;
-        if ((operation == "forgetGame" || operation == "delete") && selectedGame == game.Id) selectedGame = null;
+        if ((operation == "forgetGame" || operation == "delete") && selectedGame == game.Id) ClearSelectedGame(operation);
         locationsFor = null;   // 位置表的剩余空间 / 这款的位置变了：出包页下次重读
         await RunLibraryAsync("catalog", null);
     }
@@ -747,7 +821,8 @@ public sealed partial class EnvironmentWindow
         }
         if (connectedFolder is null) return;
         try { PrivateJobRequest.EnsurePrivateRoot(privateRoot); File.WriteAllText(LibraryPreference, folder); }
-        catch (Exception error) when (error is IOException or UnauthorizedAccessException) { importError = error.Message; Render(); }
+        catch (UnauthorizedAccessException error) { importError = NoWrite(error, connectedFolder ?? libraryFolder); Render(); }
+        catch (IOException error) { importError = error.Message; Render(); }
     }
 
     /// <summary>设置页「导入密钥」（游戏原件统一走顶栏「添加游戏」）</summary>
@@ -765,6 +840,16 @@ public sealed partial class EnvironmentWindow
         if (libraryBusy) return;
         libraryFolder = libraryFolderBox.Text ?? "";
         libraryOperation = RunLibraryAsync(operation, null);
+    }
+
+    /// <summary>清空选中（顶部大卡回退到第一款）：每处清空都先在 logs/launcher-crash.log 记一行 library.select.clear（#1392）——
+    /// 选中的款、为什么清（absent / hidden = 目录刷新后缺席或被隐藏；forgetGame / delete = 遗忘 / 删除这款；setup = 选库或换库整段清空）、
+    /// 当时目录总款数、出包款与状态。没选中就什么都不做。</summary>
+    private void ClearSelectedGame(string reason)
+    {
+        if (selectedGame is null) return;
+        LauncherCrash.Log(null, $"library.select.clear selected={selectedGame} state={reason} catalog={catalog?.Games.Count.ToString() ?? "null"} pack={packGame?.Id ?? "null"}/{(packState == "" ? "null" : packState)} result=cleared");
+        selectedGame = null;
     }
 
     /// <summary>游戏库作业在跑时又要刷新（出包 / 装机完、换页）：记一笔，这一轮结束后补刷一次（剃刀 W8：原先直接丢掉，刚出好的状态要等下一次别的刷新）。</summary>
@@ -785,11 +870,13 @@ public sealed partial class EnvironmentWindow
         if (operation != "setup" && (connectedFolder is null || libraryId is null)) return;
         var front = BeginJob(JobKind.Library); librarySummary = operation == "catalog" ? "library.loading" : "library.working";
         libraryDiagnostics = ""; Render();
+        string? otherLibrary = null;   // 这个位置是另一个游戏库（library_id_mismatch）时的说明：作业收尾后问玩家要不要改用它
         try
         {
             if (operation == "setup")
             {
-                connectedFolder = null; libraryId = null; catalog = null; selectedGame = null; ClearCovers();
+                ClearSelectedGame("setup");   // 选库 / 换库：整段清空，先记一行（#1392）
+                connectedFolder = null; libraryId = null; catalog = null; ClearCovers();
                 var folder = Path.GetFullPath(libraryFolder);
                 var accept = new HashSet<string>();
                 var setup = await LibraryJobClient.RunAsync(paths, privateRoot, folder, null, "setup", null, front.Token, jobId: front.Next());
@@ -804,14 +891,19 @@ public sealed partial class EnvironmentWindow
             {
                 var output = await LibraryJobClient.RunAsync(paths, privateRoot, connectedFolder!, libraryId, operation, selectedPaths, front.Token, jobId: front.Next());
                 DisplayJob(output);
-                if (!output.Report.Succeeded) { librarySummary = "library.failed"; return; }
+                if (!output.Report.Succeeded) { librarySummary = "library.failed"; if (JobCode(output) == "library_id_mismatch") otherLibrary = output.Report.Message; return; }
             }
             var listing = await LibraryJobClient.RunAsync(paths, privateRoot, connectedFolder!, libraryId, "catalog", null, front.Token, jobId: front.Next(), startup: TakeStartupCatalog());
             DisplayJob(listing);
-            if (!listing.Report.Succeeded) { librarySummary = "library.failed"; return; }
+            if (!listing.Report.Succeeded) { librarySummary = "library.failed"; if (JobCode(listing) == "library_id_mismatch") otherLibrary = listing.Report.Message; return; }
             catalog = LibraryCatalog.Parse(listing.Report.Result); ClearCovers();
-            if (!catalog.Games.Any(g => g.Id == selectedGame && !g.Hidden)) selectedGame = null;
+            if (selectedGame is not null && !catalog.Games.Any(g => g.Id == selectedGame && !g.Hidden))
+            {
+                ClearSelectedGame(catalog.Games.Any(g => g.Id == selectedGame) ? "hidden" : "absent");
+            }
             librarySummary = "library.completed";
+            ResumeSGradeWatch();   // S 级批量升级队列还在跑就接着读进度（SGradeUpgrade.cs）
+            _ = PreparePhoneUpdateAsync();   // 新版启动器头一次读到要更新的手机：后台准备 iPhone App 更新（PhoneAutoUpdate.cs）
         }
         catch (LibraryProtocolException error)
         { librarySummary = "library.invalid_result"; libraryDiagnostics += "\n" + error.Message; }
@@ -826,6 +918,14 @@ public sealed partial class EnvironmentWindow
         }
         finally
         { EndJob(front); Render(); }
+        // 另一个游戏库（11-17 维护者：说清是哪个、让玩家点一下确认，不直接拒、不悄悄改用）：「仍然继续」= 对这个文件夹重走选库（已有库直接打开、记下它的库号）
+        if (otherLibrary is not null && connectedFolder is not null && !closingLibrary
+            && await ConfirmInstallActionAsync("install.drop", otherLibrary, ConfirmTitle("library_id_mismatch")))
+        {
+            libraryFolder = connectedFolder;
+            await RunLibraryAsync("setup", null);
+            return;
+        }
         if (catalogAgain && !closingLibrary) { catalogAgain = false; await RunLibraryAsync("catalog", null); }
     }
 
@@ -838,7 +938,7 @@ public sealed partial class EnvironmentWindow
                 if (diagnostic.TryGetProperty("code", out var code))
                 {
                     var value = code.GetString();
-                    libraryDiagnostics += "\n" + T("errors." + value + ".title") + "\n" + T("errors." + value + ".detail");
+                    libraryDiagnostics += "\n" + text.Error(value, "title", language) + "\n" + text.Error(value, "detail", language);
                 }
                 foreach (var key in new[] { "summary", "suggestion" })
                     if (diagnostic.TryGetProperty(key, out var message) && message.ValueKind == JsonValueKind.String)

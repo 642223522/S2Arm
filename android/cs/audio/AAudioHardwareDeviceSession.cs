@@ -219,7 +219,9 @@ namespace S2A.Audio.AAudio
 
         public override void QueueBuffer(AudioBuffer buffer)
         {
-            _samples.Enqueue(buffer);
+            // Register before the samples become visible to the feeder: once they are in _samples another
+            // thread can push them into the ring, and a played-bytes callback that finds no record would drop
+            // that accounting and never release the buffer (same order as the Apple and OpenHarmony sessions).
             ulong sampleCount = GetSampleCount(buffer);
             bool wasEmpty;
 
@@ -241,6 +243,8 @@ namespace S2A.Audio.AAudio
                 _queued[(_queuedHead + _queuedCount) % _queued.Length] = (buffer.DataPointer, sampleCount);
                 _queuedCount++;
             }
+
+            _samples.Enqueue(buffer);
 
             if (_started)
             {

@@ -2,7 +2,7 @@
 NATIVE_TEST_OWN += cpatch_loader
 ifeq ($(S2A_UNAME),Darwin)
 $(BUILD)/tests/t_cpatch_loader: runtime/tests/t_cpatch_loader.c $(NVN_TEST_HOST_OBJS)
-	$(CC) $(CFLAGS) $(NATIVE_INC) -o $@ $< $(NVN_TEST_HOST_OBJS) $(S2A_HOST_WEAK)
+	$(CC) $(CFLAGS) $(NATIVE_INC) -o $@ $< $(NVN_TEST_HOST_OBJS) $(S2A_HOST_WEAK) $(NVN_TEST_HOST_LIBS)
 .PHONY: native-test-cpatch_loader
 native-test-cpatch_loader: $(BUILD)/tests/t_cpatch_loader
 	python3 runtime/tests/cpatch_loader/prepare.py $(BUILD)/tests/cpatch_loader

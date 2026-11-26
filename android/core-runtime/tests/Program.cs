@@ -388,6 +388,13 @@ internal static unsafe class Program
                 Check(!Error().StartsWith("Native provider self-check failed:", StringComparison.Ordinal), "dangling target cannot pass validation");
                 File.Delete(control); File.WriteAllBytes(control, new byte[0x4000]);
                 Check(Error().StartsWith("Native provider self-check failed:", StringComparison.Ordinal), "ordinary NACP still accepted");
+                // RomFS 镜像形态（出包缺省，安卓包带 romfs.std、没有 romfs/）：照样过数据校验；目录、镜像都没有 → 报缺 RomFS
+                Directory.Delete(Path.Combine(game, "romfs"));
+                File.WriteAllBytes(Path.Combine(game, "romfs.std"), new byte[64]);
+                Check(Error().StartsWith("Native provider self-check failed:", StringComparison.Ordinal), "romfs.std image passes actual validation");
+                File.Delete(Path.Combine(game, "romfs.std"));
+                Check(Error().Contains("requires NPDM, complete NACP and RomFS", StringComparison.Ordinal), "no romfs/ and no romfs.std is rejected");
+                Directory.CreateDirectory(Path.Combine(game, "romfs"));
                 return;
             }
             Check(scenario == "resource-romfs", "known resource scenario");

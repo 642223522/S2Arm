@@ -68,7 +68,7 @@ namespace Ryujinx.Cpu.LightningJit.Cache
 
                 _region.Block.MapAsRx((ulong)offset, (ulong)size);
 
-                if (OperatingSystem.IsMacOS() || OperatingSystem.IsIOS())
+                if (OperatingSystem.IsMacOS() || (OperatingSystem.IsIOS() || OperatingSystem.IsTvOS()))   // 平台例外：tvOS 与 iOS 走同一分支
                 {
                     JitSupportDarwin.SysIcacheInvalidate(_region.Block.Pointer + offset, size);
                 }

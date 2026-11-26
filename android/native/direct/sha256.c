@@ -49,14 +49,7 @@ void s2a_sha256_init(s2a_sha256 *ctx) {
     ctx->used = 0;
 }
 
-static uint64_t g_sha_bytes, g_sha_calls;   // 只用 __atomic_* 内建访问
-void s2a_sha256_stats(uint64_t *bytes, uint64_t *calls) {
-    if (bytes) *bytes = __atomic_exchange_n(&g_sha_bytes, 0, __ATOMIC_RELAXED);
-    if (calls) *calls = __atomic_exchange_n(&g_sha_calls, 0, __ATOMIC_RELAXED);
-}
 void s2a_sha256_update(s2a_sha256 *ctx, const void *data, size_t bytes) {
-    __atomic_fetch_add(&g_sha_calls, 1, __ATOMIC_RELAXED);
-    __atomic_fetch_add(&g_sha_bytes, (uint64_t)bytes, __ATOMIC_RELAXED);
     const uint8_t *p = data;
     ctx->bytes += bytes;
     while (bytes) {

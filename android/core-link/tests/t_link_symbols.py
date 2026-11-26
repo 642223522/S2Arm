@@ -101,7 +101,7 @@ class LinkSymbolTests(unittest.TestCase):
                     host = "darwin-x86_64" if sys.platform == "darwin" else "linux-x86_64"
                     tools = ndk / "toolchains/llvm/prebuilt" / host / "bin"
                     tools.mkdir(parents=True)
-                    for name in ("aarch64-linux-android29-clang", "aarch64-linux-android29-clang++", "ld.lld", "llvm-nm"):
+                    for name in ("aarch64-linux-android34-clang", "aarch64-linux-android34-clang++", "ld.lld", "llvm-nm"):
                         (tools / name).touch()
                     env = {"HOME": str(root / "empty-home") if index == 0 else ""}
                     with mock.patch.dict(os.environ, env, clear=True), \
@@ -181,7 +181,7 @@ class LinkSymbolTests(unittest.TestCase):
             host = "darwin-x86_64" if sys.platform == "darwin" else "linux-x86_64"
             tools = good / "toolchains/llvm/prebuilt" / host / "bin"
             tools.mkdir(parents=True)
-            for name in ("aarch64-linux-android29-clang", "aarch64-linux-android29-clang++", "ld.lld", "llvm-nm"):
+            for name in ("aarch64-linux-android34-clang", "aarch64-linux-android34-clang++", "ld.lld", "llvm-nm"):
                 (tools / name).touch()
             cases = (
                 {"HOME": str(root), "ANDROID_NDK_HOME": str(root / "stale"), "ANDROID_HOME": str(sdk)},
@@ -223,7 +223,7 @@ class LinkSymbolTests(unittest.TestCase):
             with mock.patch.dict(os.environ, {"HOME": temp, "ANDROID_NDK_HOME": str(wrong),
                                               "ANDROID_SDK_ROOT": str(sdk)}, clear=True):
                 self.assertEqual(LINK.find_ndk(), correct)
-                with self.assertRaisesRegex(RuntimeError, "missing .*aarch64-linux-android29-clang"):
+                with self.assertRaisesRegex(RuntimeError, "missing .*aarch64-linux-android34-clang"):
                     GAME.ndk_bin()
 
     def test_production_touch_and_avc_bindings_are_wired_in_both_modes(self):
@@ -430,6 +430,36 @@ class LinkSymbolTests(unittest.TestCase):
             """)
             result = fixture.check()
             self.assertEqual([item["symbol"] for item in result["missing"]], ["s2a_android_only"])
+
+    def test_directive_trailing_comment_is_not_condition(self):
+        # A trailing // or /* */ comment on a directive is not part of the condition or the macro value;
+        # string literals keep their "//". Expectations follow the C preprocessor under the Android defines.
+        def active(src):
+            return LINK.preprocess_active_lines(textwrap.dedent(src), LINK.Defines("native")).split()
+        self.assertEqual(active("""
+            #if !defined(__ANDROID__) /* apple only */
+            A
+            #endif
+            #if !defined(__ANDROID__) // apple only
+            B
+            #endif
+            #if defined(__ANDROID__) // android
+            C
+            #endif
+            #if 1 // 0
+            D
+            #endif
+            #define S2A_COMMENT_FLAG 0 // off
+            #if S2A_COMMENT_FLAG
+            E
+            #endif
+            #ifdef __ANDROID__ /* x */
+            F
+            #endif
+        """), ["C", "D", "F"])
+        defines = LINK.Defines("native")
+        LINK.preprocess_active_lines('#define S2A_COMMENT_URL "http://x" // note\n', defines)
+        self.assertEqual(defines.get("S2A_COMMENT_URL"), '"http://x"')
 
     def test_platform_only_types_are_still_android_requirements(self):
         # #530 option (a): no per-platform exclusion. An Apple-only type compiled into the

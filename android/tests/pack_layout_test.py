@@ -108,5 +108,39 @@ class PackLayoutTest(unittest.TestCase):
         self.layout(table, 63, 3284, 1)
 
 
+    def test_romfs_image_root_packs_the_image(self):
+        # 出包缺省 RomFS 不落散文件（8fe66d7fe）：产物根只有标准 RomFS 镜像 romfs.std。镜像用 services/romfs_index --std
+        #   （LibHac RomFsBuilder，出包同一个工具）从合成产物根的 romfs/ 建，期望只看夹具本身，不跑被测实现推
+        import shlex, shutil as sh
+        dotnet = sh.which('dotnet') or (os.path.join(os.environ['DOTNET_ROOT'], 'dotnet') if os.environ.get('DOTNET_ROOT') else None)
+        self.assertTrue(dotnet, '建镜像要 dotnet（services/romfs_index）')
+        tool = self.base / 'ri'
+        built = subprocess.run([dotnet, 'build', str(REPO / 'services/romfs_index'), '-c', 'Release', '-o', str(tool)], capture_output=True, text=True)
+        self.assertEqual(built.returncode, 0, built.stdout[-400:])
+        romfs, image = self.root / 'romfs', self.root / 'romfs.std'
+        want = {f.relative_to(romfs).as_posix(): f.read_bytes() for f in romfs.rglob('*') if f.is_file()}
+        image.write_bytes(b'')
+        made = subprocess.run([dotnet, str(tool / 'romfs_index.dll'), '--std', str(romfs), '-', str(image), '0'], capture_output=True, text=True)
+        self.assertEqual(made.returncode, 0, made.stderr[-400:])
+        import shutil
+        shutil.rmtree(romfs)
+        overlay = self.root / 'ui_overlay' / 'romfs' / 'data'
+        overlay.mkdir(parents=True)
+        (overlay / 'layout.bin').write_bytes(b'overlay')
+        out, _, artifact = self.make('-image')
+        self.assertEqual(artifact['romfs'], 'romfs.std', '镜像形态的启动契约指向镜像文件')
+        self.assertEqual((out / 'romfs.std').read_bytes(), image.read_bytes(), '镜像原样进包')
+        rows = [line.split('\t')[0] for line in (out / 'index.tsv').read_text().splitlines()]
+        self.assertFalse([r for r in rows if r.startswith('romfs/')], '镜像形态不再展开 romfs/ 散文件')
+        self.assertIn('romfs.std', rows)
+        self.assertIn('ui_overlay/romfs/data/layout.bin', rows, '覆盖层放在服务层 OpenStd 读的 ui_overlay/romfs/')
+        self.assertTrue(want, '夹具 romfs/ 里有文件')
+
+    def test_directory_root_keeps_romfs_directory(self):
+        out, _, artifact = self.make('-dir')
+        self.assertEqual(artifact['romfs'], 'romfs')
+        self.assertTrue((out / 'romfs').is_dir() and not (out / 'romfs.std').exists())
+
+
 if __name__ == '__main__':
     unittest.main()

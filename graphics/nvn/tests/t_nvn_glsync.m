@@ -1,13 +1,13 @@
 // NVN ⇄ GL 同步对象与两个调试接口（11-01 全库接口清点 NVN 缺口 4 个）：生产引导 / 登记 / 跳板，真 NVN 设备与队列、真 GL 上下文（同一个 Metal 设备、两条队列）。
 // 跨队列等待用一个 CPU 控制的共享事件当「闸」：闸关着时，被等的一方在 GPU 上停住；期望值不跑被测实现就能定——闸开之前对方的栅栏一定没到，开之后一定到：
 // ① GL → NVN（火影忍者 终极风暴羁绊的用法）：GL 命令缓冲先在 GPU 上等闸，再 glFenceSync / glFlush；nvnSyncInitializeFromFencedGLSync 转成 NVN 同步对象（status = TIMEOUT_EXPIRED：
-//    闸关着、查询时 GL 栅栏没到），nvnQueueWaitSync 之后提交的 NVN 工作在闸开之前不完成（它的栅栏 nvnSyncWait 超时 0 → TIMEOUT_EXPIRED，300 ms 后仍是），开闸后 2 秒内完成；
+//    闸关着、查询时 GL 栅栏没到），nvnQueueWaitSync 之后提交的 NVN 工作在闸开之前不完成（它的栅栏 nvnSyncWait 超时 0 → TIMEOUT_EXPIRED，300 ms 后仍是），开闸后完成（兜底 30 秒）；
 // ② NVN → GL：NVN 队列先等闸再提交、QueueFenceSync；nvnSyncCreateGLSync 转成 GL 同步对象：glClientWaitSync 超时 0 → TIMEOUT_EXPIRED；glWaitSync 之后的 GL 提交在闸开之前不完成；开闸后都完成；
 // ③ 边界：没围栏的 NVN 同步对象 CreateGLSync 回假、不写；无效 GL 句柄 InitializeFromFencedGLSync 回假、status = FAILED；
 // ④ nvnDeviceWaitForError：没有 GPU 错误时阻塞到超时（≥ 给的 80 ms）、回 0、错误信息不写；
 // ⑤ nvnInstallGlobalDebugCallback：按名可查（零售驱动这个函数就是一条 ret），调用后回调不被调用。
-// ⓪ nvnSyncCreateGLSync 单独一例（只靠 NVN）：围在一次提交上的同步对象转出的 GL 同步对象 2 秒内等到。
-// ⑥ 命令缓冲里的 nvnCommandBufferWaitSync（缺口族 40）：同 ①，但等待录在命令缓冲里提交——闸开之前其后提交的 NVN 工作不完成，开闸后 2 秒内完成（原先是空函数，闸没开就完成）。
+// ⓪ nvnSyncCreateGLSync 单独一例（只靠 NVN）：围在一次提交上的同步对象转出的 GL 同步对象等得到（兜底 30 秒）。
+// ⑥ 命令缓冲里的 nvnCommandBufferWaitSync（缺口族 40）：同 ①，但等待录在命令缓冲里提交——闸开之前其后提交的 NVN 工作不完成，开闸后完成（兜底 30 秒；原先是空函数，闸没开就完成）。
 // ⑦ 没围栏的 nvnSyncWait：给多长超时都立刻回 ALREADY_SIGNALED（怒之铁拳4：不能睡到超时；11-06 DOOM Eternal：不能回超时，游戏按超时 0 轮询会死循环）。
 // ⑧ nvnTextureBuilderSetGLTextureName 接 GL 纹理（11-03 火影羁绊：Scaleform 往 GL 纹理画界面、游戏按名字建 NVN 纹理来回拷）：GL 建 64×32 RGBA8、3 级不可变存储，
 //    NVN 构建器只设设备与名字（格式 / 尺寸留缺省）建纹理 → 宽 64、高 32、格式 RGBA8（0x25）、级数 3（取 GL 的）；建好之后 GL 再往第 0 级写 (x, y, 7, 255)，
@@ -38,6 +38,10 @@ static void *load(const char *name) { void *entry = h_nvnBootstrapLoader(name); 
 static void *glf(const char *name) { void *f = gl_lookup(name); CHECK(f != NULL); return f; }
 #define API(name) ((NVNT_##name)load(#name))
 static uint64_t now_ns(void) { return clock_gettime_nsec_np(CLOCK_UPTIME_RAW); }
+// 开闸 / 提交之后「该等到」的等待上限 30 秒（原 2 秒：负载高时 GPU 完成晚到就假红）；闸关着时「不该完成」的检查仍用 300 ms 短窗（负对照：负载高时只会漏检，不会假红）
+#define W30 30000000000ull
+// hle_nvn.c 只读计数：nvnSyncWait 进入带超时的阻塞等待的次数（⑦ 不得涨）
+uint64_t s2a_nvn_syncwait_blocks(void);
 typedef NVNboolean (*create_gl_fn)(const NVNsync *, uint64_t *);
 typedef NVNboolean (*init_gl_fn)(NVNsync *, NVNdevice *, const void *, int *);
 typedef int (*wait_err_fn)(NVNdevice *, uint64_t, void *);
@@ -81,7 +85,7 @@ int main(int argc, char **argv) { @autoreleasepool {
 
     if (want(argc, argv, 0)) { phase = "⓪ nvnSyncCreateGLSync：NVN 栅栏转成的 GL 同步对象等得到";
         NVNsync s; API(nvnSyncInitialize)(&s, &device); submit_and_fence(&s); uint64_t h = 0;
-        CHECK(create_gl(&s, &h)); CHECK(h != 0); GLenum r = glClientWaitSync((GLsync)(uintptr_t)h, 0, 2000000000ull); CHECK(r == 0x911C || r == 0x911A);
+        CHECK(create_gl(&s, &h)); CHECK(h != 0); GLenum r = glClientWaitSync((GLsync)(uintptr_t)h, 0, W30); CHECK(r == 0x911C || r == 0x911A);
         printf("%s：通过\n", phase); }
     if (want(argc, argv, 1) || want(argc, argv, 2) || want(argc, argv, 6)) { gl_sync_from_event = (uint64_t (*)(void *, uint64_t))dlsym(RTLD_DEFAULT, "gl_sync_from_event"); CHECK(gl_sync_from_event != NULL); }
 
@@ -99,7 +103,7 @@ int main(int argc, char **argv) { @autoreleasepool {
         usleep(300000);
         CHECK(API(nvnSyncWait)(&after, 0) == NVN_SYNC_WAIT_RESULT_TIMEOUT_EXPIRED);   // 300 ms 后 NVN 的提交仍被 GL（闸）挡着
         uint64_t t0 = now_ns(); gate.signaledValue = 1;
-        NVNsyncWaitResult r = API(nvnSyncWait)(&after, 2000000000ull);
+        NVNsyncWaitResult r = API(nvnSyncWait)(&after, W30);
         CHECK(r == NVN_SYNC_WAIT_RESULT_CONDITION_SATISFIED || r == NVN_SYNC_WAIT_RESULT_ALREADY_SIGNALED);
         CHECK(API(nvnSyncWait)(&s, 0) == NVN_SYNC_WAIT_RESULT_ALREADY_SIGNALED);
         printf("%s：通过（开闸后 NVN 提交 %.1f ms 完成）\n", phase, (now_ns() - t0) / 1e6); } }
@@ -117,7 +121,7 @@ int main(int argc, char **argv) { @autoreleasepool {
         CHECK(glClientWaitSync(g, 0, 0) == 0x911B);   // 300 ms 后 GL 的提交仍被 NVN（闸）挡着
         CHECK(glClientWaitSync((GLsync)(uintptr_t)h, 0, 0) == 0x911B);
         gate.signaledValue = 1;
-        GLenum r1 = glClientWaitSync((GLsync)(uintptr_t)h, 0, 2000000000ull), r2 = glClientWaitSync(g, 1, 2000000000ull);
+        GLenum r1 = glClientWaitSync((GLsync)(uintptr_t)h, 0, W30), r2 = glClientWaitSync(g, 1, W30);
         CHECK((r1 == 0x911C || r1 == 0x911A) && (r2 == 0x911C || r2 == 0x911A));
         // 来自 GL 的 NVN 同步对象再转回 GL：就是原来那个 GL 栅栏
         uint64_t back = 0; CHECK(create_gl(&wait_gate, &back)); CHECK(glClientWaitSync((GLsync)(uintptr_t)back, 0, 0) == 0x911A);
@@ -150,16 +154,19 @@ int main(int argc, char **argv) { @autoreleasepool {
         usleep(300000);
         CHECK(API(nvnSyncWait)(&after, 0) == NVN_SYNC_WAIT_RESULT_TIMEOUT_EXPIRED);   // 300 ms 后仍被闸挡着
         uint64_t t0 = now_ns(); gate.signaledValue = 1;
-        NVNsyncWaitResult r = API(nvnSyncWait)(&after, 2000000000ull);
+        NVNsyncWaitResult r = API(nvnSyncWait)(&after, W30);
         CHECK(r == NVN_SYNC_WAIT_RESULT_CONDITION_SATISFIED || r == NVN_SYNC_WAIT_RESULT_ALREADY_SIGNALED);
         printf("%s：通过（开闸后 %.1f ms 完成）\n", phase, (now_ns() - t0) / 1e6); } }
-    if (want(argc, argv, 7)) { phase = "⑦ 没围栏的 SyncWait：给多长超时都立刻回 ALREADY_SIGNALED";
+    if (want(argc, argv, 7)) { phase = "⑦ 没围栏的 SyncWait：给多长超时都立刻回 FAILED（同真机驱动）";
     {   // 11-01 原生崩溃线：怒之铁拳4 开局在没围栏的同步对象上带长超时等，原先睡到超时（封顶 1 小时）主线程卡死无首帧；10-29 普查时立刻返回、直连通过
+        // 期望值 3 取自真机驱动（一款 UE4 游戏随包的 NVN：nvnSyncInitialize 置类型 0，nvnSyncWait 类型 0 返回预置的 3），不由被测实现反推；
+        //   回 0 会让以超时 0 轮询「数据就绪」的游戏提前去读（诊断 #343862）
         NVNsync s; API(nvnSyncInitialize)(&s, &device);
-        uint64_t t0 = now_ns(); CHECK(API(nvnSyncWait)(&s, 2000000000ull) == NVN_SYNC_WAIT_RESULT_ALREADY_SIGNALED);
-        CHECK(API(nvnSyncWait)(&s, 0) == NVN_SYNC_WAIT_RESULT_ALREADY_SIGNALED);   // DOOM Eternal：超时 0 轮询也不回超时
-        double ms = (now_ns() - t0) / 1e6; CHECK(ms < 50.0);
-        printf("%s：通过（2 秒超时 %.1f ms 返回）\n", phase, ms); } }
+        uint64_t t0 = now_ns(), b0 = s2a_nvn_syncwait_blocks(); CHECK(API(nvnSyncWait)(&s, 2000000000ull) == NVN_SYNC_WAIT_RESULT_FAILED);
+        CHECK(API(nvnSyncWait)(&s, 0) == NVN_SYNC_WAIT_RESULT_FAILED);   // DOOM Eternal：超时 0 轮询也不回超时（它只在 TIMEOUT 时睡下再查）
+        // 原判用时 < 50 ms：负载高时调用本身被抢占就假红。改判「没进入阻塞等待」（计数不涨），睡到超时的旧实现必进阻塞等待
+        double ms = (now_ns() - t0) / 1e6; uint64_t blocks = s2a_nvn_syncwait_blocks() - b0; CHECK(blocks == 0);
+        printf("%s：通过（2 秒超时：进入阻塞等待 %llu 次，用时 %.1f ms 仅供参考）\n", phase, (unsigned long long)blocks, ms); } }
 
     if (want(argc, argv, 5)) { phase = "⑤ nvnInstallGlobalDebugCallback：按名可查、什么都不做";
     {   install_fn install = (install_fn)load("nvnInstallGlobalDebugCallback"); int token = 0;

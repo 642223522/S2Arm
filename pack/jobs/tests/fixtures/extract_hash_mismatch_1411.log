@@ -1,0 +1,6 @@
+程序号 01008db008c2c000；基础 1869f6af；更新 无；DLC 0 个�
+🔴 源文件数据哈希校验不过（ResultFsNonRealDataVerificationFailed (2002-4604): Hash error!）：文件被改过（如合进改版资源的整合版）或损坏，换一份原版完整的文件�
+   读到坏块时在：逐文件读出资源（RomFS / DLC），文件 romfs/bin/archive/battle/effect/ee018_fire_under.gfpak，文件内偏移 0（读 1968128 字节）�
+   逐个核对本次用到的内容（整份读一遍）：�
+   - 本体程序 1869f6af38555979b2aaa33df8b5ac54（game.xci）：第 0 段可执行 通过，第 1 段资源 不过，第 2 段标志 通过�
+   - 控制数据 19c2fe56d7f043b59aa8faf3eab76882（game.xci）：第 0 段数据 通过�

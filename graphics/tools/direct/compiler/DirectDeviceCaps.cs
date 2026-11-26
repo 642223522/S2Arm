@@ -22,6 +22,8 @@ namespace S2A.DirectCompiler
         public readonly uint MaxPerStageDescriptorStorageImages;
         public readonly uint MaxUniformBufferRange, MaxStorageBufferRange;
         public readonly uint MaxComputeSharedMemorySize, MaxComputeWorkGroupInvocations;
+        // Missing in older v1 snapshots means unknown, never a measured zero.
+        public readonly uint? MaxVertexOutputComponents, MaxFragmentInputComponents;
         public readonly float MaxSamplerAnisotropy;
         public readonly uint MinUniformBufferOffsetAlignment, MinStorageBufferOffsetAlignment;
         public readonly uint MinTexelBufferOffsetAlignment;
@@ -33,6 +35,13 @@ namespace S2A.DirectCompiler
         public readonly bool TextureCompressionAstcLdr, TextureCompressionBc, TextureCompressionEtc2;
         public readonly bool ShaderStorageImageExtendedFormats, IndependentBlend, DepthClamp, MultiViewport;
         public readonly bool SamplerAnisotropy, ShaderImageGatherExtended, ShaderStorageImageReadWithoutFormat;
+
+        // 描述符索引（A 片 #1348）：enabled 是按 1.1 条件真的启用了，其余六位是设备支持位。
+        // 缺这个对象按全 false（旧 caps / 测试夹具）；生产者在 s2a-device-caps-v1 里总会写全七个字段。
+        public readonly bool DescriptorIndexingEnabled, DescriptorIndexingRuntimeArray;
+        public readonly bool DescriptorIndexingPartiallyBound, DescriptorIndexingSampledNonUniform;
+        public readonly bool DescriptorIndexingStorageNonUniform, DescriptorIndexingVariableCount;
+        public readonly bool DescriptorIndexingSampledUpdateAfterBind;
 
         public readonly bool FormatsBc123, FormatsBc45, FormatsBc67, FormatsEtc2, FormatsAstc;
         public readonly bool FormatsFiveBit, FormatsR4G4B4A4, FormatsScaledVertex;
@@ -68,6 +77,7 @@ namespace S2A.DirectCompiler
                 "maxPerStageDescriptorStorageImages",
                 "maxUniformBufferRange", "maxStorageBufferRange",
                 "maxComputeSharedMemorySize", "maxComputeWorkGroupInvocations",
+                "maxVertexOutputComponents", "maxFragmentInputComponents",
                 "maxSamplerAnisotropy",
                 "minUniformBufferOffsetAlignment", "minStorageBufferOffsetAlignment",
                 "minTexelBufferOffsetAlignment", "subgroupSize");
@@ -80,6 +90,10 @@ namespace S2A.DirectCompiler
             MaxStorageBufferRange = JsonStrict.UInt32(limits, "maxStorageBufferRange", lw, 1, uint.MaxValue);
             MaxComputeSharedMemorySize = JsonStrict.UInt32(limits, "maxComputeSharedMemorySize", lw, 1, 1 << 20);
             MaxComputeWorkGroupInvocations = JsonStrict.UInt32(limits, "maxComputeWorkGroupInvocations", lw, 1, 1 << 20);
+            MaxVertexOutputComponents = limits.TryGetProperty("maxVertexOutputComponents", out _)
+                ? JsonStrict.UInt32(limits, "maxVertexOutputComponents", lw, 1, uint.MaxValue) : null;
+            MaxFragmentInputComponents = limits.TryGetProperty("maxFragmentInputComponents", out _)
+                ? JsonStrict.UInt32(limits, "maxFragmentInputComponents", lw, 1, uint.MaxValue) : null;
             MaxSamplerAnisotropy = JsonStrict.Float(limits, "maxSamplerAnisotropy", lw);
             if (!float.IsFinite(MaxSamplerAnisotropy) || MaxSamplerAnisotropy < 0 || MaxSamplerAnisotropy > 1024)
                 throw new DirectCompileException("UNSUPPORTED_PROFILE", lw + ".maxSamplerAnisotropy is outside 0..1024");
@@ -116,6 +130,23 @@ namespace S2A.DirectCompiler
             SamplerAnisotropy = JsonStrict.Bool(features, "samplerAnisotropy", fw);
             ShaderImageGatherExtended = JsonStrict.Bool(features, "shaderImageGatherExtended", fw);
             ShaderStorageImageReadWithoutFormat = JsonStrict.Bool(features, "shaderStorageImageReadWithoutFormat", fw);
+
+            // 描述符索引事实。对象可缺（旧夹具 / 旧 caps 按全 false）；对象在就必须七个字段全在，不猜。
+            JsonElement descIdx = JsonStrict.Object(e, "descriptorIndexing", where, required: false);
+            if (descIdx.ValueKind == JsonValueKind.Object)
+            {
+                string dw = where + ".descriptorIndexing";
+                JsonStrict.OnlyKeys(descIdx, dw, "enabled", "runtimeArray", "partiallyBound",
+                    "sampledImageArrayNonUniformIndexing", "storageImageArrayNonUniformIndexing",
+                    "variableDescriptorCount", "sampledImageUpdateAfterBind");
+                DescriptorIndexingEnabled = JsonStrict.Bool(descIdx, "enabled", dw);
+                DescriptorIndexingRuntimeArray = JsonStrict.Bool(descIdx, "runtimeArray", dw);
+                DescriptorIndexingPartiallyBound = JsonStrict.Bool(descIdx, "partiallyBound", dw);
+                DescriptorIndexingSampledNonUniform = JsonStrict.Bool(descIdx, "sampledImageArrayNonUniformIndexing", dw);
+                DescriptorIndexingStorageNonUniform = JsonStrict.Bool(descIdx, "storageImageArrayNonUniformIndexing", dw);
+                DescriptorIndexingVariableCount = JsonStrict.Bool(descIdx, "variableDescriptorCount", dw);
+                DescriptorIndexingSampledUpdateAfterBind = JsonStrict.Bool(descIdx, "sampledImageUpdateAfterBind", dw);
+            }
 
             JsonElement formats = JsonStrict.Object(e, "formats", where);
             string mw = where + ".formats";
@@ -164,7 +195,7 @@ namespace S2A.DirectCompiler
                 throw new DirectCompileException("INVALID_JSON", where + " is not an object");
             JsonStrict.OnlyKeys(e, where, "schema", "apiVersion", "driverVersion", "vendorId", "deviceId",
                 "deviceType", "deviceName", "driverName", "limits", "features", "formats", "memory",
-                "enabledExtensions", "subgroupSize");
+                "enabledExtensions", "subgroupSize", "descriptorIndexing");
             if (JsonStrict.String(e, "schema", where) != Schema)
                 throw new DirectCompileException("UNSUPPORTED_PROFILE", where + ".schema is not " + Schema);
             return new DirectDeviceCaps(e, where);

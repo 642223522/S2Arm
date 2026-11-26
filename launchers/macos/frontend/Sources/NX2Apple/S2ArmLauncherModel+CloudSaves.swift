@@ -31,6 +31,8 @@ extension S2ArmLauncherModel {
         case SaveSyncError.notDownloaded(let name): return fill("s2arm.cloud.error.notDownloaded", name)
         case SaveSyncError.corrupt(let name): return fill("s2arm.cloud.error.corrupt", name)
         case SaveSyncError.cloudWriteAfterRestore(let from, let why): return fill("s2arm.cloud.error.writeBack", from, why)
+        // 云端那份版本 / 账号对不上或有文件坏了：自动同步不覆盖本机进度（作业层带 sync 时照旧拒绝），告诉玩家可以去存档管理手动恢复
+        case let f as JobFailure where ["save_version", "save_wrong_user", "save_damaged"].contains(f.code ?? ""): return loc.t("s2arm.cloud.error.notApplied")
         default: return error.localizedDescription
         }
     }
@@ -61,7 +63,7 @@ extension S2ArmLauncherModel {
                 _ = try await self.saveBackup(gameID, to: url); return true
             },
             inspect: { url in
-                let r = try await self.saveJob("saveInspect", gameID: gameID, extra: ["path": url.path])
+                let r = try await self.saveJob("saveInspect", gameID: gameID, extra: ["path": url.path, "sync": true])
                 guard let list = (r["manifest"] as? [String: Any])?["files"] as? [[String: Any]] else { throw SaveResultIncomplete() }
                 return try list.map {
                     guard let path = $0["path"] as? String, let sha = $0["sha256"] as? String else { throw SaveResultIncomplete() }
@@ -69,8 +71,8 @@ extension S2ArmLauncherModel {
                 }
             },
             restore: { url in
-                let preview = try await self.saveInspect(gameID, source: url)
-                _ = try await self.saveRestore(gameID, preview: preview)
+                let preview = try await self.saveInspect(gameID, source: url, sync: true)   // 自动同步：对不上照旧拒绝，不悄悄换掉进度
+                _ = try await self.saveRestore(gameID, preview: preview, sync: true)
             })
         let engine = SaveSyncEngine(folder: CloudSaveFolder(root: folder, gameID: gameID), device: Self.deviceID(),
                                     deviceName: Host.current().localizedName ?? "Mac", platform: "mac", work: work, ports: ports,

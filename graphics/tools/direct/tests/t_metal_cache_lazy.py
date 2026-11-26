@@ -62,7 +62,8 @@ static class Store {
     public static Dictionary<string, byte[]> Get(string key) { Reads.Add(key); return Entries.GetValueOrDefault(key); }
     public static void Put(string key, Dictionary<string, byte[]> value) => Entries[key] = value;
 }
-sealed class CompileError : Exception { public CompileError(string m) : base(m) {} }
+class CompileError : Exception { public CompileError(string m) : base(m) {} }
+sealed class CompileTimeout : CompileError { public CompileTimeout(string m) : base(m) {} }
 static class Metal {
     public static readonly Dictionary<string, (string[] Cmd, string Sdk, byte[] Ident)> T = new() {
         ["mac"] = (new[] {"metal"}, "fake-sdk", Encoding.UTF8.GetBytes("synthetic-compiler")) };
@@ -76,7 +77,8 @@ static class Metal {
     public static int CompilerCalls;
     static IEnumerable<string> Native(string[] cmd) => cmd;
     static string[] Tool(string sdk, params string[] cmd) => cmd;
-    static (int, string) Exec(string[] args) {
+    static int Limit(long bytes) => 180;
+    static (int, string) Exec(string[] args, int limitS) {
         CompilerCalls++;
         string file = args[Array.IndexOf(args, "-o") + 1];
         File.WriteAllBytes(file, file.EndsWith(".metallib") ? Output : new byte[] {0});

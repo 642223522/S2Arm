@@ -1,0 +1,10 @@
+{
+  "app": {
+    "bundleName": "io.s2arm.ohos.dev",
+    "vendor": "S2Arm",
+    "versionCode": 36,
+    "versionName": "0.5.0",
+    "icon": "$media:app_icon",
+    "label": "$string:app_name"
+  }
+}

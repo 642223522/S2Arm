@@ -12,6 +12,7 @@ HEAD = "编号\t模块\t位\t类别\t段名\t许可\t来源\t数据写入\t缺�
 class Ctx:
     def __init__(self, root):
         self.library, self.engine, self.private, self.r = root / "lib", root / "engine", root / "priv", {"gameId": GID}
+        self.work_root = root / "work"   # 程序缓存 cache/programs（pack/jobs/programs.py）
         table = self.engine / community.SETTINGS_TABLE
         table.parent.mkdir(parents=True, exist_ok=True); shutil.copyfile(REPO / community.SETTINGS_TABLE, table)
     def begin(self, *a): pass

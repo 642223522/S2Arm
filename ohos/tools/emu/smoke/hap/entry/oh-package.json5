@@ -1,0 +1,3 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 S2Arm contributors
+{ "name": "entry", "version": "1.0.0", "description": "", "main": "", "author": "", "license": "", "dependencies": { "libprobe.so": "file:./src/main/cpp/types/libprobe" } }

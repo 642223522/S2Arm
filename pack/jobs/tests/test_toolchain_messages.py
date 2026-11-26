@@ -96,3 +96,34 @@ class ToolchainMessageTests(JobCase):
                 self.assertEqual(row["group"], "system")
                 self.assertEqual(set(row), {"id", "name", "ok", "message", "requiredFor", "group", "action", "help", "diagnostic"})
                 self.assertEqual(row["id"], {"Metal 编译组件": "metal", "Xcode": "xcode"}[name])   # 稳定英文 id（剃刀 M11），前端按它分组，不按中文名
+
+
+
+class AppleIdCheckFollowsPlumesign(ToolchainMessageTests.__bases__[0]):
+    """0.6.0 Mac：推到 iPhone 的「Apple ID 团队」看随包 plumesign 登录的账号（install.mac_plume），不看 Xcode；
+    Apple TV / 独立 App 方案仍用 Xcode 团队，单列 xcode_team（只标 appleTV，不挡推到 iPhone）；证书模式不出 iPhone 那一项。期望手写"""
+    TV = "Apple TV / 独立 App 方案用的 Xcode 团队"
+
+    def rows(self, plume, acct):
+        with patch.object(install, "mac_plume", lambda c: plume), patch.object(install, "win_install_mod", lambda c: None), \
+             patch.object(install, "plume_account", lambda c, W: acct):
+            return ToolchainMessageTests.preflight(self)
+
+    def test_not_signed_in(self):
+        rows = self.rows(True, None)
+        row = rows["Apple ID 团队"]
+        self.assertEqual((row["id"], row["ok"], row["action"], row["message"], row["requiredFor"], row["diagnostic"]["code"]),
+                         ("apple_team", False, "appleLogin", install.APPLE_SIGN_IN, ["install"], "apple_not_signed_in"))
+        tv = rows[self.TV]   # preflight 夹具里 Xcode 没登录（xcode_account → (False, [])）
+        self.assertEqual((tv["id"], tv["ok"], tv["action"], tv["requiredFor"], tv["diagnostic"]["code"]),
+                         ("xcode_team", False, "openXcode", ["appleTV"], "xcode_account_missing"))
+
+    def test_signed_in(self):
+        row = self.rows(True, dict(account="a@example.com", team="T", teamName="甲"))["Apple ID 团队"]
+        self.assertEqual((row["ok"], row["action"]), (True, "appleLogin"))
+        self.assertNotIn("diagnostic", row)
+
+    def test_devcert_has_no_iphone_item(self):
+        rows = self.rows(False, None)   # 用自己的开发者证书：mac_plume 为假
+        self.assertNotIn("Apple ID 团队", rows)
+        self.assertIn(self.TV, rows)

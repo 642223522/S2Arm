@@ -95,6 +95,7 @@ namespace S2A.Services
         public static delegate*<int, void> FocusSuspendSet;   // 接口 v2.15：游戏焦点处理模式是否 AlwaysSuspend（失焦即冻结，AppletStateMgr）告诉平台壳
         public static delegate*<int> ConsoleMode;      // 接口 v2.15：平台壳设的掌机 0 / 主机 1，-1 = 没设过
         public static delegate*<int> HostSleeping;     // 接口 v2.15：iOS 后台 / Mac 系统睡眠 = 1
+        public static delegate*<int, void> AppletOpenAdd;   // 接口 v2.18：系统小程序开着的个数 +1 / -1，报给原生停帧看门（Dispatcher 接到 S2AHooks）；测试里为 null
         public static delegate*<int> GuestFrozen;      // 接口 v2.17：客机冻结状态；音频暂停跟随它，不跟随焦点本身
         public static delegate*<int> GfxMode;   // 双轨图形模式（runtime/include/s2a_gfx_mode.h）：0 通用 / 1 直连，起局判定后不变；测试里为 null
         public static delegate*<byte*, void> BootMark;   // 接口 v2.7：起局分段计时，打「[起局] <段> +ms（本段 ms）」；测试里为 null
@@ -106,6 +107,15 @@ namespace S2A.Services
         public static delegate* unmanaged<ulong, void*, ulong, void> DetHostWrite;   // 接口 v2.10：宿主写游戏内存（确定性档按序记 / 重放）   // 接口 v2.8：游戏读到的系统计数器（19.2 MHz，同 mrs cntpct 门 / svc GetSystemTick）
         // Registered by platform composition before Boot; table and callbacks live
         // until process exit. Same-pointer registration is idempotent, not replaceable.
+        // 补满采样（#2146）：宿主一次取走一拍累积的 IMU 样本（s2a_pad.h s2a_pad_motion_burst_fn）。平台装配在 Boot 前登记；
+        //   没登记（没有批量体感源的宿主、测试）= 0，ControllerFeedback 走单笔路径。只登记一次，不可替换
+        public static nint MotionBurst { get; private set; }
+        public static bool RegisterMotionBurst(nint fn)
+        {
+            if (fn == 0 || (MotionBurst != 0 && MotionBurst != fn)) { Red.Report("体感批量源登记无效", fn == 0 ? "空函数" : "不能替换已登记的", allowFailFast: false); return false; }
+            MotionBurst = fn;
+            return true;
+        }
         public static LanDiscoveryV1* LanDiscovery { get; private set; }
         private static readonly object _lanRegistrationLock = new();
         public static bool RegisterLanDiscovery(LanDiscoveryV1* provider)
@@ -349,6 +359,7 @@ namespace S2A.Services
                 FocusSuspendSet = &Imports.s2a_focus_suspend_set;
                 ConsoleMode = &Imports.s2a_console_mode;
                 HostSleeping = &Imports.s2a_host_sleeping;
+                AppletOpenAdd = &Imports.s2a_applet_open_add;
                 GuestFrozen = &Imports.s2a_guest_frozen;
                 BootMark = &Imports.s2a_boot_mark;
                 DetMode = (delegate* unmanaged<int>)dm;
@@ -406,6 +417,7 @@ namespace S2A.Services
             [DllImport(Lib)] public static extern void s2a_focus_suspend_set(int on);
             [DllImport(Lib)] public static extern int s2a_console_mode();
             [DllImport(Lib)] public static extern int s2a_host_sleeping();
+            [DllImport(Lib)] public static extern void s2a_applet_open_add(int d);
             [DllImport(Lib)] public static extern int s2a_guest_frozen();
             [DllImport(Lib)] public static extern void s2a_boot_mark(byte* stage);
             [DllImport(Lib)] public static extern ulong s2a_event_create(uint* hRead, uint* hWrite);

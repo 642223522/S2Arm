@@ -14,9 +14,12 @@ DN=${DOTNET:-$(command -v dotnet || echo "$HOME/.dotnet/dotnet")}
 # 可选 --list <RomFS 清单>：出包期由 graphics/nvn/tools/romfs_list.py sizes 写的「字节数\t相对路径」，索引器不再自己枚举目录、逐个打开取长度
 [ $# -eq 1 ] || { [ $# -eq 3 ] && [ "$2" = --list ]; } || { [ $# -ge 5 ] && [ $# -le 6 ] && [ "$1" = --std ]; } \
   || { echo "用法：romfs_index.sh <游戏数据根> [--list <RomFS 清单>] | --std <RomFS 目录> <清单或 -> <输出文件> <偏移> [--consume]（IMG v1 的 RomFS 段，pack/img.py）" >&2; exit 2; }
+# 运行超时：建索引只算元数据（火纹 27 万文件约 20 秒），600 秒够；--std 要把整份 RomFS 数据写进镜像，用时随数据量涨（14 GB 的款外接盘上超过 600 秒被杀、退 124），
+#   给 6 小时（14 GB 按 1 MB/s 也写得完），只防真卡死；S2A_ROMFS_STD_TIMEOUT 可改
+TO=600; [ "$1" = --std ] && TO=${S2A_ROMFS_STD_TIMEOUT:-21600}
 if [ -n "${S2A_PREBUILT_TOOLS:-}" ]; then
   # 预编件（发版 bundle_engine.py 以 NativeAOT 单文件编进 Binaries/Prepare/romfs/）：直接执行，不需要 .NET 运行时
-  exec timeout 600 "$S2A_PREBUILT_TOOLS/romfs/romfs_index" "$@"
+  exec timeout "$TO" "$S2A_PREBUILT_TOOLS/romfs/romfs_index" "$@"
 fi
 DN=${DOTNET:-$(command -v dotnet || echo "$HOME/.dotnet/dotnet")}
 DLL="$HERE/romfs_index/bin/Release/net10.0/romfs_index.dll"
@@ -43,4 +46,4 @@ if [ ! -s "$DLL" ]; then
   exit 1
 fi
 rm -f "$LOG"; trap - EXIT
-exec timeout 600 "$DN" "$DLL" "$@"
+exec timeout "$TO" "$DN" "$DLL" "$@"

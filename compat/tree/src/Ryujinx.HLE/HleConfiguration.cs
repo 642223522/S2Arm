@@ -98,6 +98,7 @@ namespace Ryujinx.HLE
         /// </summary>
         internal readonly bool EnableDockedMode;
 
+
         /// <summary>
         /// Control if the Profiled Translation Cache (PTC) should be used.
         /// </summary>

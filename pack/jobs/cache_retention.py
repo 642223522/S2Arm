@@ -1,7 +1,7 @@
 """Keep recent complete titles; evict cold reusable entries only under disk pressure.
 
 Logical file sizes are diagnostic only, never a trigger or a freed-space estimate.
-The caller holds the existing library execution lock (not a global producer lock).
+The caller holds the library produce lock (build.produce_locks) or the exclusive execution lock: no other trim or build overlaps.
 """
 from __future__ import annotations
 
@@ -58,14 +58,14 @@ def _completed(root, path, suffix):
     parts = path.relative_to(root).parts
     name = parts[-1]
     if suffix == 'direct':
-        # Direct store (C# dsh_batch build Store, graphics/tools/direct/dsh/batch/Build.cs, S2Arm 11-01; direct_lib.sh gives it --cas <title>/store):
+        # Direct store (C# dsh_batch build Store, graphics/tools/direct/dsh/batch/Build.cs, S2Arm 11-01; direct_lib.py gives it --cas <title>/store):
         # <title>/store/dshb/<two hex>/<64 hex>.e, one entry per file (a translation or a Metal library), named by the sha256 of its key and filed under
-        # its first two hex digits. Removing one only makes it miss on the next build; <64 hex>.e.tmp<pid>.<thread> is an entry being written, not an entry.
+        # its first two hex digits; <title>/store/cpso/ the same layout for the compute pipeline archives (graphics/tools/direct/cs_pipelines.py). Removing one only makes it miss on the next build; <64 hex>.e.tmp<pid>.<thread> is an entry being written, not an entry.
         # <title>/store/<two hex>.pack(.bad) are shards of the former Python store (dmsh_store.py, 10-31 to 11-01): no reader is left, reclaimable the same way
         if len(parts) < 3 or not re.fullmatch(r'[0-9A-F]{16}', parts[0]) or parts[1] != 'store':
             return False
         if len(parts) == 5:
-            return parts[2] == 'dshb' and bool(re.fullmatch(r'[0-9a-f]{64}\.e', name)) and parts[3] == name[:2]
+            return parts[2] in ('dshb', 'cpso') and bool(re.fullmatch(r'[0-9a-f]{64}\.e', name)) and parts[3] == name[:2]
         return len(parts) == 3 and bool(re.fullmatch(r'[0-9a-f]{2}\.pack(?:\.bad)?', name))
     if not re.fullmatch(r'[0-9a-f]{64}' + re.escape(suffix), name):
         return False
@@ -80,9 +80,32 @@ def _signature(st):
     return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
 
 
+def _touch_title(private, gid, now, cache_roots=None):
+    """本款直连缓存仓「最近用过」（同 trim 扫描里对 current_gid 的那一步：dmsh 命中不改修改时间，按整款记）；路径上有链接就不动"""
+    for root, suffix in (roots(private) if cache_roots is None else tuple((Path(r), x) for r, x in cache_roots)):
+        if suffix != 'direct':
+            continue
+        base = root / gid / 'store'
+        try:
+            if _safe_root(private, base) != 'safe':
+                continue
+            if os.utime in os.supports_follow_symlinks:
+                os.utime(base, (now, now), follow_symlinks=False)
+            else:
+                os.utime(base, (now, now))
+        except OSError:
+            continue
+
+
 def trim(private, *, keep_titles=KEEP_TITLES, min_free_bytes=MIN_FREE_BYTES,
-         now=None, current_gid=None, free_bytes=None):
+         now=None, current_gid=None, free_bytes=None, skip_scan_when_free=False, cache_roots=None):
     """Trim completed cold entries, oldest first; report observed regular-file bytes.
+
+    skip_scan_when_free（出包收尾用，11-16 极速出包定因）：盘余量已不低于底线时一条都不会删，原先照样全量扫一遍
+    （Windows 上逐文件 lstat，缓存大时几十秒）——这时只刷新本款「最近用过」、不扫，返回 scanned=False、字节统计为 None。
+    要统计数字的调用方（释放空间页）不传它。
+    cache_roots（维护方清理用）：直接给 ((缓存根, 后缀), …)，代替按 private 推出的固定布局——缓存根经软链放在另一块盘上时，
+    按 private 推的路径带链接、整根不扫；传真实路径（都在 private 之下）才扫得到。余量按 private 所在的盘算
 
     Only content-addressed compiler outputs are eligible. No directory, link,
     temporary file, unknown payload or recently used entry is removed. Concurrent
@@ -99,6 +122,18 @@ def trim(private, *, keep_titles=KEEP_TITLES, min_free_bytes=MIN_FREE_BYTES,
     candidates = []
     protected_titles = set()
     free_bytes = free_bytes or (lambda: shutil.disk_usage(private).free)
+    if skip_scan_when_free:
+        try:
+            free_now = free_bytes()
+        except OSError:
+            free_now = None
+        if isinstance(free_now, int) and not isinstance(free_now, bool) and free_now >= min_free_bytes:
+            if current_gid is not None:
+                _touch_title(private, current_gid, now, cache_roots)
+            return dict(keepTitles=keep_titles, protectedTitles=[], minFreeBytes=min_free_bytes, freeBytes=free_now,
+                        pressureRemaining=False, diskErrors=0, observedBytes=None, retainedBytes=None,
+                        removedBytes=0, removedEntries=0, changedEntries=0, unscannedRoots=0, protectedLinks=0,
+                        accountingComplete=True, scanErrors=0, evictionErrors=0, errors=[], scanned=False)
     total = removed = count = skipped = unscanned = links = 0
     errors = []
     scan_errors = eviction_errors = 0
@@ -106,7 +141,7 @@ def trim(private, *, keep_titles=KEEP_TITLES, min_free_bytes=MIN_FREE_BYTES,
         if len(errors) < 16:
             errors.append(dict(operation=operation, errno=error.errno,
                                path=os.path.relpath(path, private)))
-    for root, suffix in roots(private):
+    for root, suffix in (roots(private) if cache_roots is None else tuple((Path(r), x) for r, x in cache_roots)):
         root_incomplete = False
         def scan_error(error):
             nonlocal root_incomplete, scan_errors
@@ -226,7 +261,7 @@ def trim(private, *, keep_titles=KEEP_TITLES, min_free_bytes=MIN_FREE_BYTES,
         total -= observed.st_size
         count += 1
         free = available()  # APFS clones/sparse files: never add logical removed bytes.
-    return dict(keepTitles=keep_titles, protectedTitles=sorted(protected_titles),
+    return dict(scanned=True, keepTitles=keep_titles, protectedTitles=sorted(protected_titles),
                 minFreeBytes=min_free_bytes, freeBytes=free,
                 pressureRemaining=None if free is None else free < min_free_bytes,
                 diskErrors=disk_errors, observedBytes=before, retainedBytes=total,

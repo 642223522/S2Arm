@@ -6,6 +6,9 @@
 // ⑤ 不认领：游戏自己的 brk #0x8000（+0x114，偏移不在表里）、brk #0x8005（序号超表）、非 brk 字、模块外地址 → 0，pc 不动
 // ⑦ 远跳（brk #0xA000，按 pc 查 # FAR 表，补丁岛 = 映像尾 +0x6000 起）：代码段 +0x200 → 岛 +0x6000（入口，命中 1）；岛 +0x6010 → 代码段 +0x204；
 //    表里没有的 brk #0xA000（代码段 +0x208、岛 +0x6020）不认领、pc 不动
+// ⑧ 36 位老 SDK 区间（#1503，4 种）：桩布局可随机区 [0x7000000000, 0x7800000000)、栈区 [0x7001200000, 0x7078000000)（手写常数，不跑 svc_mem.c）：
+//    +0x120 as_aslr_lo x1 ← 0x7000000000、+0x124 as_aslr_hi x2 ← 0x7800000000、+0x128 as_stack_lo x1 ← 0x7001200000、+0x12c as_stack_hi x2 ← 0x7078000000，
+//    各 pc +4、只动自己的寄存器（x3 等不变）；目的 xzr 只动 pc；布局没定（桩回 -1）不认领、寄存器与 pc 都不动
 // ⑥ s2a_in_patch：近布局双岛（PATCH_OFF 0x8000 / size 0xc000，PATCH2_OFF −0x24000 / 0x1000）与 FAR 双岛（−0x10000 / 0x4000，0x20000 / 0x800）各边界
 #include "../src/native.h"
 #include <stdio.h>
@@ -24,6 +27,12 @@ static uint64_t tsd_base(void) { return (uint64_t)(uintptr_t)g_tsd; }
 int s2a_trap_brk(void *ctx);
 void s2a_trap_report(const char *when);
 
+static int g_lay_ready = 1;
+int s2a_mem_as_region(int stack, uint64_t *lo, uint64_t *hi) {   // 桩：svc_mem.c 按本局布局给；这里写死一组 2^36 以上的窗口
+    if (!g_lay_ready) return -1;
+    *lo = stack ? 0x7001200000ull : 0x7000000000ull; *hi = stack ? 0x7078000000ull : 0x7800000000ull;
+    return 0;
+}
 static int bad;
 #define CK(c, ...) do { if (!(c)) { printf("✗ " __VA_ARGS__); printf("\n"); bad++; } } while (0)
 static uint32_t brkw(unsigned imm) { return 0xD4200000u | (imm << 5); }
@@ -65,6 +74,28 @@ int main(void) {
     AT(0x6010); CK(s2a_trap_brk(&uc) == 1 && mc.__ss.__pc == b + 0x204 && fr[1].hits == 1, "⑦ 出口 岛 +0x6010：期望 pc → +0x204 → +%#llx", (unsigned long long)(mc.__ss.__pc - b));
     AT(0x208); CK(s2a_trap_brk(&uc) == 0 && mc.__ss.__pc == b + 0x208, "⑦ 表里没有的 +0x208 不该认领");
     AT(0x6020); CK(s2a_trap_brk(&uc) == 0 && mc.__ss.__pc == b + 0x6020, "⑦ 表里没有的 岛 +0x6020 不该认领");
+    {   // ⑧ 36 位老 SDK 区间
+        static struct s2a_trap as[5] = {{.off = 0x120, .kind = S2A_TRAP_ASLR_LO, .reg = 1}, {.off = 0x124, .kind = S2A_TRAP_ASLR_HI, .reg = 2},
+                                        {.off = 0x128, .kind = S2A_TRAP_STACK_LO, .reg = 1}, {.off = 0x12c, .kind = S2A_TRAP_STACK_HI, .reg = 2},
+                                        {.off = 0x130, .kind = S2A_TRAP_STACK_HI, .reg = 31}};
+        struct s2a_trap *keep = m->traps; unsigned nk = m->ntrap;
+        m->traps = as; m->ntrap = 5;
+        for (unsigned i = 0; i < 5; i++) code[0x120 / 4 + i] = brkw(0x8000 + i);
+        const uint64_t want[4] = {0x7000000000ull, 0x7800000000ull, 0x7001200000ull, 0x7078000000ull};
+        for (unsigned i = 0; i < 4; i++) {
+            mc.__ss.__x[1] = mc.__ss.__x[2] = 0xdead; mc.__ss.__x[3] = 0x4000;
+            AT(0x120 + 4 * i);
+            int r = s2a_trap_brk(&uc); uint64_t got = mc.__ss.__x[as[i].reg], other = mc.__ss.__x[as[i].reg == 1 ? 2 : 1];
+            CK(r == 1 && got == want[i] && other == 0xdead && mc.__ss.__x[3] == 0x4000 && mc.__ss.__pc == b + 0x124 + 4 * i && as[i].hits == 1,
+               "⑧ 点 %u：期望 x%u = %#llx、另一寄存器不动、pc+4 → r=%d x=%#llx 另一 %#llx pc +%#llx", i, as[i].reg, (unsigned long long)want[i], r,
+               (unsigned long long)got, (unsigned long long)other, (unsigned long long)(mc.__ss.__pc - b));
+        }
+        _STRUCT_MCONTEXT64 bz = mc; bz.__ss.__pc = b + 0x134;
+        AT(0x130); CK(s2a_trap_brk(&uc) == 1 && !memcmp(&mc, &bz, sizeof mc), "⑧ 目的 xzr：期望只动 pc");
+        g_lay_ready = 0; mc.__ss.__x[1] = 0xdead;
+        AT(0x120); CK(s2a_trap_brk(&uc) == 0 && mc.__ss.__x[1] == 0xdead && mc.__ss.__pc == b + 0x120 && as[0].hits == 1, "⑧ 布局没定：期望不认领、不动寄存器与 pc");
+        g_lay_ready = 1; m->traps = keep; m->ntrap = nk;
+    }
     s2a_trap_report("单测");
 
     module_t n = {0}; n.base = (uint8_t *)0x10000000; n.size = 0xc000; n.patch_off = 0x8000; n.patch2_off = -0x24000; n.patch2_len = 0x1000;

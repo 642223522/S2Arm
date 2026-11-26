@@ -274,7 +274,7 @@ namespace S2A.Gfx
             //   （同存档同路线只关 NXGAL_PSO_ASYNC 即恢复正常，docs/坑记录.md）。两个开关仍可在外部设 1 做对照
             if (Threaded && r is not Ryujinx.Graphics.GAL.Multithreading.ThreadedRenderer) Console.Error.WriteLine("[gal] 【红】双线程渲染开着，但渲染器没套 ThreadedRenderer（Compose.cs）");
             r.Initialize(GraphicsDebugLevel.None);
-            if (OperatingSystem.IsIOS() && !NxIosLayer.TryAttach(r))
+            if ((OperatingSystem.IsIOS() || OperatingSystem.IsTvOS()) && !NxIosLayer.TryAttach(r))
             {
                 // RunLoop has not started GPU emulation. Let Stop observe both
                 // threads as finished; the shell keeps the error page/diagnostics.

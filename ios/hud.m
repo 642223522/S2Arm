@@ -21,7 +21,11 @@ static const char *thermal_name(void) {
     return "无";
 }
 static void tick(void) {
+#if TARGET_OS_TV
+    float lv = -1;   // 电视没有电池
+#else
     float lv = UIDevice.currentDevice.batteryLevel;   // app.m 已开 batteryMonitoringEnabled；取不到为 -1
+#endif
     double now = CACurrentMediaTime();
     if (lv >= 0) {
         if (g_bl0 < 0) { g_bl0 = lv; g_bt0 = now; }

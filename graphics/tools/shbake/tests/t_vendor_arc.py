@@ -30,7 +30,9 @@ def shader(stage):
     struct.pack_into('<I', ctl, 0x20, 0x880); struct.pack_into('<II', ctl, 0x700, len(code), len(code))
     struct.pack_into('<3I', ctl, 0x748, *((8, 8, 1) if stage == 'cs' else (0, 0, 0)))
     return bytes(ctl), code
-def key(ctl, code): return hashlib.sha256(ctl + code).hexdigest()[:16]
+def key(ctl, code):   # 运行时键第 2 代：控制段 [0x790,0x798)、[0x7d0,0x7e8) 按 0 算（translator/nvn_key.py；这里按规则另写，不调被测实现）
+    z = bytearray(ctl); z[0x790:0x798] = bytes(8); z[0x7d0:0x7e8] = bytes(24)
+    return hashlib.sha256(bytes(z) + code).hexdigest()[:16]
 def run(name, data):
     rows, blobs, stat = [], {}, collections.Counter(); X.visit(name, data, rows, blobs, stat)
     return {r[0]: r[1] for r in rows}, blobs, stat

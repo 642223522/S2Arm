@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""直连库开工前复核要多少盘（graphics/tools/direct/direct_lib.sh 在抽取之后、翻译编译之前调；Mac / Windows 两条链都过这里，#265：预检放过、编到一半写满白编十几分钟）。
+"""直连库开工前复核要多少盘（graphics/tools/direct/direct_lib.py 在抽取之后、翻译编译之前调；Mac / Windows 两条链都过这里，#265：预检放过、编到一半写满白编十几分钟）。
 规则：本模块的 pack_direct_bytes（按原件大小分两档：小于 3 GB 记 5 GB、其余记 15 GB，出包预检同一份）与「抽取表着色器数 × DIRECT_SHADER_BYTES」取大（只有这里知道着色器数）。出包空间规则（常量、选包、原件大小、
-  直连两档、整次出包要多少盘）只在本模块定义：library.py（出包预检）、winenv.py（Windows 环境检查）直接 import，本模块只用标准库，direct_lib.sh 当脚本调
+  直连两档、整次出包要多少盘）只在本模块定义：library.py（出包预检）、winenv.py（Windows 环境检查）直接 import，本模块只用标准库，direct_lib.py 当脚本调
   （剃刀 H11：原先这里和 winenv 各用 AST 解析 library.py 源码再 exec 片段，被读的文件一重构就抛「共用定义缺失或不唯一」）。原件大小在这一步不知道，用产物根里解出的游戏内容
   （romfs/ exefs/ aoc/）代替——即预检 pack_input_bytes 取的 contentBytes 那一项。已在盘上的同款直连缓存（重出包复用）从中扣掉。
 11-10 去掉原先「按着色器抽取量 × 系数」（缓存 9× + 库 3×）：抽取字节数不是直连占用的驱动量，抽取产物有的是压缩过的着色器档案、有的是原文——
@@ -9,7 +9,7 @@
 CLI：space_rule.py direct-check <产物根> <直连缓存目录> <输出目录> → 恒退 0（复核自己没跑成退 2）：预估不够只打一行【黄】提示、不拦（不许堵门，11-14）"""
 import os, shutil, sys
 
-CONTENT_DIRS = ("romfs", "exefs", "aoc")
+CONTENT_DIRS = ("romfs", "romfs.std", "exefs", "aoc")   # romfs.std：RomFS 不落散文件时的镜像（与 romfs/ 二选一，tree_bytes 对单个文件同样量）
 
 
 def tree_bytes(path):
@@ -38,12 +38,20 @@ PACK_SMALL_BYTES, DIRECT_SMALL_BYTES, DIRECT_LARGE_BYTES = int(3e9), int(5e9), i
 def selected_packages(game):
     bases = [p for p in game["packages"] if p["type"] == "base"]
     updates = [p for p in game["packages"] if p["type"] == "update"]
-    result = ([max(bases, key=lambda p: p["version"])] if bases else [])
+    # Integrated packages can leave duplicate version=0 records after an old
+    # source is moved or removed. Prefer a source that still exists so a stale
+    # first entry cannot pin the build to the wrong game version.
+    def rank(package):
+        path = package.get("path") or ""   # 没记路径的包（夹具 / 旧目录）当作在
+        available = os.path.exists(path) if os.path.isabs(path) else True
+        return package["version"], available
+
+    result = ([max(bases, key=rank)] if bases else [])
     if updates:
-        result.append(max(updates, key=lambda p: p["version"]))
+        result.append(max(updates, key=rank))
     dlc = {}
     for p in game["packages"]:
-        if p["type"] == "dlc" and (p["titleId"] not in dlc or dlc[p["titleId"]]["version"] < p["version"]):
+        if p["type"] == "dlc" and (p["titleId"] not in dlc or rank(dlc[p["titleId"]]) < rank(p)):
             dlc[p["titleId"]] = p
     return result + [dlc[k] for k in sorted(dlc)]
 
@@ -95,7 +103,7 @@ def _existing(path):
 
 def _free(vol):
     """盘余量；S2A_DISK_FREE_G（GB，单测注入，与 ipa.sh / refresh 同名口径）给了就用它，单测结果不随本机磁盘余量变（11-09 门禁机余量紧时
-    直接真跑 direct_lib.sh 的单测被复核拦下、桩工具没调起）"""
+    直接真跑 direct_lib.py 的单测被复核拦下、桩工具没调起）"""
     g = os.environ.get("S2A_DISK_FREE_G")
     return shutil.disk_usage(vol) if not g else shutil._ntuple_diskusage(0, 0, int(float(g) * 1e9))
 

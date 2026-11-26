@@ -49,7 +49,7 @@ def census(root):
         for d, _, fs in romfs_list.walk(root / top):
             for fn in fs:
                 p = Path(d) / fn
-                try: data = p.read_bytes()
+                try: data = romfs_list.read_file(p)   # 只有 romfs.std 镜像时从镜像读（盘上有同 read_bytes）
                 except OSError: continue
                 before = len(keys); glsl_in(data, str(p.relative_to(root)), groups, keys)
                 if len(keys) == before and (data[:4] in (b'\x28\xb5\x2f\xfd', b'Yaz0') or data[:2] == b'\x78\x9c'): other[p.suffix or '(无扩展名)'] += 1

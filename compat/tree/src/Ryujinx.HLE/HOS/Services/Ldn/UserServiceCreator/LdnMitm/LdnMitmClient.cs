@@ -3,7 +3,7 @@ using Ryujinx.Common.Utilities;
 using Ryujinx.HLE.HOS.Services.Ldn.Types;
 using Ryujinx.HLE.HOS.Services.Ldn.UserServiceCreator.Types;
 using System;
-using System.Net.NetworkInformation;
+using System.Net;
 
 namespace Ryujinx.HLE.HOS.Services.Ldn.UserServiceCreator.LdnMitm
 {
@@ -21,10 +21,10 @@ namespace Ryujinx.HLE.HOS.Services.Ldn.UserServiceCreator.LdnMitm
 
         public LdnMitmClient(HleConfiguration config)
         {
-            UnicastIPAddressInformation localIpInterface = NetworkHelpers.GetLocalInterface(config.MultiplayerLanInterfaceId).Item2;
-
-            _lanDiscovery = new LanDiscovery(this, localIpInterface.Address, localIpInterface.IPv4Mask);
+            _lanDiscovery = new LanDiscovery(this, config.MultiplayerLanInterfaceId);
         }
+
+        internal IPAddress LocalAddress => _lanDiscovery.LocalAddr;
 
         internal void InvokeNetworkChange(NetworkInfo info, bool connected, DisconnectReason reason = DisconnectReason.None)
         {
@@ -87,8 +87,8 @@ namespace Ryujinx.HLE.HOS.Services.Ldn.UserServiceCreator.LdnMitm
 
         public void SetGameVersion(ReadOnlySpan<byte> versionString)
         {
-            // NOTE: This method is not implemented in ldn_mitm
-            Logger.Stub?.PrintMsg(LogClass.ServiceLdn, "LdnMitmClient SetGameVersion");
+            string version = System.Text.Encoding.UTF8.GetString(versionString).TrimEnd('\0');
+            Logger.Info?.PrintMsg(LogClass.ServiceLdn, $"LdnMitmClient SetGameVersion: {version}");
         }
 
         public void SetStationAcceptPolicy(AcceptPolicy acceptPolicy)

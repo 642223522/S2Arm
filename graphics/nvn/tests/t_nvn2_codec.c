@@ -15,6 +15,8 @@
 //   - H.264（VideoToolbox，诊断 #ea0964：原先宿主没接、初始化回失败，游戏的播放库随即中止）：同一份红色原始 YUV 用 libx264 编（命令见
 //     t_nvn2_codec_h264.inc），起始码分隔与 4 字节长度前缀两种输入各走一遍整条接管路径，两帧像素都按上面手算的 (254, 0, 0, 255)，有损 ±3；
 //     NAL 切分：帧 0 切出 SPS / PPS / IDR 三个（类型 7 / 8 / 5），长度前缀越界的包回 -1。
+//   - HDR 布局码（10–13）建池（PR2）：同一对 VP9 红帧走整条接管路径，ReadDecoderOutputImageRgbaHdr 转发 Rgba 路径按 8 位读出同像素
+//     （(254,0,0,255)±1，与 Rgba 路径逐字节一致）；ReadDecoderOutputImageRgbaHdrFloat 保持失败（float 读回布局未核，不编 fp16/fp32）。
 //   - 同步句柄：模式 1 比 64 位、其它 32 位回绕比；全 0 句柄算达到。
 // 可选参数 <时间单元文件> <av1C 文件>：再核一对真片子的数据（一次性核对用，不进门禁）
 #include <stdio.h>
@@ -62,10 +64,13 @@ uint64_t s2a_event_create(uint32_t *hr, uint32_t *hw) { int i = g_nev++; g_ev[i]
 // 读档自中止复现钩子（11-06 时之笛）：对 g_hook_ev 的下一次触发，先让 g_hook_fn 在另一条线程上跑、最多等它 300 ms，再真正置位。
 //   旧实现在锁外触发，另一条线程这时能完成「取消 + 重新请求」，迟到的触发落在新请求上；修好后触发在锁内，另一条线程要等它
 static _Atomic uint64_t g_hook_ev; static void *(*g_hook_fn)(void *); static _Atomic int g_hook_done, g_hook_fired;
+// 出图节奏挂点（hle_nvn.c s2a_video_frame_pts 的替身）：数 Switch 2 解码交出的新帧
+static _Atomic unsigned g_vframes;
+void s2a_video_frame_pts(int64_t pts_ns) { (void)pts_ns; atomic_fetch_add(&g_vframes, 1); }
 void s2a_event_signal(uint64_t ev) {
     if (ev && atomic_load(&g_hook_ev) == ev && atomic_exchange(&g_hook_ev, 0) == ev) {
         pthread_t th; CHECK(!pthread_create(&th, NULL, g_hook_fn, NULL)); pthread_detach(th);
-        for (int t = 0; t < 300 && !atomic_load(&g_hook_done); t++) usleep(1000);
+        for (int t = 0; t < 300 && !atomic_load(&g_hook_done); t++) usleep(1000);   // 负对照短窗：给另一条线程 300 ms 去抢（修好后它被锁挡住）；负载高时它晚到只会漏检，不会假红
         atomic_store(&g_ev[ev - 1].sig, 1); atomic_store(&g_hook_fired, 1); return;
     }
     atomic_store(&g_ev[ev - 1].sig, 1);
@@ -92,9 +97,13 @@ void *guest_sym(const char *n) {
 
 void *s2a_codec_entry(const char *name);
 size_t nvn2_av1c_from_tu(const uint8_t *tu, size_t n, uint8_t *out, size_t cap);
-void *s2a_av1_open(int threads);
-int s2a_av1_decode(void *h, const uint8_t *data, uint32_t len, uint8_t **planes, int32_t *strides, int32_t *info);
-void s2a_av1_close(void *h);
+// dav1d 垫片同 nvn2_codec.c 的弱链接：S2A_DAV1D 探测到本机有 AV1 硬解（tools/av1hw.sh）的单测构建不链 dav1d（nvn2_codec.mk），符号是 NULL——下面的 dav1d 软解小节按符号缺位跳过
+void *s2a_av1_open(int threads) __attribute__((weak));
+int s2a_av1_decode(void *h, const uint8_t *data, uint32_t len, uint8_t **planes, int32_t *strides, int32_t *info) __attribute__((weak));
+void s2a_av1_close(void *h) __attribute__((weak));
+// 真 libvpx 链没链（真身 libs2a_vpx.a 回 1 / 空垫片 services/vpx/stub.c 回 0——本条单测照宿主同一口径链二者之一，见 nvn2_codec.mk）：
+//   垫片时 VP9 系统小节照跑（nvn2_codec.c 见 0 默认走系统）、要真 libvpx 当参考的对拍跳过
+int s2a_vpx_linked(void) __attribute__((weak));
 int nvn2_vp9_vt_probe(void);
 unsigned long long nvn2_vp9_vt_frames(void);
 // 4:2:0 三平面按 ffmpeg framemd5 的字节序（行连续，Y 后 U 后 V；>8 位为 16 位小端）算 MD5，十六进制
@@ -126,6 +135,26 @@ typedef void (*f_spv)(uint32_t *);
 typedef void (*f_spr)(uint32_t *, const sync_h *);
 typedef void (*f_sph)(void *, uint32_t *);
 typedef int (*f_gstw)(const sync_h *);
+typedef Result (*f_enc_init)(uint64_t *, void *, uintptr_t, uint64_t, uint32_t, uint32_t, int32_t, int32_t,
+                              uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
+typedef Result (*f_enc_reg)(void *, uint32_t, void *, uint32_t);
+typedef void (*f_enc_unreg)(void *, uint32_t);
+typedef Result (*f_enc_start)(void *);
+typedef void (*f_enc_stop)(void *);
+typedef Result (*f_enc_acq)(uint32_t *, sync_h *, void *);
+typedef Result (*f_enc_sub)(void *, uint32_t, sync_h, int64_t, uint64_t);
+typedef Result (*f_enc_sub_rect)(void *, uint32_t, sync_h, int64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
+typedef Result (*f_enc_blank)(void *, int64_t, uint64_t);
+typedef Result (*f_enc_event_old)(void **, void *);
+typedef void *(*f_enc_event_new)(void *);
+typedef Result (*f_enc_out)(uint64_t *, uint64_t *, uint64_t *, void *, void *, uint64_t);
+typedef Result (*f_enc_out_ts)(uint64_t *, uint64_t *, uint64_t *, int64_t *, void *, void *, uint64_t);
+typedef Result (*f_enc_props_short)(void *, int32_t, int32_t, int32_t, int32_t, int32_t, int32_t, int32_t, uint64_t);
+typedef Result (*f_enc_props_full)(void *, int32_t, int32_t, int32_t, int32_t, int32_t, int32_t, int32_t, uint64_t, uint64_t, uint64_t);
+typedef Result (*f_write_rgba)(const void *, uint32_t, const void *, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
+typedef Result (*f_write_nv12)(const void *, uint32_t, const void *, uint64_t, uint64_t, const void *, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
+typedef Result (*f_enc_handle_old)(uint32_t *, const void *);
+typedef uint32_t (*f_enc_handle_new)(const void *, uint32_t);
 
 struct codec { const char *init, *fini, *reg, *start, *ready, *sub, *acq, *rel, *props; };
 #define CODEC(C, L) { "_ZN2nn5codec" L "Initialize" C "DecoderByTransferMemoryEPNS0_14" C "DecoderTypeEPvmmttjNS0_23VideoDecoderInputFormatENS0_24VideoDecoderOutputFormatENS0_22VideoDecoderOutputModeE", \
@@ -144,6 +173,8 @@ static const struct codec H264 = { "_ZN2nn5codec37InitializeH264DecoderByTransfe
 #define POOL_FINI "_ZN2nn5codec24FinalizeDecoderImagePoolEPNS0_25VideoDecoderImagePoolTypeE"
 #define POOL_HANDLE "_ZN2nn5codec36GetDecoderImagePoolNativeImageHandleEPKNS0_25VideoDecoderImagePoolTypeEj"
 #define READ_RGBA "_ZN2nn5codec26ReadDecoderOutputImageRgbaEPKNS0_25VideoDecoderImagePoolTypeEjttttPvmm"
+#define READ_RGBA_HDR "_ZN2nn5codec29ReadDecoderOutputImageRgbaHdrEPKNS0_25VideoDecoderImagePoolTypeEjttttPvmm"
+#define READ_RGBA_HDR_FLOAT "_ZN2nn5codec34ReadDecoderOutputImageRgbaHdrFloatEPKNS0_25VideoDecoderImagePoolTypeEjttttPvmm"
 #define SP_CREATE "_ZN2nn6syncpt3sdk20CreateSyncPointEventEPNS1_18SyncPointEventTypeE"
 #define SP_DESTROY "_ZN2nn6syncpt3sdk21DestroySyncPointEventEPNS1_18SyncPointEventTypeE"
 #define SP_REQUEST "_ZN2nn6syncpt3sdk21RequestSyncPointEventEPNS1_18SyncPointEventTypeERKNS1_15SyncPointHandleE"
@@ -156,11 +187,11 @@ static const uint8_t red_av1_0[] = {0x12, 0x00, 0x0a, 0x0b, 0x02, 0x00, 0x00, 0x
 static const uint8_t red_av1_1[] = {0x12, 0x00, 0x32, 0x11, 0x30, 0x02, 0x00, 0x00, 0x00, 0x00, 0x7a, 0x50, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x9c, 0x50};
 static const uint8_t av1c_want[] = {0x81, 0x00, 0x0c, 0x00, 0x0a, 0x0b, 0x02, 0x00, 0x00, 0x05, 0x55, 0x7f, 0xfc, 0x6a, 0xf9, 0x80, 0x40};
 
-// 一个解码器 + 2 张图像（各一个池，同火纹 subsdk2+0xf7a8 每池 1 张），偏好 = 图块模式 2、输出格式 2（布局码 5，RGBA）
+// 一个解码器 + 2 张图像（各一个池，同火纹 subsdk2+0xf7a8 每池 1 张），偏好 = 图块模式 2、输出格式 2（布局码 kind：5 = RGBA，10–13 = HDR，cv_kind）
 typedef struct { _Alignas(16) uint8_t obj[0x400]; _Alignas(16) uint8_t pool[2][0x20]; uint8_t *mem[2]; uint64_t size; } rig;
-static void rig_up(rig *r, const struct codec *c, uint32_t w, uint32_t h) {
+static void rig_up_kind(rig *r, const struct codec *c, uint32_t w, uint32_t h, uint32_t kind) {
     memset(r, 0, sizeof *r);
-    uint32_t pref[16] = {0, 5, (w - 1) | (h - 1) << 16};
+    uint32_t pref[16] = {0, kind, (w - 1) | (h - 1) << 16};
     uint64_t align = 0;
     CHECK(((f_psize)E(POOL_SIZE))(&r->size, &align, pref, 1) == 0 && align >= 0x1000 && r->size >= (uint64_t)w * h * 4);
     for (int i = 0; i < 2; i++) {
@@ -173,6 +204,7 @@ static void rig_up(rig *r, const struct codec *c, uint32_t w, uint32_t h) {
     CHECK(((f_t)E(c->start))(r->obj) == 0);
     CHECK(((f_ev)E(c->ready))(r->obj) == r->obj + 8);
 }
+static void rig_up(rig *r, const struct codec *c, uint32_t w, uint32_t h) { rig_up_kind(r, c, w, h, 5); }
 static void rig_down(rig *r, const struct codec *c) {
     int d0 = g_destroys;
     ((f_t)E(c->fini))(r->obj);
@@ -185,12 +217,13 @@ static uint32_t take(rig *r, const struct codec *c, uint32_t *spev, sync_h *hout
     CHECK(((f_acq)E(c->acq))(&idx, &h, r->obj) == 0 && idx < 2 && h.mode == 1);
     ((f_spr)E(SP_REQUEST))(spev, &h);
     // 槽的 SystemEventType 由 InitializeMultiWaitHolder 交给替身（g_sp_sev）；手动清除，TryWait 不清
-    for (int t = 0; t < 2000 && !g_trywait(g_sp_sev); t++) usleep(1000);
+    for (int t = 0; t < 30000 && !g_trywait(g_sp_sev); t++) usleep(1000);   // 等解码帧的事件，兜底 30 秒（原 2 秒：负载高时解码线程慢就假红）；等不到下一行判红
     CHECK(g_trywait(g_sp_sev) && ((f_gstw)E(GS_TRYWAIT))(&h));
     *hout = h;
     return idx;
 }
 static void px(rig *r, uint32_t img, uint8_t out[4]) { CHECK(((f_rgba)E(READ_RGBA))(r->pool[img], 0, 3, 5, 1, 1, out, 4, 4) == 0); }
+static int enc_wait(void *sev) { for (int t = 0; t < 30000; t++) { if (g_trywait(sev)) return 1; usleep(1000); } return 0; }
 
 // ---------- 合成码流逐帧对拍（tests/data/vp9_synth/*.ivf，与 #313 同一批码流）：libvpx 与系统后端整幅 RGBA MD5 逐帧相同 ----------
 typedef struct { uint8_t *p; size_t n, off; uint32_t count, w, h; } ivf_s;
@@ -308,6 +341,9 @@ int main(int argc, char **argv) {
         void *f1 = s2a_codec_entry("_ZN2nn2oe26SetGraphicsTargetFrameRateENS0_23GraphicsTargetFrameRateE"), *f2 = s2a_codec_entry("_ZN2nn2oe26SetGraphicsTargetFrameRateEi");
         CHECK(f1 && f1 == f2 && !nvn2_gs_booted() && ((Result (*)(int))f1)(30) == 0 && ((Result (*)(int))f1)(60) == 0);
         CHECK(!s2a_codec_entry("_ZN2nn2oe20SetAudioOutputPolicyENS0_17AudioOutputPolicyE"));   // 负对照：oe 的其余函数照走 sdk
+        // D-SM6Y：自动档（无参数）同样在 sdk 内直调 gs 帧长模式；接管后 gs 没启动也回成功
+        void *f3 = s2a_codec_entry("_ZN2nn2oe30SetGraphicsTargetFrameRateAutoEv");
+        CHECK(f3 && f3 != f1 && !nvn2_gs_booted() && ((Result (*)(void))f3)() == 0);
     }
     // nn::vi::GetDisplayVsyncEvent（金刚 / raiders，11-04）：nvn2.c 的 vi 表弱引用到本文件实现；挂到游戏 SystemEvent（托管、自动清除），宿主线程按 60 Hz 触发
     {
@@ -316,16 +352,19 @@ int main(int argc, char **argv) {
         static fake_sev vsev; int e0 = g_nev;
         CHECK(vs && vs(&vsev, NULL) == 0 && vsev.handle == 0x100u + (uint32_t)e0 && vsev.mode == 1);
         atomic_store(&g_ev[e0].sig, 0);
-        struct timespec ts = {0, 100000000}; nanosleep(&ts, NULL);
-        CHECK(atomic_load(&g_ev[e0].sig) == 1);   // 100 ms 内至少被触发过一次
-        // 审计 P1-80：线程随会话走。期望手写：起后活着 1 条；会话代号加一（进程内重启）后 100 ms 内退出（活着 0 条）、放掉自己那份事件引用（2 → 1），
+        struct timespec ts = {0, 100000000};
+        // 原先睡 100 ms 再看「被触发过」：负载高时 vsync 线程 100 ms 内轮不上就假红。改等到被触发（兜底 30 秒）
+        for (int t = 0; t < 30000 && !atomic_load(&g_ev[e0].sig); t++) usleep(1000);
+        CHECK(atomic_load(&g_ev[e0].sig) == 1);   // 被触发过（至少一次）
+        // 审计 P1-80：线程随会话走。期望手写：起后活着 1 条；会话代号加一（进程内重启）后退出（活着 0 条）、放掉自己那份事件引用（2 → 1），
         //   之后不再触发（清掉标志再等 100 ms 仍是 0）。旧实现线程永不退出：活着仍 1 条、引用仍 2、标志又被置 1
         int nvn2_vi_vsync_live(void);
         CHECK(nvn2_vi_vsync_live() == 1);
-        atomic_fetch_add(&g_gen, 1); nanosleep(&ts, NULL);
+        // 原先睡 100 ms 再看线程退出：改等到活着 0 条且放掉引用（兜底 30 秒）；旧实现线程永不退出，30 秒后仍判红
+        atomic_fetch_add(&g_gen, 1); for (int t = 0; t < 30000 && (nvn2_vi_vsync_live() != 0 || g_ev[e0].refs != 1); t++) usleep(1000);
         printf("vsync 线程：会话结束后活着 %d 条（期望 0）、事件引用 %d（期望 1）\n", nvn2_vi_vsync_live(), g_ev[e0].refs);
         CHECK(nvn2_vi_vsync_live() == 0 && g_ev[e0].refs == 1);
-        atomic_store(&g_ev[e0].sig, 0); nanosleep(&ts, NULL); CHECK(atomic_load(&g_ev[e0].sig) == 0);
+        atomic_store(&g_ev[e0].sig, 0); nanosleep(&ts, NULL); CHECK(atomic_load(&g_ev[e0].sig) == 0);   // 负对照短窗：线程已退出，100 ms 内不该再触发（负载高时只会漏检）
     }
     // SDK 20（金刚）的旧版初始化名字：与 SDK 22 新版（带输出模式）接到同一个实现（名字照游戏导入表原样抄，期望不跑被测实现就能写出）
     {
@@ -383,11 +422,12 @@ int main(int argc, char **argv) {
     // ---------- VP9（libvpx，无损）：两帧红，按登记次序填 ----------
     {
         rig r; rig_up(&r, &VP9, 64, 64);
-        uint64_t id = 0;
+        uint64_t id = 0; unsigned vf0 = atomic_load(&g_vframes);
         CHECK(((f_sub)E(VP9.sub))(&id, r.obj, red_vp9_0, sizeof red_vp9_0, 33333000, 0) == 0 && id == 1);
         CHECK(((f_sub)E(VP9.sub))(&id, r.obj, red_vp9_1, sizeof red_vp9_1, 66666999, 0) == 0 && id == 2);
         sync_h h1, h2; uint32_t i1 = take(&r, &VP9, &spev, &h1), i2 = take(&r, &VP9, &spev, &h2);
         CHECK(i1 == 0 && i2 == 1 && h2.value == h1.value + 1 && h1.id_inv == h2.id_inv);
+        CHECK(atomic_load(&g_vframes) - vf0 == 2);   // 两帧新解码的画面各报一次出图节奏（nvn_vpace：≤30 帧片源据此封顶）
         uint16_t w, h, w2, h2_; int64_t pts; uint8_t eos;
         CHECK(((f_props)E(VP9.props))(&w, &h, &w2, &h2_, &pts, &eos, r.obj, i1) == 0 && w == 64 && h == 64 && w2 == 64 && h2_ == 64 && pts == 33333000 && !eos);
         CHECK(((f_props)E(VP9.props))(&w, &h, &w2, &h2_, &pts, &eos, r.obj, i2) == 0 && pts == 66666000 && !eos);
@@ -411,6 +451,7 @@ int main(int argc, char **argv) {
         sync_h h3; uint32_t i3 = take(&r, &VP9, &spev, &h3);
         CHECK(i3 == i1 && h3.value == h2.value + 1);
         CHECK(((f_props)E(VP9.props))(&w, &h, &w2, &h2_, &pts, &eos, r.obj, i3) == 0 && eos == 1 && w == 64);
+        CHECK(atomic_load(&g_vframes) - vf0 == 2);   // 流结束标记（重复上一帧）不报
         rig_down(&r, &VP9);
     }
 
@@ -455,7 +496,8 @@ int main(int argc, char **argv) {
     }
 
     // ---------- 合成码流逐帧对拍（与 #313 同一批码流）：libvpx 与系统后端整幅 RGBA MD5 逐帧相同 ----------
-    if (nvn2_vp9_vt_probe()) {
+    //   对拍要真 libvpx 当参考：本机可走系统 VP9、宿主链的是空垫片（S2A_VPX，s2a_vpx_linked() = 0）时整段跳过——系统小节照跑
+    if (nvn2_vp9_vt_probe() && s2a_vpx_linked && s2a_vpx_linked()) {
         const char *streams[] = { "tests/data/vp9_synth/adapt_720.ivf", "tests/data/vp9_synth/fp_ragged.ivf" };
         for (unsigned si = 0; si < sizeof streams / sizeof streams[0]; si++) {
             static char a[64][33], b[64][33];
@@ -467,7 +509,7 @@ int main(int argc, char **argv) {
             b[0][0] ^= 1; CHECK(memcmp(a, b, (size_t)na * 33) != 0); b[0][0] ^= 1;   // 负对照：比的是内容不是指针
             printf("合成码流 %s：libvpx / 系统后端 %d 帧 RGBA MD5 全同\n", streams[si], na);
         }
-    }
+    } else if (nvn2_vp9_vt_probe()) printf("合成码流对拍：宿主没链真 libvpx（本机可走系统 VP9，链空垫片），跳过（系统小节照跑）\n");
 
     // ---------- 11-04 接口面全量：BGRA 读法（SDK 20）、退登记、宿主句柄的阻塞 / 限时等待（gs 与 syncpt 同一实现）----------
     //   期望：红帧 RGBA (254,0,0,255)（上面手算）按 B G R A 存 → (0,0,254,255)；退登记的缓冲不再被 Acquire 给出（环空回 0x1c286f「还没有」），再退回失败，重登记后又给出；
@@ -495,6 +537,27 @@ int main(int argc, char **argv) {
         ((void (*)(const sync_h *))E("_ZN2nn2gs14WaitNativeSyncERKNS0_16NativeSyncHandleE"))(&h1);   // 已达到：立即返回
         rig_down(&r, &VP9);
     }
+    // ---------- PR2 HDR 视频读回非致命回退：HDR 布局码（10–13）建池 → 现有红色码流解码 → RgbaHdr 按 8 位 RGBA 读出 ----------
+    //   池布局对 HDR 布局码本就按 8 位 RGBA 写出（cv_kind 记 IMG_HDR、cv_layout 非 NV12 一律 4 字节/像素行距）：ReadDecoderOutputImageRgbaHdr
+    //   转发 cv_read_rgba，期望成功、像素与 Rgba 路径逐字节一致（红 (254,0,0,255)±1）；ReadDecoderOutputImageRgbaHdrFloat 保持失败
+    //   （float 读回布局未核，不编 fp16/fp32）。真实 HDR 视频标题（火纹）的整链行为本机不可测：未测项，验收口径 = 单测 + 边界诚实。
+    for (uint32_t code = 10; code <= 13; code++) {
+        rig r; rig_up_kind(&r, &VP9, 64, 64, code);
+        uint64_t id = 0;
+        CHECK(((f_sub)E(VP9.sub))(&id, r.obj, red_vp9_0, sizeof red_vp9_0, 33333000, 0) == 0);
+        CHECK(((f_sub)E(VP9.sub))(&id, r.obj, red_vp9_1, sizeof red_vp9_1, 66666999, 0) == 0);
+        sync_h h1, h2; take(&r, &VP9, &spev, &h1); take(&r, &VP9, &spev, &h2);
+        for (uint32_t k = 0; k < 2; k++) {
+            uint8_t q[4] = {9, 9, 9, 9}, p[4] = {9, 9, 9, 9};
+            px(&r, k, p);   // Rgba 路径：同一张图像同一矩形
+            CHECK(((f_rgba)E(READ_RGBA_HDR))(r.pool[k], 0, 3, 5, 1, 1, q, 4, 4) == 0);
+            printf("VP9 HDR 布局码 %u 第 %u 帧 RgbaHdr 像素 (%u,%u,%u,%u)，Rgba 路径 (%u,%u,%u,%u)\n", code, k, q[0], q[1], q[2], q[3], p[0], p[1], p[2], p[3]);
+            CHECK(!memcmp(p, q, 4) && q[0] >= 253 && q[1] <= 1 && q[2] <= 1 && q[3] == 255);
+        }
+        uint8_t qf[4] = {9, 9, 9, 9};
+        CHECK(((f_rgba)E(READ_RGBA_HDR_FLOAT))(r.pool[0], 0, 3, 5, 1, 1, qf, 4, 4) != 0 && qf[0] == 9 && qf[3] == 9);   // float 读回保持失败：不写缓冲
+        rig_down(&r, &VP9);
+    }
     // ---------- 读档自中止（11-06 时之笛 Switch 2：subsdk0 movie 库 0x4480 取帧 TryWait 未达到 → AbortImpl，sdk+0x1a5560 Break）----------
     //   movie 的事件管理器线程只在同步点事件触发后取环头帧，环头的同步句柄必须已达到，否则中止。游戏 Flush 时另一条线程直接取环头
     //   （TryWaitNativeSync 达到就弹出，再 Cancel + Request 下一帧的句柄）。期望：解码线程「达到 h1」的触发与这次取消 + 请求 h2 无论怎么交错，
@@ -510,7 +573,7 @@ int main(int argc, char **argv) {
         atomic_store(&g_hook_done, 0); atomic_store(&g_hook_fired, 0); atomic_store(&g_hook_ev, sev);
         uint64_t id = 0;
         CHECK(((f_sub)E(VP9.sub))(&id, r.obj, red_vp9_0, sizeof red_vp9_0, 0, 0) == 0);
-        for (int t = 0; t < 3000 && !(atomic_load(&g_hook_fired) && atomic_load(&g_hook_done)); t++) usleep(1000);
+        for (int t = 0; t < 30000 && !(atomic_load(&g_hook_fired) && atomic_load(&g_hook_done)); t++) usleep(1000);   // 兜底 30 秒（原 3 秒）
         CHECK(atomic_load(&g_hook_fired) && atomic_load(&g_hook_done) && g_race_saw_h1);
         int sig = atomic_load(&g_ev[sev - 1].sig), h2_ok = ((f_gstw)E(GS_TRYWAIT))(&h2);
         printf("读档自中止竞态：解码线程触发与取消 + 请求下一帧交错后，事件 %s、下一帧句柄 %s（期望：事件清着、句柄未达到）\n", sig ? "触发着" : "清着", h2_ok ? "已达到" : "未达到");
@@ -532,22 +595,131 @@ int main(int argc, char **argv) {
         CHECK(a == &A && f == &F && rr == &R && na == &A && nu == &U);
         ((void (*)(void))E("_ZN2nn2gs8FinalizeEv"))(); CHECK(!nvn2_gs_booted());
     }
+    // ---------- H.264 编码（VideoToolbox）：SDK 20 真实导入名、0x140 字节客体、图像池 → 输入同步句柄 → 输出事件 → AVCC → 解码往返 ----------
+    {
+        static const char *const pool_size = "_ZN2nn5codec31CalculateEncoderImagePoolBufferEPmS1_RKNS0_27VideoEncoderImagePreferenceEj";
+        static const char *const pool_init = "_ZN2nn5codec26InitializeEncoderImagePoolEPNS0_25VideoEncoderImagePoolTypeEPvmRKNS0_27VideoEncoderImagePreferenceEj";
+        static const char *const pool_fini = "_ZN2nn5codec24FinalizeEncoderImagePoolEPNS0_25VideoEncoderImagePoolTypeE";
+        static const char *const handle_old = "_ZN2nn5codec36GetEncoderImagePoolNativeImageHandleEPNS_2gs17NativeImageHandleEPKNS0_25VideoEncoderImagePoolTypeE";
+        static const char *const handle_new = "_ZN2nn5codec36GetEncoderImagePoolNativeImageHandleEPKNS0_25VideoEncoderImagePoolTypeEj";
+        static const char *const write_rgba = "_ZN2nn5codec26WriteEncoderInputImageRgbaEPKNS0_25VideoEncoderImagePoolTypeEjPKvmmtttt";
+        static const char *const init = "_ZN2nn5codec21InitializeH264EncoderEPmPNS0_15H264EncoderTypeEPvmttiNS_5movie11BitRateModeENS5_10AvcProfileENS5_8AvcLevelEiiiiibbibNS0_15HardwareProfileEi";
+        static const char *const init_new = "_ZN2nn5codec21InitializeH264EncoderEPmPNS0_15H264EncoderTypeEPvmttiNS_5movie11BitRateModeENS5_10AvcProfileENS5_8AvcLevelEiiiiibbibNS0_27VideoEncoderHardwareProfileEi";
+        static const char *const fini = "_ZN2nn5codec19FinalizeH264EncoderEPNS0_15H264EncoderTypeE";
+        static const char *const reg = "_ZN2nn5codec25RegisterH264EncoderBufferEPNS0_15H264EncoderTypeEjPNS0_25VideoEncoderImagePoolTypeEj";
+        static const char *const unreg = "_ZN2nn5codec27UnregisterH264EncoderBufferEPNS0_15H264EncoderTypeEj";
+        static const char *const start = "_ZN2nn5codec16StartH264EncoderEPNS0_15H264EncoderTypeE";
+        static const char *const stop = "_ZN2nn5codec15StopH264EncoderEPNS0_15H264EncoderTypeE";
+        static const char *const acq = "_ZN2nn5codec29AcquireH264EncoderInputBufferEPjPNS_2gs16NativeSyncHandleEPNS0_15H264EncoderTypeE";
+        static const char *const sub = "_ZN2nn5codec28SubmitH264EncoderInputBufferEPNS0_15H264EncoderTypeEjNS_2gs16NativeSyncHandleENS_8TimeSpanEb";
+        static const char *const sub_rect = "_ZN2nn5codec28SubmitH264EncoderInputBufferEPNS0_15H264EncoderTypeEjNS_2gs16NativeSyncHandleENS_8TimeSpanEbtttt";
+        static const char *const blank = "_ZN2nn5codec16BlankH264EncoderEPNS0_15H264EncoderTypeENS_8TimeSpanEb";
+        static const char *const event_old = "_ZN2nn5codec30GetH264EncoderOutputReadyEventEPPNS_2os15SystemEventTypeEPNS0_15H264EncoderTypeE";
+        static const char *const event_new = "_ZN2nn5codec30GetH264EncoderOutputReadyEventEPNS0_15H264EncoderTypeE";
+        static const char *const out = "_ZN2nn5codec26GetH264EncoderOutputBufferEPmS1_S1_PNS0_15H264EncoderTypeEPvm";
+        static const char *const out_ts = "_ZN2nn5codec26GetH264EncoderOutputBufferEPmS1_S1_PNS_8TimeSpanEPNS0_15H264EncoderTypeEPvm";
+        static const char *const props_short = "_ZN2nn5codec24SetH264EncoderPropertiesEPNS0_15H264EncoderTypeEiiiiiiib";
+        static const char *const props_full = "_ZN2nn5codec24SetH264EncoderPropertiesEPNS0_15H264EncoderTypeEiiiiiiiiib";
+        _Alignas(16) uint8_t enc[0x140], pool[2][0x20];
+        uint8_t *mem[2]; uint64_t size = 0, align = 0, out_size = 0;
+        uint32_t pref[16] = {0, 2, 63 | 63 << 16};
+        CHECK(((f_psize)E(pool_size))(&size, &align, pref, 2) == 0 && align >= 0x1000 && size >= 2ull * 64 * 64 * 4);
+        for (int i = 0; i < 2; i++) { CHECK(!posix_memalign((void **)&mem[i], (size_t)align, (size_t)size)); CHECK(((f_pinit)E(pool_init))(pool[i], mem[i], size, pref, 1) == 0); }
+        uint32_t h0 = 0;
+        CHECK(((f_enc_handle_old)E(handle_old))(&h0, pool[0]) == 0 && h0 != 0);
+        CHECK(((f_enc_handle_new)E(handle_new))(pool[0], 0) == h0 && ((f_enc_handle_new)E(handle_new))(pool[0], 1) == 0);
+        CHECK(((f_enc_init)E(init))(&out_size, enc, 0, 0, 64, 64, 30, 0, 0, 0, 2000000, 30, 0, 0, 1, 0, 0, 0, 1, 0, 1) == 0 && out_size >= 4096);
+        CHECK(E(init_new) == E(init));
+        void *ev = NULL;
+        CHECK(((f_enc_event_old)E(event_old))(&ev, enc) == 0 && ev == enc + 8);
+        CHECK(((f_enc_event_new)E(event_new))(enc) == enc + 8);
+        CHECK(((f_enc_reg)E(reg))(enc, 0, pool[0], 0) == 0 && ((f_enc_reg)E(reg))(enc, 1, pool[1], 0) == 0);
+        CHECK(((f_enc_reg)E(reg))(enc, 0, pool[0], 0) == 0xfa26f);
+        CHECK(((f_enc_start)E(start))(enc) == 0);
+        CHECK(((f_enc_props_short)E(props_short))(enc, 2000000, 30, 30, 0, 0, 1, 1, 0) == 0);
+        CHECK(((f_enc_props_full)E(props_full))(enc, 2000000, 30, 30, 0, 0, 1, 1, 0, 50, 0) == 0);
+        uint8_t *rgba[2];
+        for (int i = 0; i < 2; i++) { rgba[i] = malloc(64 * 64 * 4); CHECK(rgba[i]); for (int p = 0; p < 64 * 64; p++) { rgba[i][4*p] = i ? 0 : 255; rgba[i][4*p+1] = i ? 255 : 0; rgba[i][4*p+2] = 0; rgba[i][4*p+3] = 255; }
+            CHECK(((f_write_rgba)E(write_rgba))(pool[i], 0, rgba[i], 64 * 64 * 4, 64 * 4, 0xaaaa0000ull, 0xbbbb0000ull, 0xcccc0000ull | 64, 0xdddd0000ull | 64) == 0); }
+        uint8_t *encoded = malloc((size_t)out_size); CHECK(encoded);
+        rig dec; rig_up(&dec, &H264, 64, 64);
+        for (int frame = 0; frame < 2; frame++) {
+            uint32_t idx = 99; sync_h sh;
+            CHECK(((f_enc_acq)E(acq))(&idx, &sh, enc) == 0 && idx == (uint32_t)frame);
+            if (frame) CHECK(((f_gstw)E(GS_TRYWAIT))(&sh));
+            if (frame) CHECK(((f_enc_sub_rect)E(sub_rect))(enc, idx, sh, (int64_t)frame * 33333000, frame == 0, 0xaaaa0000ull, 0xbbbb0000ull, 0xcccc0000ull | 64, 0xdddd0000ull | 64) == 0);
+            else CHECK(((f_enc_sub)E(sub))(enc, idx, sh, 0, 1) == 0);
+            CHECK(enc_wait(ev));
+            uint64_t off = ~0ull, n = 0, flags = 0; int64_t pts = -1;
+            uint64_t short_off = 0, short_n = 0, short_flags = 0;
+            CHECK(((f_enc_out_ts)E(out_ts))(&short_off, &short_n, &short_flags, &pts, enc, encoded, 1) != 0 && g_trywait(ev));
+            CHECK(((f_enc_out_ts)E(out_ts))(&off, &n, &flags, &pts, enc, encoded, out_size) == 0 && off == 0 && n > 0 && n <= out_size && pts == frame * 33333000);
+            CHECK(frame != 0 || (flags & 1));
+            uint64_t id = 0; CHECK(((f_sub)E(H264.sub))(&id, dec.obj, encoded, n, (int64_t)frame * 33333000, 0) == 0);
+            sync_h dh; uint32_t di = take(&dec, &H264, &spev, &dh); uint8_t p[4]; px(&dec, di, p);
+            printf("H.264 编码第 %d 帧：%llu 字节 flags=%llu，解码像素 (%u,%u,%u,%u)\n", frame, (unsigned long long)n, (unsigned long long)flags, p[0], p[1], p[2], p[3]);
+            CHECK(frame ? (p[1] >= 220 && p[0] <= 32 && p[2] <= 32) : (p[0] >= 220 && p[1] <= 32 && p[2] <= 32));
+            ((f_rel)E(H264.rel))(dec.obj, di, 0, 0);
+        }
+        uint64_t off = 0, n = 0, flags = 0;
+        uint32_t mi[2]; sync_h mh[2];
+        for (int i = 0; i < 2; i++) {
+            CHECK(((f_enc_acq)E(acq))(&mi[i], &mh[i], enc) == 0 && ((f_gstw)E(GS_TRYWAIT))(&mh[i]));
+            CHECK(((f_enc_sub)E(sub))(enc, mi[i], mh[i], 100000000 + (int64_t)i * 33333000, 0) == 0);
+        }
+        sync_h *guest_sync0 = (sync_h *)((uint8_t *)enc + 0xc0 + (size_t)mi[0] * 16), *guest_sync1 = (sync_h *)((uint8_t *)enc + 0xc0 + (size_t)mi[1] * 16);
+        CHECK(guest_sync1->value == guest_sync0->value + 1);
+        for (int i = 0; i < 2; i++) { CHECK(enc_wait(ev)); CHECK(((f_enc_out)E(out))(&off, &n, &flags, enc, encoded, out_size) == 0 && n > 0); }
+        CHECK(((f_enc_blank)E(blank))(enc, 66666000, 0) == 0 && enc_wait(ev));
+        CHECK(((f_enc_out)E(out))(&off, &n, &flags, enc, encoded, out_size) == 0 && n > 0);
+        uint32_t blocked_idx = 99; sync_h blocked;
+        CHECK(((f_enc_acq)E(acq))(&blocked_idx, &blocked, enc) == 0 && blocked_idx < 2);
+        blocked.value += 100; uint64_t wait0 = now_ns();
+        CHECK(((f_enc_sub)E(sub))(enc, blocked_idx, blocked, 99999000, 0) != 0 && now_ns() - wait0 >= 90000000ull);
+        uint32_t alien_idx = 99; sync_h alien_sh, alien = {~77u, 1, 5};
+        CHECK(((f_enc_acq)E(acq))(&alien_idx, &alien_sh, enc) == 0);
+        wait0 = now_ns(); CHECK(((f_enc_sub)E(sub))(enc, alien_idx, alien, 99999000, 0) != 0 && now_ns() - wait0 < 500000000ull);
+        ((f_enc_unreg)E(unreg))(enc, 1); CHECK(((f_enc_reg)E(reg))(enc, 1, pool[1], 0) == 0);
+        ((f_enc_stop)E(stop))(enc);
+        int d0 = g_destroys; ((f_v)E(fini))(enc); CHECK(g_destroys == d0 + 1 && ((fake_sev *)ev)->destroyed);
+        rig_down(&dec, &H264);
+        uint32_t npref[16] = {0, 4, 63 | 63 << 16}; uint64_t nsize = 0, nalign = 0; uint8_t npool[0x20], nenc[0x140], *nvmem = NULL; void *nev = NULL;
+        CHECK(((f_psize)E(pool_size))(&nsize, &nalign, npref, 1) == 0 && !posix_memalign((void **)&nvmem, (size_t)nalign, (size_t)nsize));
+        CHECK(((f_pinit)E(pool_init))(npool, nvmem, nsize, npref, 1) == 0);
+        CHECK(((f_enc_init)E(init_new))(&out_size, nenc, 0, 0, 64, 64, 30, 0, 0, 0, 2000000, 30, 0, 0, 1, 0, 0, 0, 1, 0, 1) == 0);
+        CHECK(((f_enc_event_old)E(event_old))(&nev, nenc) == 0 && ((f_enc_reg)E(reg))(nenc, 0, npool, 0) == 0 && ((f_enc_start)E(start))(nenc) == 0);
+        uint8_t y[64 * 64], uv[32 * 64]; memset(y, 145, sizeof y); for (int i = 0; i < 32 * 32; i++) { uv[2*i] = 54; uv[2*i+1] = 34; }
+        CHECK(((f_write_nv12)E("_ZN2nn5codec26WriteEncoderInputImageNv12EPKNS0_25VideoEncoderImagePoolTypeEjPKvmmS5_mmtttt"))(npool, 0, y, sizeof y, 64, uv, sizeof uv, 64, 0, 0, 64, 64) == 0);
+        uint8_t ry[48 * 48], ruv[24 * 48]; memset(ry, 81, sizeof ry); for (int i = 0; i < 24 * 24; i++) { ruv[2*i] = 90; ruv[2*i+1] = 240; }
+        CHECK(((f_write_nv12)E("_ZN2nn5codec26WriteEncoderInputImageNv12EPKNS0_25VideoEncoderImagePoolTypeEjPKvmmS5_mmtttt"))(npool, 0, ry, sizeof ry, 48, ruv, sizeof ruv, 48, 8, 8, 48, 48) == 0);
+        uint32_t ni = 99; sync_h nsh; CHECK(((f_enc_acq)E(acq))(&ni, &nsh, nenc) == 0 && ni == 0);
+        CHECK(((f_enc_sub_rect)E(sub_rect))(nenc, ni, nsh, 0, 1, 8, 8, 48, 48) == 0 && enc_wait(nev));
+        CHECK(((f_enc_out)E(out))(&off, &n, &flags, nenc, encoded, out_size) == 0 && n > 0);
+        rig ndec; rig_up(&ndec, &H264, 64, 64); uint64_t nid = 0; CHECK(((f_sub)E(H264.sub))(&nid, ndec.obj, encoded, n, 0, 0) == 0);
+        sync_h ndh; uint32_t ndi = take(&ndec, &H264, &spev, &ndh); uint8_t np[4]; px(&ndec, ndi, np);
+        printf("H.264 NV12 编码：%llu 字节，解码像素 (%u,%u,%u,%u)\n", (unsigned long long)n, np[0], np[1], np[2], np[3]);
+        CHECK(np[0] >= 220 && np[1] <= 32 && np[2] <= 32 && np[3] == 255);
+        ((f_v)E(fini))(nenc); rig_down(&ndec, &H264); ((f_pfini)E(pool_fini))(npool); free(nvmem);
+        free(encoded); free(rgba[0]); free(rgba[1]);
+        for (int i = 0; i < 2; i++) { ((f_pfini)E(pool_fini))(pool[i]); free(mem[i]); }
+    }
+
     // ---------- 族内宿主做不到的：红桩（装载打红行，调用即中止点名）；族内纯函数 / 数据符号 / 族外：照原路径 ----------
     {
         // 红桩只给有实证的：gs 未启动模拟执行进了 gsv 会话（编码器图像池、别名池、gsv 视频服务会话）或经 syncpt 库表跳空（库表转发、NvRm 栅栏转同步句柄）
         static const char *const red[] = {
-            "_ZN2nn5codec26InitializeEncoderImagePoolEPNS0_25VideoEncoderImagePoolTypeEPvmRKNS0_27VideoEncoderImagePreferenceEj",   // Pokopia subsdk0 导入
             "_ZN2nn5codec31InitializeDecoderAliasImagePoolEPNS0_25VideoDecoderImagePoolTypeENS_2gs17NativeImageHandleEj",
+            "_ZN2nn5codec31InitializeEncoderAliasImagePoolEPNS0_25VideoEncoderImagePoolTypeENS_2gs17NativeImageHandleEj",
+            "_ZN2nn5codec26InitializeEncoderImagePoolEPNS0_25VideoEncoderImagePoolTypeENS_5gsdrv16WeakNativeHandleEmRKNS0_27VideoEncoderImagePreferenceEj",
             "_ZN2nn6syncpt3sdk19MakeSyncPointHandleENS1_13SyncCounterIdEmNS1_13SyncValueModeE",
             "_ZN2nn6syncpt3sdk21CreateDebugSyncDeviceEPNS1_19DebugSyncDeviceTypeE",
             "_ZN2nn2gs8external32GetNativeSyncHandleFromNvRmFenceERKNS1_12NvRmFenceRecE",   // Pokopia subsdk0 导入
             "_ZN2nn5codec5video6detail17ShimLibraryGlobal10InitializeEv",
         };
-        static const char *const why[] = { "编码", "别名", "库表", "调试", "NvRm", "gsv" };
+        static const char *const why[] = { "别名", "别名", "远程", "库表", "调试", "NvRm", "gsv" };
         for (unsigned i = 0; i < sizeof red / sizeof *red; i++) { void *f = s2a_codec_entry(red[i]); CHECK(f && nvn2_red_of(f) && strstr(nvn2_red_of(f), why[i])); }
-        // 族内没接、但没有原路径必中止实证的：照原路径（H.264 编码器初始化 / 加密输入 / 原生窗口 / nvnSync 由原生同步句柄初始化）
-        CHECK(!s2a_codec_entry("_ZN2nn5codec21InitializeH264EncoderEPmPNS0_15H264EncoderTypeEPvmttiNS_5movie11BitRateModeENS4_12EncoderLevelENS0_23VideoEncoderInputFormatE")
-              && !s2a_codec_entry("_ZN2nn5codec36SubmitEncryptedVp9DecoderInputBufferEPmPNS0_14Vp9DecoderTypeEPKNS0_18EncryptionPropertyEPKvmNS_8TimeSpanEb")
+        // 族内没接、但没有原路径必中止实证的：照原路径（加密输入 / 原生窗口 / nvnSync 由原生同步句柄初始化）
+        CHECK(!s2a_codec_entry("_ZN2nn5codec36SubmitEncryptedVp9DecoderInputBufferEPmPNS0_14Vp9DecoderTypeEPKNS0_18EncryptionPropertyEPKvmNS_8TimeSpanEb")
               && !s2a_codec_entry("_ZN2nn2gs3sdk19ConnectNativeWindowEPvPKcNS1_21NativeWindowAttributeE")
               && !s2a_codec_entry("_Z37nvnSyncInitializeFromNativeSyncHandleP7NVNsyncP9NVNdeviceN2nn2gs16NativeSyncHandleE"));
         CHECK(dies1(s2a_codec_entry(red[0]), 0, 0));
@@ -586,8 +758,9 @@ int main(int argc, char **argv) {
         }
     }
 
-    // ---------- dav1d 垫片：逐帧 MD5 对 ffmpeg（libdav1d）参考 ----------
-    {
+    // ---------- dav1d 垫片：逐帧 MD5 对 ffmpeg（libdav1d）参考（没链 dav1d——本机有 AV1 硬解、S2A_DAV1D 探测不链——时这段跳过）----------
+    if (!s2a_av1_open) printf("dav1d：宿主没链 dav1d 垫片（本机走 AV1 硬解路线），软解 MD5 小节跳过\n");
+    else {
         static const char *const want8[6] = { "7c445a3a2221f0a538414ba5fd2f2c41", "c259b2a6a3fe2b087a65f5056fe8f933", "446a8cdca368be75186776b8d24a3382",
                                               "6952b325b88908a2c5791874e0b5bd6f", "89ed6182b091a0c67511110af40fea1f", "88025e2b2d8ababb79a6c030aa34ec3c" };
         static const char *const want10 = "d3f13f6f8df70f77a54df0f91ef79a41";
@@ -612,40 +785,42 @@ int main(int argc, char **argv) {
         h = s2a_av1_open(1); CHECK(s2a_av1_decode(h, junk, sizeof junk, pl, st, info) != 0); s2a_av1_close(h);
     }
 
-    // ---------- AV1 强制软解（S2A_AV1_SOFT=1）走整条接管路径：8 位、10 位红 ----------
-    setenv("S2A_AV1_SOFT", "1", 1);
-    {
-        const uint8_t *const *fr[2] = { (const uint8_t *const[]){ red_av1_0, red_av1_1 }, red10_av1 };
-        const size_t n8[2] = { sizeof red_av1_0, sizeof red_av1_1 };
-        for (int pass = 0; pass < 2; pass++) {
-            rig r; rig_up(&r, &AV1, 64, 64); uint64_t id;
-            for (int i = 0; i < 2; i++) CHECK(((f_sub)E(AV1.sub))(&id, r.obj, fr[pass][i], pass ? red10_av1_n[i] : n8[i], (int64_t)i * 33333000, 0) == 0);
-            sync_h a, b; take(&r, &AV1, &spev, &a); take(&r, &AV1, &spev, &b);
-            uint8_t p[4];
-            for (uint32_t k = 0; k < 2; k++) { px(&r, k, p); printf("AV1 软解 %d 位 第 %u 帧像素 (%u,%u,%u,%u)\n", pass ? 10 : 8, k, p[0], p[1], p[2], p[3]); CHECK(p[0] >= 251 && p[1] <= 3 && p[2] <= 3 && p[3] == 255); }
-            rig_down(&r, &AV1);
+    // ---------- AV1 强制软解（S2A_AV1_SOFT=1）走整条接管路径：8 位、10 位红（没链 dav1d 时两段跳过：强制软解没兜底、垫片也没有）----------
+    if (s2a_av1_open) {
+        setenv("S2A_AV1_SOFT", "1", 1);
+        {
+            const uint8_t *const *fr[2] = { (const uint8_t *const[]){ red_av1_0, red_av1_1 }, red10_av1 };
+            const size_t n8[2] = { sizeof red_av1_0, sizeof red_av1_1 };
+            for (int pass = 0; pass < 2; pass++) {
+                rig r; rig_up(&r, &AV1, 64, 64); uint64_t id;
+                for (int i = 0; i < 2; i++) CHECK(((f_sub)E(AV1.sub))(&id, r.obj, fr[pass][i], pass ? red10_av1_n[i] : n8[i], (int64_t)i * 33333000, 0) == 0);
+                sync_h a, b; take(&r, &AV1, &spev, &a); take(&r, &AV1, &spev, &b);
+                uint8_t p[4];
+                for (uint32_t k = 0; k < 2; k++) { px(&r, k, p); printf("AV1 软解 %d 位 第 %u 帧像素 (%u,%u,%u,%u)\n", pass ? 10 : 8, k, p[0], p[1], p[2], p[3]); CHECK(p[0] >= 251 && p[1] <= 3 && p[2] <= 3 && p[3] == 255); }
+                rig_down(&r, &AV1);
+            }
         }
-    }
-    // 整条路径写出的 RGBA 逐像素对「同一帧的 YUV（经垫片另解一份）+ BT.601 视频范围公式（双精度）」，±1：核 NEON 与逐像素两段转换
-    {
-        void *h = s2a_av1_open(1); uint8_t *pl[3]; int32_t st[3], info[6];
-        CHECK(s2a_av1_decode(h, ts_av1[0], (uint32_t)ts_av1_n[0], pl, st, info) == 0);
-        rig r; rig_up(&r, &AV1, 96, 64); uint64_t id; sync_h a;
-        CHECK(((f_sub)E(AV1.sub))(&id, r.obj, ts_av1[0], ts_av1_n[0], 0, 0) == 0);
-        uint32_t idx = take(&r, &AV1, &spev, &a);
-        static uint8_t got[96 * 64 * 4];
-        CHECK(((f_rgba)E(READ_RGBA))(r.pool[idx], 0, 0, 0, 96, 64, got, 96 * 4, sizeof got) == 0);
-        int bad = 0, maxd = 0;
-        for (int y = 0; y < 64; y++) for (int x = 0; x < 96; x++) {
-            double Y = (pl[0][y * st[0] + x] - 16) * 255.0 / 219.0, U = (pl[1][(y / 2) * st[1] + x / 2] - 128) * 255.0 / 224.0, V = (pl[2][(y / 2) * st[1] + x / 2] - 128) * 255.0 / 224.0;
-            double want[3] = { Y + 1.402 * V, Y - 0.3441 * U - 0.7141 * V, Y + 1.772 * U };
-            for (int c = 0; c < 3; c++) { int w = (int)(want[c] < 0 ? 0 : want[c] > 255 ? 255 : want[c] + 0.5), d = abs(w - got[(y * 96 + x) * 4 + c]); if (d > maxd) maxd = d; bad += d > 1; }
-            bad += got[(y * 96 + x) * 4 + 3] != 255;
+        // 整条路径写出的 RGBA 逐像素对「同一帧的 YUV（经垫片另解一份）+ BT.601 视频范围公式（双精度）」，±1：核 NEON 与逐像素两段转换
+        {
+            void *h = s2a_av1_open(1); uint8_t *pl[3]; int32_t st[3], info[6];
+            CHECK(s2a_av1_decode(h, ts_av1[0], (uint32_t)ts_av1_n[0], pl, st, info) == 0);
+            rig r; rig_up(&r, &AV1, 96, 64); uint64_t id; sync_h a;
+            CHECK(((f_sub)E(AV1.sub))(&id, r.obj, ts_av1[0], ts_av1_n[0], 0, 0) == 0);
+            uint32_t idx = take(&r, &AV1, &spev, &a);
+            static uint8_t got[96 * 64 * 4];
+            CHECK(((f_rgba)E(READ_RGBA))(r.pool[idx], 0, 0, 0, 96, 64, got, 96 * 4, sizeof got) == 0);
+            int bad = 0, maxd = 0;
+            for (int y = 0; y < 64; y++) for (int x = 0; x < 96; x++) {
+                double Y = (pl[0][y * st[0] + x] - 16) * 255.0 / 219.0, U = (pl[1][(y / 2) * st[1] + x / 2] - 128) * 255.0 / 224.0, V = (pl[2][(y / 2) * st[1] + x / 2] - 128) * 255.0 / 224.0;
+                double want[3] = { Y + 1.402 * V, Y - 0.3441 * U - 0.7141 * V, Y + 1.772 * U };
+                for (int c = 0; c < 3; c++) { int w = (int)(want[c] < 0 ? 0 : want[c] > 255 ? 255 : want[c] + 0.5), d = abs(w - got[(y * 96 + x) * 4 + c]); if (d > maxd) maxd = d; bad += d > 1; }
+                bad += got[(y * 96 + x) * 4 + 3] != 255;
+            }
+            printf("AV1 软解整条路径 96x64：逐像素对公式最大差 %d、超 ±1 的 %d 个分量\n", maxd, bad); CHECK(bad == 0);
+            s2a_av1_close(h); rig_down(&r, &AV1);
         }
-        printf("AV1 软解整条路径 96x64：逐像素对公式最大差 %d、超 ±1 的 %d 个分量\n", maxd, bad); CHECK(bad == 0);
-        s2a_av1_close(h); rig_down(&r, &AV1);
-    }
-    unsetenv("S2A_AV1_SOFT");
+        unsetenv("S2A_AV1_SOFT");
+    } else printf("AV1 强制软解 / 整条路径：宿主没链 dav1d 垫片（本机走 AV1 硬解路线），两段跳过\n");
 
     // ---------- AV1（VideoToolbox 硬件解码；没有 AV1 硬件解码的机器上这段跳过并说明）----------
     if (VTIsHardwareDecodeSupported(kCMVideoCodecType_AV1)) {

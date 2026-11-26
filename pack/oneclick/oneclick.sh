@@ -13,12 +13,13 @@
 # 普查用（10-25 运维线：285 款泛化普查，本机解包、rsync 到 gate-host / Spare-host 往下出；Spare-host 没有 prod.keys）：
 #   --from-extract <解包目录>（放在第一个参数位置，代替源包文件夹）：跳过 ① 认包 / ③ 解包，直接用已解好的目录（exefs/ romfs/ ctl/ aoc/ unpack.tsv，
 #     一键出包 <输出>/extract 或 pack/stages/unpack.sh extract 的产物）往下播种；认游戏读 unpack.tsv，不要 prod.keys / 原始包。--out 缺省 <解包目录>/../s2arm_<款>
+#     多程序合集还需 S2A_SUBPROGRAM_SOURCES 指向原件目录与 --keys（启动器已提供）；只给序号 0 的解包目录时明确报红，不交缺程序的包。
 # --target（10-25 维护者：一个入口出各平台；公共阶段 认游戏 / 解包 / 私有根 / 改写 / 系统数据 只跑一次，平台段各走各的）：
 #   ios（缺省）：iPhone / iPad 同一个 IPA，平台段 = ipa.sh；
 #   mac：只出 Mac 能跑的私有产物根（刷新按 S2A_PACK_PLAT=macos，直连库出 Mac 侧；不起宽屏自动出表），跳过 ④ 出包（iOS 编译 / 签名 / 资源包）与 ⑤ 交付；
 #     最后一行打出产物根，Mac 局 S2A_IN=<它>（原 --mac 并进来，不另留入口）；
-#   android / ohos：开发中，出不了能玩的包——开跑前就报红、退出 3，不白跑公共阶段（安卓现有入口 android 只出诊断 APK、运行时还跑不了完整游戏；
-#     鸿蒙只有原生层目标文件 runtime/ohos，没有 HAP 打包）。不认得的目标 → 报红、退出 2
+#   android：出单游戏 APK + 资源包（pack/targets/android/package.py；S2A_ANDROID_ENGINE 给了预编引擎目录就组装、不跑 Gradle），--install-serial 接着装机；
+#   ohos：开发中，开跑前就报红、退出 3（鸿蒙只有原生层目标文件 runtime/ohos，没有 HAP 打包）。不认得的目标 → 报红、退出 2
 # --device <UDID|设备名>（ios 目标，10-27 R13）：着色器的管线归档与函数体动态库按「目标 GPU 架构 × 系统大版本」出，对不上的设备整份不命中。
 #   出包缺省按三种模式（pack/jobs/archs.py）：1. 显式 S2A_PSO_ARCHS > 2. S2A_PSO_ARCHS_ALL=1 全机型 > 3. 我方真机集合（pack/our_devices.tsv）。
 #   本参数只在目标设备架构**不在**我方集合内时才 export 单架构（在集合内不动，保住 Duo 覆盖与阶段键）；
@@ -247,7 +248,7 @@ if [ -n "$FX" ]; then
   #   目录取盘点身份（graphics/nvn/tools/romfs_list.py：相对路径 + 大小 + 修改时间纳秒，只 lstat、不读内容，27 万文件也只是盘点一遍），没有的记「-」
   KA=$(cd "$FX" && "$PY" -c 'import os, sys; sys.path.insert(0, sys.argv[1]); import romfs_list
 for d in sys.argv[2:]:
-    i = romfs_list.scan(d).identity if os.path.isdir(d) else "-"
+    i = romfs_list.scan(d).identity if romfs_list.is_dir(d) else "-"   # is_dir：romfs/ 不在、只有镜像 romfs.std 时盘点镜像（身份随镜像换而换）
     if i is None: sys.exit(1)
     print(d, i)' "$P/../graphics/nvn/tools" romfs aoc && { [ ! -f aoc.tsv ] || shasum -a 256 < aoc.tsv; }) || die "盘点不了 $FX 的 romfs/ 或 aoc/"
   K=$( { cat "$FX/unpack.tsv"; echo "$KM"; echo "$KA"; } | shasum -a 256 | cut -c1-16); X=$FX
@@ -300,6 +301,14 @@ rfc=0; S2A_WIDEN_PKG=$([ "$MAC" = 1 ] || [ "$TGT" = android ] && echo 0 || echo 
 [ $rfc = 0 ] && export S2A_REFRESHED=$(basename "$(root_cur "$G")")   # 交给 ipa.sh：刚刷过、现行没变就不再刷（一键流程 refresh 只跑一次）
 [ $rfc = 0 ] || die "刷新停在：$(grep '【红】' "$OUT/logs/refresh.log" | grep -v '刷新停在' | tail -1 | cut -c1-300)（$OUT/logs/refresh.log）"
 t "   $(tail -1 "$OUT/logs/refresh.log" | cut -c1-1200)"
+if [ "$TGT" != android ]; then
+  cur=$(root_cur "$G"); beat 多程序合集 "$OUT/logs/sub_programs.log"
+  "$PY" "$P/multi_program.py" --extract "$X" --work "$OUT" --logs "$OUT/logs" --product "$cur" \
+    --game "$G" --source-dir "${S2A_SUBPROGRAM_SOURCES:-$S2A_GAME_SRC}" --platform "$([ "$MAC" = 1 ] && echo macos || echo ios)" \
+    > "$OUT/logs/sub_programs.log" 2>&1 || { unbeat; die "多程序合集构建失败：$(tail -1 "$OUT/logs/sub_programs.log" | cut -c1-300)"; }
+  unbeat; cur=$(root_cur "$G"); export S2A_REFRESHED=$(basename "$cur")
+  [ ! -s "$OUT/logs/sub_programs.log" ] || t "   $(tail -1 "$OUT/logs/sub_programs.log" | cut -c1-1200)"
+fi
 if [ "$TGT" = android ]; then
   # 刷新那行「🟢 … Android 共享资源已刷新：…；🟡 <n> 项：…」带的黄项（直连库段没出等，#783 合入线 11-03 答 ③）进出包汇总：这里打一行，完成行与 result 事件也带上
   AW=$(sed -n 's/^🟢 .*Android 共享资源已刷新：[^；]*；\(🟡 .*\)$/\1/p' "$OUT/logs/refresh.log" | tail -1)
@@ -314,6 +323,7 @@ if [ "$TGT" = android ]; then
   [ -f "$APK" ] && [ -f "$RES/manifest.json" ] && [ -f "$ART" ] || die "Android 交付不完整"
   if [ -n "$INSTALL_SERIAL" ]; then
     lap 安装与导入
+    t "   装到手机 ${INSTALL_SERIAL}：手机上弹出安装确认（如「未经安全检测」）时，勾选并点「继续安装」；同款旧包签名不同时要先在手机上卸载"
     "$PY" "$P/../android/tools/deploy_game.py" --apk "$APK" --resources "$RES" --serial "$INSTALL_SERIAL" --no-start > "$OUT/logs/android-install.log" 2>&1 || die "设备安装或导入失败（$OUT/logs/android-install.log）：$(tail -1 "$OUT/logs/android-install.log" | cut -c1-300)"
   fi
   lap; t "🟢 完成：$APK + $RES + $ART$(root_aoc_note "$(root_cur "$G")")${AW:+；$AW}"

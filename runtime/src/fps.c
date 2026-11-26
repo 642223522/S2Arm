@@ -77,6 +77,7 @@ static _Atomic int g_hold;
 //   （11-14 撤我方 60 帧）。表照装：改写器打进游戏代码的读槽指令一直在，槽必须有 30 帧口径的值——11-14 起初整张表不装，槽留 0，
 //   带表的包起局后游戏步长读到 0、停在加载黑屏（iPhone 实机同包同局：纯主线进局、不装表的一直黑屏）。60 帧开关此后只管社区帧率补丁（cpatch_follow 照跟 eff）
 static int g_own;
+static _Atomic int g_snap_off;   // 即时存档恢复过（s2a_fps_snap_reapply）：关着时有关值的 w 行也写关值
 static int eff(void) { return atomic_load(&g_on) && atomic_load(&g_ab) != 1 && !atomic_load(&g_hold); }   // 60 帧实际生效 = 用户开着、不在同局 A/B 的原帧率段、档位梯子没压
 int s2a_fps_cap_reason(void) {
     int ab = atomic_load(&g_ab);
@@ -100,6 +101,11 @@ static void slots_apply(int on) {   // 槽按开关写：slot 行开 / 关时值
 //   弱定义缺省空实现 / 0 份：cpatch 运行时给强定义就覆盖（静态链接选强定义）。维护者 10-27：设置里一个开关管 60 帧
 __attribute__((weak)) void s2a_cpatch_fps_follow(int on) { (void)on; }
 __attribute__((weak)) int s2a_cpatch_fps_count(void) { return 0; }   // 本包收下的社区帧率补丁份数（设置页据此也显示开关）
+__attribute__((weak)) int s2a_cpatch_fps_tier_ok(void) { return 0; }   // 有一档能开（cpatch.c fps_pick；只带 120 档的款自动档不开 → 0）
+__attribute__((weak)) int s2a_cpatch_fps_engaged(void) { return 0; }
+// 帧率被抬高了没有（graphics/nvn/gfx/nvn/nvn_fps.c 问：玩家帧率上限只压补丁抬上去的那部分，11-25 #502）：我方帧率表开着，或社区帧率补丁的位真开着
+static int eff_table(void);
+int s2a_fps_raised(void) { return eff_table() || s2a_cpatch_fps_engaged(); }
 static void cpatch_follow(int on) { s2a_cpatch_fps_follow(on); }
 // 宿主帧步（10-29 维护者，调研 the reference port FRAME_STEP：维护者「高帧率时同时低功耗，而不是高帧率高功耗这个能力就不给玩家了」）：表里有 speed 行（按帧推进、游戏速度改读步长槽的款）
 //   就把直连宿主的帧步状态页接上（graphics/nvn hle_nvn.c fstep_tick + nvn_fstep.h：每帧定「这一帧在屏上保持几个 vsync」，60 撑不住连续 3 帧迟到就稳定落到 30，
@@ -117,6 +123,16 @@ static int fs_step(void) { return dm_fps_state ? (int)plat_guest_load32((uintptr
 // 生效状态一变（用户开关或降档原因）：槽与社区帧率补丁按生效值写；w 行由写入线程每 100 ms 按 eff() 写
 static int eff_table(void) { return g_own && eff(); }   // 我方帧率表此刻按「开」写
 static void apply(void) { int e = eff(); slots_apply(g_own && e); cpatch_follow(e); fs_target(g_own && e); }
+// 即时存档恢复（runtime/src/snapshot.c 写回游戏内存后调，同 cpatch.c s2a_cpatch_snap_reapply）：键页随快照变回存档那一刻，
+//   按开关取值的槽（开 / 关时值不同的 slot 行、速度槽、帧步目标）按本进程当前生效值重写；开关时值相同的槽（如游戏自己记的过场标记）是游戏状态，留快照里的
+void s2a_fps_snap_reapply(void) {
+    if (!g_fm) return;
+    int on = eff_table(), n = 0;
+    for (int i = 0; i < g_nsl; i++) if (g_sl[i].on != g_sl[i].off) { host_store32(key_slot(g_sl[i].sl), on ? g_sl[i].on : g_sl[i].off); n++; }
+    if (g_spd_slot >= 0 && !on) spd_store(1.0f);
+    fs_target(on); atomic_store(&g_snap_off, 1);   // w 行由写入线程下一圈按生效值写（关着的写关值）
+    LOG("即时存档恢复：帧率表按当前生效值（%s）重写键页槽 %d 个，w 行 %d 条交写入线程按生效值重写", on ? "开" : "关", n + (g_spd_slot >= 0 && !on), g_nfw);
+}
 // 帧率表键页槽的当前值（graphics/nvn hle_nvn.c 每 300 帧「render targets」那行带出；11-02 塞尔达户外落 30 看动态分辨率系数 / 步长）：「2041=200 (0x43480000)」；类型表里没记，浮点与原始字都给
 void s2a_fps_slots_note(char *buf, size_t n) {
     size_t o = 0; buf[0] = 0; if (!g_fm) return;
@@ -124,7 +140,7 @@ void s2a_fps_slots_note(char *buf, size_t n) {
         int sl = i < g_nsl ? g_sl[i].sl : g_spd_slot; uint32_t v = plat_guest_load32((uintptr_t)key_slot(sl)); float f; memcpy(&f, &v, 4);
         o += (size_t)snprintf(buf + o, n - o, "%s%d=%g (%#x)", o ? ", " : "", sl, (double)f, v); }
 }
-// 档位梯子压回 / 恢复告诉玩家（ios/app.m 横幅「已暂时回到原生帧率」，runtime/src/qladder_host.c 调）。Mac / 单测没有界面
+// 档位梯子压回 / 恢复告诉玩家（runtime/src/qladder_host.c 调；ios/app.m、macos/front_mac.m 横幅，压回时带「再试 60 帧」）。单测没有界面
 __attribute__((weak)) void s2a_ios_fps_capped(int reason) { (void)reason; }
 // 同局 A/B（自动玩家调，任意线程）：phase 1 = 回原帧率（降档原因 3）、2 = 放开（开段）、0 = 照常（测完）。不改用户开关，只在自动化局里用。
 //   没有帧率表的款（出图间隔由引擎推导或 DM_PRESENT_INTERVAL=display 放开）g_ready = 0，只靠降档原因让 hle_nvn.c 退回 / 放开游戏间隔
@@ -136,7 +152,7 @@ void s2a_fps_ab_set(int phase) {
 int s2a_fps_available(void) { return atomic_load(&g_have) || s2a_cpatch_fps_count() > 0; }
 // 有能真改游戏帧率的来源：表里除 present display 外还有行（w / slot / speed / word 改指令），或社区帧率补丁。只有 present display（含引擎通用第一层）时，
 //   游戏自己设交换间隔 1 就已是 60 帧、没东西可放开（撑不住就问玩家 / 设置页「本款原生 60 帧」，runtime/src/qprompt_host.c）
-int s2a_fps_real_source(void) { return (g_own && atomic_load(&g_have) && (g_nfw > 0 || g_nsl > 0 || g_spd_slot >= 0 || g_word_rows > 0)) || s2a_cpatch_fps_count() > 0; }
+int s2a_fps_real_source(void) { return (g_own && atomic_load(&g_have) && (g_nfw > 0 || g_nsl > 0 || g_spd_slot >= 0 || g_word_rows > 0)) || (s2a_cpatch_fps_count() > 0 && s2a_cpatch_fps_tier_ok()); }
 int s2a_fps_enabled(void) { return atomic_load(&g_on); }
 // 本帧帧率来源（11-14，补帧进主线）：2 = 真帧率来源开着（社区帧率补丁；S2A_CAPS_OWN=1 时也含我方帧率表）——出图补帧这一帧让路，游戏自己跑 60；
 //   1 = 没有，补帧可补（graphics/nvn/gfx/nvn/nvn_present_fi.inc fi_wanted 每帧读，弱定义恒 1）。优先级：社区帧率补丁 > 补帧 > 原帧率；60 帧开关局中切换随即跟上
@@ -146,10 +162,13 @@ void s2a_fps_hold(int hold) {
     if (atomic_exchange(&g_hold, hold ? 1 : 0) != (hold ? 1 : 0)) { if (g_ready) apply(); LOG("帧率表：档位梯子%s", hold ? "压回游戏原帧率" : "放开，回 60 帧"); }
     pthread_mutex_unlock(&g_control_mu);
 }
+// 档位梯子（runtime/src/qladder_host.c）：玩家局中重开 60 帧 = 要 60 帧，梯子回 60 帧档（#1688：原先压着的档不放，开关像没用）。没链梯子的单测用空实现
+__attribute__((weak)) void s2a_ql_retry60(void) {}
 void s2a_fps_set_enabled(int on) {
     pthread_mutex_lock(&g_control_mu);
     on = !!on;
     if (!g_ready || atomic_exchange(&g_on, on) == on) { pthread_mutex_unlock(&g_control_mu); return; }
+    if (on) s2a_ql_retry60();
     apply();
     const char *pi = getenv("DM_PRESENT_INTERVAL"); int itv_off = on && g_present_row && !(pi && !strcmp(pi, "display"));
     LOG("帧率表：60 帧%s（运行中切换）%s%s", on ? "开" : "关，回游戏原生帧率", !on && g_word_rows ? "；【黄】改指令 word 行出包时已打进代码，关时保留" : "",
@@ -157,12 +176,19 @@ void s2a_fps_set_enabled(int on) {
     pthread_mutex_unlock(&g_control_mu);
 }
 static module_t *mod_named(const char *n) { for (int i = 0; i < g_nmod; i++) if (!strcmp(g_mod[i].name, n)) return &g_mod[i]; return NULL; }
+// 测试读数（tests/autoplay 固定路线录像记游戏自己的步长，11-25 测速校准）：<模块>+<偏移> 处的 f32；模块没装 / 越界回 -1
+float s2a_guest_f32(const char *mod, uint64_t off) { module_t *m = mod_named(mod); if (!m || off + 4 > m->size) return -1.0f;
+    uint32_t b = plat_guest_load32((uintptr_t)(m->base + off)); float v; memcpy(&v, &b, 4); return v; }
 // 原值按地址只记一次（同一地址可有多条互斥的条件行；后读到的那条读的是前一条写进去的值，不是游戏原值）
 static void note_orig(fps_w *w, uint32_t old) {
     for (int j = 0; j < g_nfw; j++) { fps_w *o = &g_fw[j];
         if (o != w && o->has_orig && o->m == w->m && o->off == w->off && o->deref == w->deref && o->nch == w->nch && !memcmp(o->ch, w->ch, sizeof o->ch)) { w->orig = o->orig; w->has_orig = 1; return; } }
     w->orig = old; w->has_orig = 1;
 }
+// 写入线程转过的整圈数（每圈写完一遍、睡前加一）：单测按「改了之后又转了几圈」等，不按墙钟睡（11-19：负载高时固定睡 250 ms 线程没转到 → 读到旧值、假红）。只读计数，行为不变
+static _Atomic uint64_t g_fps_rounds;
+uint64_t s2a_fps_writer_rounds(void);
+uint64_t s2a_fps_writer_rounds(void) { return atomic_load(&g_fps_rounds); }
 static void *writer(void *a) { s2a_thread_name("s2a-fps-writer");
     (void)a; (void)plat_thread_name("s2a-帧率表");
     // 诊断（S2A_FPS_HOLD_AT=<起秒>-<止秒>，写入线程起来后计秒）：这段时间按档位梯子压回原帧率，验 60 ↔ 原帧率局中双向热切（frames.tsv 看帧间隔）
@@ -173,7 +199,7 @@ static void *writer(void *a) { s2a_thread_name("s2a-fps-writer");
         for (int i = 0; i < g_nfw; i++) { fps_w *w = &g_fw[i]; uint32_t old;
             // 关时只写表里明写的关值（off）。不写回第一次读到的「原值」（11-02 原生崩溃线：那是游戏还没初始化时的快照——八方2 t.MaxFPS 0、
             //   巫师3 LimitFPS 0、怪猎上限 6000，写回去等于解除限帧；异度3 写回 −1 也退不回 30）。没有关值的行运行中关不了，重启后生效（s2a_fps_hot_revert_ok）
-            if (!on && (!w->has_orig || !w->has_off)) continue;   // 起局就关（开时从没写过）：游戏自己的值没人动过，不碰
+            if (!on && (!w->has_off || (!w->has_orig && !atomic_load(&g_snap_off)))) continue;   // 起局就关（开时从没写过）：游戏自己的值没人动过，不碰；即时存档恢复过（g_snap_off）：游戏内存是存档那一刻的、可能是开时写的值，有关值的行照写关值
             uint32_t want = on ? w->bits : w->offbits;
             // 条件只管开时写哪个值；关值无条件
             if (on && w->cm) { const void *cp = w->cm->base + w->coff;
@@ -194,6 +220,7 @@ static void *writer(void *a) { s2a_thread_name("s2a-fps-writer");
             if (!w->said) { float of; memcpy(&of, &old, 4); w->said = 1; note_orig(w, old); LOG("帧率表：%s+%#llx（%s）原值 %s %g", w->m->name, (unsigned long long)w->off, w->what, w->f32 ? "f32" : "i32",
                                                                         w->f32 ? (double)of : (double)(int32_t)old); }
             if (old != want) plat_guest_store32((uintptr_t)p, want); }
+        atomic_fetch_add(&g_fps_rounds, 1);
         usleep(100000);
     }
     return NULL;
@@ -203,10 +230,12 @@ static void *writer(void *a) { s2a_thread_name("s2a-fps-writer");
 int s2a_fps_present_at(uint64_t now);   // 核心按传入的时间算（单测传精确时间戳）
 int s2a_fps_present_hook(void) { return s2a_fps_present_at(plat_now_ns()); }
 int s2a_fps_present_at(uint64_t now) {
-    // 关着时也记，再开的第一帧按真实帧间隔算；换局时清零。
-    if (!eff_table()) { g_present_last = now; return g_own && atomic_load(&g_have); }
+    // 关着时速度槽也按真实帧间隔写（11-18，#1607）：旧包的改指令（c 行，如去掉游戏自己的 30 帧下限）出包时已打进程序、不跟开关走，
+    //   60 帧关着游戏照样能跑到 60；原先关时槽写死 1.0（30 帧口径），读槽的时钟（王国之泪布料 / 头发）在 60 帧下快一倍。
+    //   按实测间隔写：游戏自己限 30 时仍是 1.0，跑到 60 时 0.5，游戏时间 = 真实时间。帧步只在开着时跑（fs_target），关时不看它
+    int on = eff_table();
     if (g_spd_slot >= 0) {
-        int st = fs_step();
+        int st = on ? fs_step() : 0;
         if (st > 0) {   // 帧步在跑：步长是宿主定的整数 vsync，出图也按它保持
             float v = st * 0.5f; if (v < g_spd_lo) v = g_spd_lo; if (v > g_spd_hi) v = g_spd_hi;
             spd_store(v);
@@ -215,6 +244,7 @@ int s2a_fps_present_at(uint64_t now) {
             spd_store(v); }
     }
     g_present_last = now;
+    if (!on) return g_own && atomic_load(&g_have);
     if (g_p30_slot >= 0) {
         int32_t cv = (int32_t)plat_guest_load32((uintptr_t)key_slot(g_p30_slot)); int p30 = (cv == g_p30_val) == g_p30_eq;
         if (dm_fps_state) host_store32(dm_fps_state + 4, (uint32_t)p30);   // 帧步在跑时过场靠这一位稳定按 30（出图间隔跟帧步，不看钩子返回值）
@@ -275,6 +305,9 @@ void s2a_fps_start(const char *dir) {
         //   超出的部分落在注释里（前半截已有 #）照常用；数据段本身超长整行报红、不用
         if (!strchr(line, '\n') && !feof(f)) { int ch; while ((ch = fgetc(f)) != EOF && ch != '\n') {}
             if (!strchr(line, '#')) { LOG("【红】帧率表 %s：行超过 %zu 字节且数据段没在其中结束，整行不用（前段：%.40s…）", path, sizeof line - 1, line); bad++; continue; } }
+        // UTF-8 BOM（Windows 记事本存的表，11-21 D-FE44 玩家 mod 目录的 fps.tsv）：行首 EF BB BF 去掉再解析。原先首行「BOM # 注释」去掉注释后只剩 BOM，
+        //   报「不认的行」红；首行若是「BOM build …」，build 认不出、整表按对不上不用
+        if ((unsigned char)line[0] == 0xEF && (unsigned char)line[1] == 0xBB && (unsigned char)line[2] == 0xBF) memmove(line, line + 3, strlen(line + 3) + 1);
         char *h = strchr(line, '#'); if (h) *h = 0;
         char a[16], b[48], c[32], t[8], v[32], x[96] = "", cmod[48], coff[32], ct[8], cop[4], cval[32]; int cn = 0;
         char *iff = strstr(line, " if ");

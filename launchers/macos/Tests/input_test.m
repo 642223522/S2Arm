@@ -1,3 +1,4 @@
+#include <stdarg.h>
 // Tests the actual Mac input adapter, including atomic cross-thread snapshots.
 #include <pthread.h>
 #include <stdio.h>
@@ -7,8 +8,10 @@
 #include <sys/un.h>
 #include <unistd.h>
 #include "../../../macos/ns2_relay.h"
+#include "../../../macos/xbox_gip_relay.h"
 #include "../../../ios/input_config.h"
 #import "../../../macos/front_mac.m"
+#include "../../../macos/imu_burst.h"
 #import "../../../macos/input_guide.m"
 #import "../../../macos/controller_view.m"
 
@@ -17,6 +20,18 @@ void s2a_host_shutdown(const char *why) { (void)why; if (guide_preview) exit(0);
 void s2a_clock_catchup(void) {}   // 游戏日历补时（runtime/src/os.c，Mac 唤醒通知调）在这里不测
 void s2a_heartbeat_mac(void) {}   // Mac 心跳（macos/heartbeat_mac.c，前端 10 秒定时器调）在这里不测
 int s2a_playtime_flush(void) { return 0; }   // 游玩时间落盘（runtime/src/playtime.c，同一个 10 秒定时器调）在这里不测
+int s2a_caps_fps_fast(void) { return 0; }   // runtime/src/caps.c：同局 A/B 红的款压回时不给再试（11-24 #2201），这里不测
+void s2a_ql_retry60(void) {}   // 档位梯子「再试 60 帧」（runtime/src/qladder_host.c，前端横幅按钮调）在这里不测
+// 即时快照（runtime/src/snapsw.c、snapshot.c）在这里不测：开关关着，菜单不出这两项
+int s2a_snap_logging(void) { return 0; }
+int s2a_snap_dir_for(const char *gid, char *out, size_t n) { (void)gid; (void)out; (void)n; return -1; }
+int s2a_snap_exists(const char *dir) { (void)dir; return 0; }
+int s2a_snap_fits_inplace(const char *dir) { (void)dir; return -1; }   // 快照落点预检（runtime/src/snapshot.c）：本单测不恢复
+int s2a_snap_relaunch(const char *dir, int rollback) { (void)dir; (void)rollback; return -1; }   // Mac 原地重开（runtime/src/snaprelaunch.c）
+int s2a_snap_save_changed(const char *dir) { (void)dir; return -1; }
+int s2a_snap_request_save(const char *dir) { (void)dir; return -1; }
+void s2a_snap_on_done(void (*cb)(int, const char *)) { (void)cb; }
+int s2a_host_restart(void (*done)(int, const char *, void *), void *ctx) { (void)done; (void)ctx; return -1; }   // 进程内重启（runtime/src/session.c）在这里不测
 uint64_t now_ns(void) { return clock_gettime_nsec_np(CLOCK_UPTIME_RAW); }   // 宿主单调时钟（runtime/src/os.c）：前台焦点计时用（#965 起 front_mac.m 引用），给真时钟
 // 生命周期桩（接口 v2.15，缺口扫描族 1）：记下前端报的焦点 / 睡眠、客机冻结与时钟原因 3 的开关次数
 static int stub_focus = 1, stub_suspend, stub_sleep, stub_freeze_on, stub_freeze_off, stub_clock3_on, stub_clock3_off;
@@ -37,6 +52,9 @@ static int fit_w, fit_h;
 int s2a_screen_fit(int pw, int ph) { fit_w = pw; fit_h = ph; return 0; }   // 宽屏跟窗口比例（runtime/src/widen.c）：只记前端交出的像素尺寸
 int s2a_hud_on(void) { return 0; }   // 开发浮层（runtime/src/hud.c）在这里不测，关着
 int s2a_hud_text(char *out, size_t n, const s2a_hud_host *h) { (void)h; return snprintf(out, n, "%s", ""); }
+int s2a_hud_brief(char *out, size_t n) { return snprintf(out, n, "%s", ""); }   // 帧率浮层（macos/perf_brief.m，#2207）在这里不测
+int s2a_hud_brief_fps(char *out, size_t n) { return snprintf(out, n, "%s", ""); }
+void s2a_hud_brief_set(int on) { (void)on; }
 // 存档原子提交判定（runtime/src/direct_prompt.c s2a_save_atomic_poll，判定本身由 runtime/tests/t_direct_prompt.c 测）：这里只给读数，测 Mac 横幅接线
 static int fake_atomic;
 int s2a_save_atomic_poll(void) { int bits = fake_atomic; fake_atomic = 0; return bits; }
@@ -51,6 +69,9 @@ int s2a_widen_full(void) { return fake_widen_full; }
 int s2a_screen_w(void) { return fake_screen_w; }
 int s2a_screen_h(void) { return fake_screen_h; }
 static void expect(int ok, const char *what) { if (!ok) { fprintf(stderr, "FAIL: %s\n", what); exit(1); } }
+static uint64_t g_fake_mouse_ns;   // #2131 鼠标时间窗的假时钟
+static uint64_t fake_mouse_now(void) { return g_fake_mouse_ns; }
+static void expectf(int ok, const char *fmt, ...) { if (!ok) { va_list a; va_start(a, fmt); fputs("FAIL: ", stderr); vfprintf(stderr, fmt, a); fputc('\n', stderr); va_end(a); exit(1); } }
 static NSEvent *key_event(NSEventType type, unsigned short code, BOOL repeat) {
     return [NSEvent keyEventWithType:type location:NSZeroPoint modifierFlags:0 timestamp:0
         windowNumber:0 context:nil characters:@"" charactersIgnoringModifiers:@"" isARepeat:repeat keyCode:code];
@@ -518,6 +539,8 @@ static void test_capture_key_order(void) {
 static FakeController *fake_controller(FakePad *pad) { FakeController *c = [FakeController new]; c.extendedGamepad = pad; pad.controller = c; return c; }
 @interface FakeProSensor : NSObject
 @property BOOL sensorsRequireManualActivation, hasRotationRate, hasGravityAndUserAcceleration, sensorsActive;
+@property GCRotationRate rotationRate;
+@property GCAcceleration gravity, userAcceleration, acceleration;
 @end
 @implementation FakeProSensor
 @end
@@ -527,13 +550,13 @@ static void test_pro_sensor_control(void) {
     atomic_store(&g_motion_wanted, 1);
     sample_motion((GCExtendedGamepad *)pad);
     expect(m.sensorsActive, "Pro public sensor control is requested even without separated gravity / usable calibrated samples");
-    expect(!g_motion_known, "uncalibrated Pro data still uses the existing raw sample path, not fabricated GC values");
+    expect(g_motion_known == 1, "rotation without separated gravity gives an acceleration-only sample (DualSense), ranked below the Pro raw HID path in s2a_pad_read_motion");
     atomic_store(&g_motion_wanted, 0); sample_motion(nil);
     expect(!m.sensorsActive, "motion disable releases public Pro sensor request");
     sample_motion(nil);
     GCController *old = pad_owner[1]; pad_owner[1] = (GCController *)c;
     atomic_store(&g_motion_wanted, 1); sample_slot_motion(NULL);
-    expect(m.sensorsActive && !g_slot_motion_known[1], "P2 sensor control also stays independent of calibrated sample availability");
+    expect(m.sensorsActive && g_slot_motion_known[1] == 1, "P2 sensor control stays independent of calibrated samples; an acceleration-only sample still reaches P2 (DualSense)");
     atomic_store(&g_motion_wanted, 0); sample_slot_motion(NULL);
     expect(!m.sensorsActive, "P2 motion disable releases its public request");
     pad_owner[1] = old;
@@ -604,11 +627,13 @@ static void test_event_input(void) {
     apply_mouse_options(); mouse_captured = YES; focused = YES;
     TestMotion *motion = [TestMotion new]; motion.deltaX = 2;
     S2AMetalView *motionView = [S2AMetalView new];
+    mouse_now = fake_mouse_now; g_fake_mouse_ns = 500000000ull;
     [motionView mouseMoved:(NSEvent *)motion];
     s2a_pad_snapshot moved; read_ex(&moved);
-    expect(moved.axes[2] == 3000, "read_ex applies pending mouse delta once");
-    read_ex(&moved);
-    expect(moved.axes[2] == 0, "read_ex consumes the mouse delta");
+    expectf(moved.axes[2] == 1454, "read_ex applies the mouse window (3000 × 16 / 33 = 1454): %d", moved.axes[2]);
+    g_fake_mouse_ns += 40000000; read_ex(&moved);
+    expect(moved.axes[2] == 0, "read_ex centers once the window has passed");
+    mouse_now = mouse_clock; reset_input();
     mouse_captured = NO;
     config = default_config(); focused = YES; s2a_pad_set_active(0); reset_input();
     puts("Mac input: event-driven snapshot, wait wake, idle-hold persistence and latency recording passed");
@@ -683,6 +708,40 @@ static void test_pad_slots(void) {
     expect(s2a_slot_plan(owners, live, 0, 4, slot_of) == 1, "no pads: back to one slot for keyboard and mouse");
 }
 
+// #1264（D-7VG4 现场）：兜底手柄 a（PowerA，顺序表认不到它）先占槽 0；游戏中途连上 DualSense b 进槽 1；面板把 b 登记成 P1（顺序表 rank 0）。
+//   期望手算：钉住后 b 在槽 0、a 被挤到槽 1；再关掉 a，b 仍在槽 0（单人游戏读玩家 1 就是它）。没登记的手柄不受钉住影响、照旧留原槽
+static void test_pad_slot_pin(void) {
+    int ids[3] = {1, 2, 3};
+    const void *a = &ids[0], *b = &ids[1], *c = &ids[2];
+    const void *owners[4] = {a, b, NULL, NULL};
+    int slot_of[3];
+    const void *ab[2] = {a, b}; int rank_ab[2] = {S2A_PAD_ORDER_UNLISTED, 0};
+    s2a_slot_pin(owners, ab, rank_ab, 2, 4);
+    expect(s2a_slot_plan(owners, ab, 2, 4, slot_of) == 2 && slot_of[1] == 0 && slot_of[0] == 1,
+        "a pad the panel lists as P1 takes slot 0; the unlisted one moves to slot 1");
+    apply_slots(owners, ab, slot_of, 2, 4);
+    const void *only_b[1] = {b}; int rank_b[1] = {0};
+    s2a_slot_pin(owners, only_b, rank_b, 1, 4);
+    expect(s2a_slot_plan(owners, only_b, 1, 4, slot_of) == 1 && slot_of[0] == 0, "turning the old pad off leaves the listed P1 in slot 0");
+    // 没登记的两只（a 槽 1、c 槽 2）+ 登记 P1 的 b 已在槽 0：钉住什么都不动
+    const void *owners2[4] = {b, a, c, NULL};
+    const void *bac[3] = {b, a, c}; int rank_bac[3] = {0, S2A_PAD_ORDER_UNLISTED, S2A_PAD_ORDER_UNLISTED};
+    s2a_slot_pin(owners2, bac, rank_bac, 3, 4);
+    expect(owners2[0] == b && owners2[1] == a && owners2[2] == c && owners2[3] == NULL, "pinning leaves pads already in place and unlisted pads alone");
+    // 登记成 P2（rank 1）、P1 不在：钉在槽 1，不提前到槽 0（同原机：玩家号不跳）
+    const void *owners3[4] = {NULL, NULL, NULL, NULL};
+    const void *only_c[1] = {c}; int rank_c[1] = {1};
+    s2a_slot_pin(owners3, only_c, rank_c, 1, 4);
+    expect(s2a_slot_plan(owners3, only_c, 1, 4, slot_of) == 2 && slot_of[0] == 1, "a listed P2 stays in slot 1 when P1 is absent");
+    // 顺序表槽 0 是 S2A_PAD_ORDER_EMPTY（P1 暂时断开）、槽 1 是 Xbox：Xbox 仍拿 rank 1、不匹配 empty
+    s2a_pad_order sparse = {0};
+    sparse.count = 2;
+    sparse.entry[0].ns2_player = S2A_PAD_ORDER_EMPTY;
+    sparse.entry[1].ns2_player = -1; snprintf(sparse.entry[1].name, sizeof sparse.entry[1].name, "Xbox"); sparse.entry[1].index = 0;
+    expect(s2a_pad_order_rank(&sparse, -1, "Xbox", 0) == 1, "empty slot 0 preserves rank 1 for P2");
+    expect(s2a_pad_order_rank(&sparse, -1, "", 0) == S2A_PAD_ORDER_UNLISTED, "empty slot entry does not match any live controller");
+}
+
 // 只有通用物理描述的手柄（没有扩展手柄档）：按标准键名从 physicalInputProfile 读、回调装在 valueDidChangeHandler 上。
 //   用系统自带的虚拟简易手柄（controllerWithMicroGamepad：只有 A / X / Menu / 方向键）当这种手柄。期望手算：
 //   它的类别是「Siri Remote」，认不出类型按缺省「自动」照字母（pad.c s2a_pad_abxy_order）：系统 A = Switch A，默认配置第 0 位（1）；
@@ -692,7 +751,7 @@ static void test_profile_only_pad(void) {
     GCController *c = [GCController controllerWithMicroGamepad];
     expect(c.extendedGamepad == nil && pad_has_profile_buttons(c), "micro-only controller counts as a profile-only pad");
     install_pad_handler(c);
-    expect(c.physicalInputProfile.valueDidChangeHandler != nil && c.handlerQueue != nil && c.handlerQueue != dispatch_get_main_queue(), "profile handler installed on the dedicated pad queue");
+    expect(c.physicalInputProfile.valueDidChangeHandler != nil && c.handlerQueue == dispatch_get_main_queue(), "profile handler installed on the main queue (#1819)");
     uint32_t buttons = 99; int32_t sticks[4];
     sample_profile_state(c, config, &buttons, sticks);
     expect(buttons == 0, "nothing pressed: no buttons");
@@ -783,6 +842,18 @@ static void test_shared_face_map(void) {
     [@"{\"schema\":2,\"mapping\":228}" writeToFile:file atomically:YES encoding:NSUTF8StringEncoding error:nil];
     pad_face_refresh(YES);
     expect(controller_face_map(c) == 0xe4, "restoring defaults takes effect live without restarting the game");
+    expect(controller_face_map(nil) == 0xe4, "a document without a Nintendo entry keeps Switch pads on their labels");
+    // Player picked the Xbox layout for Switch pads: target A/B/X/Y <- source B/A/Y/X (iOS s2a_pad_abxy_order swap) = 1|0<<2|3<<4|2<<6 = 177.
+    [@"{\"schema\":2,\"mapping\":228,\"nintendo\":177}" writeToFile:file atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    pad_face_refresh(YES);
+    expect(controller_face_map(nil) == 0xb1, "the player's Nintendo choice reaches the Switch channel");
+    expect(controller_face_map(c) == 0xe4, "the Nintendo choice leaves other controllers on the shared map");
+    expect(mapped_face_buttons(nil, 1u << 1, 0) == 1u, "Xbox layout on a Switch pad: bottom B confirms as A");
+    expect(mapped_face_buttons(nil, 1u << 0, 0) == 2u, "Xbox layout on a Switch pad: right A cancels as B");
+    expect(mapped_face_buttons(nil, 1u << 3, 0) == 4u && mapped_face_buttons(nil, 1u << 2, 0) == 8u, "Xbox layout on a Switch pad swaps X and Y");
+    [@"{\"schema\":2,\"mapping\":177,\"nintendo\":0}" writeToFile:file atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    pad_face_refresh(YES);
+    expect(controller_face_map(nil) == 0xe4 && controller_face_map(c) == 0xe4, "an invalid Nintendo entry falls back to platform defaults");
     [NSFileManager.defaultManager removeItemAtPath:file error:nil];
     setenv("S2A_PAD_FACE_FILE", "/nonexistent/s2arm-face.json", 1); pad_face_refresh(YES);
     pad_slot_owner[0] = nil;
@@ -850,13 +921,13 @@ static void test_per_player_config(void) {
 }
 
 
-// 手柄事件回调（A2）：handlerQueue 挂专用串行队列、不再挂主队列（主线程被菜单动画 / 提示条占住时手柄事件不再排队，见 test_pad_fast_path）；
+// 手柄事件回调：handlerQueue 必须是主队列（#1819：真机手柄状态由 GameController 在主线程改写，回调在别的队列读同一份 → Recursive or concurrent mutation 杀进程）；
 //   没占到槽的回调直接跳过（快速路径不碰没排进槽位表的手柄），没有新事件时 120Hz 定时器仍是回退采样，长按不会因为「只发变化」而丢。
 static void test_pad_handler_install(void) {
     FakePad *pad = [FakePad new];
     FakeController *controller = fake_controller(pad);
     install_pad_handler((GCController *)controller);
-    expect(controller.handlerQueue != nil && controller.handlerQueue != dispatch_get_main_queue(), "pad handler runs on a dedicated serial queue, not the main queue");
+    expect(controller.handlerQueue == dispatch_get_main_queue(), "pad handler runs on the main queue, where GameController mutates the device state (#1819)");
     expect(pad.valueChangedHandler != nil, "gamepad valueChangedHandler installed");
     config = default_config(); keys = [NSMutableSet set]; mouse = [NSMutableSet set]; focused = YES;
     read_key_state = key_state; memset(physical_keys, 0, sizeof physical_keys); physical_keys[14] = YES;
@@ -873,14 +944,13 @@ static void test_pad_handler_install(void) {
     expect(s2a_vpad_read(sticks) == 1, "held state persists across the 120Hz fallback and no-op callbacks");
     physical_keys[14] = NO;
     reset_input();
-    puts("Mac pad: handler installs on a dedicated queue and 120Hz fallback keeps held state passed");
+    puts("Mac pad: handler installs on the main queue and 120Hz fallback keeps held state passed");
 }
 
 // 手柄快速路径（延迟管线调研·输入：GCController 权衡解除）。期望手算（缺省映射：手柄 A=东=位 0、B=南=位 1；键盘 Shift=B 位 1；E=A 位 0）：
-//   ① 回调队列离开主队列（改前：主队列，红）；
+//   ① 回调队列 = 主队列（#1819：系统在主线程改写真机手柄状态，回调读它必须同一条线程；A2 曾挂专用队列，红）；
 //   ② 快速路径合成槽 0：键盘快照（位 1）+ 手柄 A（位 0）一起发布 = 3；松手后只剩键盘位（回调读当前整份状态，不是只发变化）；
-//   ③ 主线程忙 300ms 不进 runloop（等效菜单动画 / 提示条占住主线程），事件经 handlerQueue 投递，
-//      后台 s2a_pad_wait 截止 200ms 必须被唤醒（改前：回调排主队列、等主线程空下来才发 → 超时，红）；
+//   ③ 已删（11-22 #1819）：原例「主线程忙时事件经专用队列照样发布」的前提不成立——系统处理真机手柄事件本身排在主线程，主线程忙时回调不会来；
 //   ④ 玩家 2（槽 1）事件只写自己的槽位原子量并唤醒泵（改前：sample_input 采不到不在系统列表里的虚拟手柄 → 槽 1 恒 0，红）；
 //   ⑤ 失焦静音：快速路径发零。
 //   系统虚拟手柄（controllerWithExtendedGamepad）不在 GCController.controllers 里，槽位镜像由测试照 sample_input
@@ -898,10 +968,13 @@ static void test_pad_fast_path(void) {
     s2a_pad_set_active(0); s2a_pad_set_active(1);   // 清上一局留下的源选择
     reset_input();
 
-    // ① 回调队列离开主队列
+    // ① 回调队列 = 主队列（#1819）
     GCController *pad0 = [GCController controllerWithExtendedGamepad];
     install_pad_handler(pad0);
-    expect(pad0.handlerQueue != nil && pad0.handlerQueue != dispatch_get_main_queue(), "pad handler leaves the main queue");
+    expect(pad0.handlerQueue == dispatch_get_main_queue(), "pad handler stays on the main queue (#1819)");
+    { GCController *pp = [GCController controllerWithExtendedGamepad]; pp.handlerQueue = dispatch_queue_create("t.other", DISPATCH_QUEUE_SERIAL);
+      pp.extendedGamepad.valueChangedHandler = nil; install_pad_handler(pp);
+      expect(pp.handlerQueue == dispatch_get_main_queue(), "a handler queue set elsewhere is moved back to the main queue (#1819)"); }
     sample_input();   // 刷新键盘 / 鼠标快照与静音标记（此刻全零）
     slot_fake_pad(0, pad0);
 
@@ -921,27 +994,6 @@ static void test_pad_fast_path(void) {
     [keys removeObject:@56]; modifiers = 0; physical_keys[60] = NO; sample_input(); slot_fake_pad(0, pad0);
     read_ex(&snap);
     expect(snap.buttons == 0, "keyboard release is visible after a sample");
-
-    // ③ 主线程忙 300ms：事件经 handlerQueue 投递，200ms 截止内必须发布（改前排主队列，红）
-    [pad0.extendedGamepad.buttonA setValue:1];
-    read_ex(&snap); uint64_t observed = snap.notification_seq;
-    dispatch_async(pad0.handlerQueue, ^{ pad0.extendedGamepad.valueChangedHandler(pad0.extendedGamepad, pad0.extendedGamepad.buttonA); });
-    __block int woke = -1;
-    dispatch_semaphore_t done = dispatch_semaphore_create(0);
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        woke = s2a_pad_wait(observed, s2a_pad_now_us() + 200000);   // 截止 200ms < 主线程忙 300ms：判「排不排队」，不受机器快慢影响
-        dispatch_semaphore_signal(done);
-    });
-    usleep(20000);   // 让等待线程先进入条件变量；即使没进，序号变化也会让它立即返回
-    uint64_t spin = clock_gettime_nsec_np(CLOCK_UPTIME_RAW) + 300000000ull;
-    while (clock_gettime_nsec_np(CLOCK_UPTIME_RAW) < spin) {}   // 主线程忙转：不进 runloop、不排主队列
-    expect(dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC)) == 0, "pad wait settles");
-    expect(woke == 1, "controller event publishes while the main thread is busy (deadline 200ms < busy 300ms)");
-    run_loop_for(0.05);   // 改前实现：让仍排在主队列的那份回调在断言之后补跑，不泄给后面的用例
-    read_ex(&snap);
-    expect(snap.buttons == 1, "pad bit visible after the queued event");
-    [pad0.extendedGamepad.buttonA setValue:0];
-    pad0.extendedGamepad.valueChangedHandler(pad0.extendedGamepad, pad0.extendedGamepad.buttonA);
 
     // ④ 玩家 2（槽 1）：事件只写自己的槽位原子量并唤醒泵
     GCController *pad1 = [GCController controllerWithExtendedGamepad];
@@ -971,7 +1023,46 @@ static void test_pad_fast_path(void) {
     expect(snap.buttons == 0, "refocus keeps input neutral until the next event");
     [pad0.extendedGamepad.buttonA setValue:0];
     reset_input();
-    puts("Mac pad: dedicated-queue fast path, busy-main publish, player 2 slot and mute passed");
+    puts("Mac pad: main-queue fast path, player 2 slot and mute passed");
+}
+
+// 关了「切到别的窗口时暂停」（S2A_FOCUS_PAUSE=0，#1606 ④）时失焦：手柄照常操作游戏，键盘 / 鼠标清空。期望手算（缺省映射：手柄 A = 位 0；键盘 Shift = B = 位 1）：
+//   ① 缺省（暂停开）失焦：手柄 A 也发零（同 test_pad_fast_path ⑤）；
+//   ② 暂停关失焦：键盘按着 Shift、手柄按 A → 只剩手柄位 = 1（改前：失焦一律静音 = 0，红）；pad.c 仍 active；
+//   ③ 暂停关、回到焦点：键盘位回来 = 3
+static void test_pad_unfocused_when_pause_off(void) {
+    typedef void (*read_ex_fn)(s2a_pad_snapshot *);
+    read_ex_fn read_ex = (read_ex_fn)dlsym(RTLD_DEFAULT, "s2a_vpad_read_ex");
+    config = default_config(); keys = [NSMutableSet set]; mouse = [NSMutableSet set];
+    read_key_state = key_state; memset(physical_keys, 0, sizeof physical_keys);
+    reset_input(); s2a_pad_set_active(0); s2a_pad_set_active(1);
+    GCController *pad0 = [GCController controllerWithExtendedGamepad];
+    install_pad_handler(pad0);
+    s2a_pad_snapshot snap;
+    int saved = g_focus_pause_off;
+    for (int off = 0; off <= 1; off++) {
+        g_focus_pause_off = off;
+        focused = NO; input_mute_refresh(); s2a_pad_set_active(pads_live());
+        [keys addObject:@56]; modifiers = 1; physical_keys[60] = YES;   // 失焦时还按着 Shift（别的 App 里按的也一样）
+        sample_input(); slot_fake_pad(0, pad0);
+        [pad0.extendedGamepad.buttonA setValue:1];
+        pad0.extendedGamepad.valueChangedHandler(pad0.extendedGamepad, pad0.extendedGamepad.buttonA);
+        read_ex(&snap);
+        if (!off) expect(snap.buttons == 0, "pause on (default): unfocused pad is muted");
+        else expect(snap.buttons == 1, "pause off: unfocused pad keeps playing, keyboard cleared (#1606)");
+        if (off) {
+            focused = YES; input_mute_refresh(); s2a_pad_set_active(1); sample_input(); slot_fake_pad(0, pad0);
+            pad0.extendedGamepad.valueChangedHandler(pad0.extendedGamepad, pad0.extendedGamepad.buttonA);
+            read_ex(&snap);
+            expect(snap.buttons == 3, "pause off, focus back: keyboard and pad both count");
+        }
+        [pad0.extendedGamepad.buttonA setValue:0];
+        pad0.extendedGamepad.valueChangedHandler(pad0.extendedGamepad, pad0.extendedGamepad.buttonA);
+        [keys removeObject:@56]; modifiers = 0; physical_keys[60] = NO;
+        focused = YES; input_mute_refresh(); s2a_pad_set_active(1); sample_input(); reset_input();
+    }
+    g_focus_pause_off = saved;
+    puts("Mac pad: pause-off keeps the pad live when unfocused, keyboard cleared passed");
 }
 
 // 延迟读数（--pad-latency-probe 手动跑，不进门禁）：事件投递 → 回调执行 → pad.c 发布的毫秒读数，
@@ -1105,17 +1196,44 @@ static void test_mouse_touch_declared(void) {
     expect(n == 1 && x == 320 && y == 360 && a == 1 && !mouse_captured && s2a_vpad_read(sticks) == 0, "声明配置 + 缺省键位（启动器标准映射）：左键 = 触点 Start (320,360)、不发 Y、不锁鼠标");
     [view mouseUp:left_event(NSEventTypeLeftMouseUp, in, 720)];
     expect(read_touch(&x, &y, &a) == 1 && a == 2, "声明配置 + 缺省键位：抬起 = End");
+    // #1987 维护方定（11-22）：「玩家改没改过」只看左键的绑定和鼠标模式，别的键改了不算（所有游戏的默认改了一个手柄键、某款单独改了个按键都照样让给触屏）
     NSMutableDictionary *changed = [launcher_standard_json() mutableCopy]; NSMutableDictionary *kb = [changed[@"keyboard"] mutableCopy];
     kb[@"A"] = @{@"code": @36, @"modifiers": @0}; changed[@"keyboard"] = kb;   // 玩家把 A 改到回车
     config = changed; reset_input(); while (read_touch(&x, &y, &a)) {}
     [view mouseDown:left_event(NSEventTypeLeftMouseDown, in, 720)];
-    expect(mouse_captured && read_touch(&x, &y, &a) == 0, "声明配置 + 玩家改过键位：按玩家设置（视角模式锁鼠标、不写触点）");
+    n = read_touch(&x, &y, &a);
+    expect(n == 1 && a == 1 && !mouse_captured && s2a_vpad_read(sticks) == 0, "声明配置 + 只改了键盘键（A → 回车）：左键和鼠标模式没动，仍当触屏、不发 Y、不锁鼠标");
+    [view mouseUp:left_event(NSEventTypeLeftMouseUp, in, 720)]; while (read_touch(&x, &y, &a)) {}
+    NSMutableDictionary *pad = [launcher_standard_json() mutableCopy]; NSMutableDictionary *gp = [pad[@"gamepad"] mutableCopy];
+    gp[@"A"] = @"south"; gp[@"B"] = @"east"; pad[@"gamepad"] = gp;   // 所有游戏的默认只换了一组手柄键（A / B 对调）
+    config = pad; reset_input(); while (read_touch(&x, &y, &a)) {}
+    [view mouseDown:left_event(NSEventTypeLeftMouseDown, in, 720)];
+    n = read_touch(&x, &y, &a);
+    expect(n == 1 && a == 1 && !mouse_captured && s2a_vpad_read(sticks) == 0, "声明配置 + 默认只改了手柄键：左键仍当触屏");
+    [view mouseUp:left_event(NSEventTypeLeftMouseUp, in, 720)]; while (read_touch(&x, &y, &a)) {}
+    NSMutableDictionary *rebound = [launcher_standard_json() mutableCopy];
+    rebound[@"mouse"] = @{@"ZR": @0, @"ZL": @1};   // 左键改绑到 ZR（鼠标模式仍是转动视角）
+    config = rebound; reset_input(); while (read_touch(&x, &y, &a)) {}
+    [view mouseDown:left_event(NSEventTypeLeftMouseDown, in, 720)];
+    expect(mouse_captured && read_touch(&x, &y, &a) == 0, "声明配置 + 左键改绑成别的键：不接管（视角模式锁鼠标、不写触点）");
     [view mouseUp:left_event(NSEventTypeLeftMouseUp, in, 720)];
     [view mouseDown:left_event(NSEventTypeLeftMouseDown, in, 720)];
-    expect(read_touch(&x, &y, &a) == 0 && s2a_vpad_read(sticks) == (1u << 3), "声明配置 + 玩家改过键位：锁住后左键照旧发 Y");
+    expect(read_touch(&x, &y, &a) == 0 && s2a_vpad_read(sticks) == (1u << 9), "声明配置 + 左键改绑成 ZR：锁住后左键发 ZR（0x200）");
     [view mouseUp:left_event(NSEventTypeLeftMouseUp, in, 720)]; set_mouse_capture(NO);
+    NSMutableDictionary *off = [launcher_standard_json() mutableCopy];
+    off[@"mouse"] = @{@"ZL": @1}; off[@"mouseOptions"] = @{@"mode": @"off", @"sensitivityX": @1.0, @"sensitivityY": @1.0, @"invertX": @NO, @"invertY": @NO, @"recenter": @YES};
+    config = off; reset_input(); while (read_touch(&x, &y, &a)) {}   // 鼠标模式改成「不起作用」、左键没绑
+    [view mouseDown:left_event(NSEventTypeLeftMouseDown, in, 720)];
+    n = read_touch(&x, &y, &a);
+    expect(n == 1 && a == 1 && !mouse_captured && s2a_vpad_read(sticks) == 0, "声明配置 + 鼠标模式不是转动视角、左键没绑：按规则 ② 接管（当触屏）");
+    [view mouseUp:left_event(NSEventTypeLeftMouseUp, in, 720)]; while (read_touch(&x, &y, &a)) {}
+    NSMutableDictionary *offBound = [off mutableCopy]; offBound[@"mouse"] = @{@"Y": @0, @"ZL": @1};
+    config = offBound; reset_input(); while (read_touch(&x, &y, &a)) {}   // 鼠标模式改了、左键仍是 Y：玩家动过鼠标用法 → 照映射发 Y
+    [view mouseDown:left_event(NSEventTypeLeftMouseDown, in, 720)];
+    expect(read_touch(&x, &y, &a) == 0 && !mouse_captured && s2a_vpad_read(sticks) == (1u << 3), "声明配置 + 鼠标模式改成不起作用、左键仍绑 Y：按玩家设置发 Y、不写触点");
+    [view mouseUp:left_event(NSEventTypeLeftMouseUp, in, 720)];
     atomic_store(&touch_declared, -1); config = default_config(); reset_input(); fake_frame_w = 0;
-    puts("Mac mouse touch declared: declared + default mapping touches without Y/capture; changed mapping and undeclared keep camera/Y passed");
+    puts("Mac mouse touch declared: declared + default left button/mode touches (other keys changed too); rebound left / changed mode follow player; undeclared keeps camera/Y passed");
 }
 static NSDictionary *frozen_original_config(void) {
     return @{@"keyboard": @{@"A": @{@"code": @14}, @"B": @{@"code": @56}, @"X": @{@"code": @49},
@@ -1205,7 +1323,10 @@ static void test_shared_input_config(void) {
     const s2a_input_config *active = s2a_ios_input_config_current();
     CONFIG_EXPECT(active && active->keyboard[0].code == 49 && active->axes[0].source == 3, "iOS published table is the parsed custom mapping");
     CONFIG_EXPECT([[@"{" dataUsingEncoding:NSUTF8StringEncoding] writeToFile:path atomically:YES], "replace own fixture with invalid JSON");
-    CONFIG_EXPECT(s2a_ios_input_config_load() == S2A_INPUT_CONFIG_JSON && !s2a_ios_input_config_current(), "failed iOS startup load cannot expose previous mapping");
+    // 11-17 维护者：读不懂不再拒启——仍回错误码（调用方黄字说明），这局换成默认键位，不沿用上一份映射
+    { s2a_input_config fallback; s2a_input_config_default(&fallback);
+      const s2a_input_config *now = (s2a_ios_input_config_load() == S2A_INPUT_CONFIG_JSON) ? s2a_ios_input_config_current() : NULL;
+      CONFIG_EXPECT(now && !memcmp(now, &fallback, sizeof fallback), "failed iOS startup load falls back to the default mapping, not the previous one"); }
     if (savedDocs) setenv("S2A_DOCS",savedDocs.UTF8String,1); else unsetenv("S2A_DOCS");
     if (savedPath) setenv("S2A_INPUT_CONFIG",savedPath.UTF8String,1); else unsetenv("S2A_INPUT_CONFIG");
     CONFIG_EXPECT([NSFileManager.defaultManager removeItemAtPath:directory error:NULL], "remove only synthetic fixture directory created by this test");
@@ -1226,6 +1347,36 @@ int main(int argc, const char **argv) {
                && fabsf(m.gyro_y - 61.03f) < 1e-3f && fabsf(m.gyro_x) < 1e-6f, "HID pad 0x30 report IMU (last sample) maps like the Pro");
         expect(!s2a_pro_imu(r, 48, &m) && !s2a_pro_imu((const uint8_t[64]){0x21}, 64, &m), "HID pad IMU needs a whole 0x30 report");
     }
+    // 补满采样（#2146，macos/imu_burst.h）：一包 3 组 IMU，交给游戏的条数 × 5 ms 必须等于真实流逝、时间戳严格单调。期望全按包间隔手算：
+    //   15 ms 一包 → 每包 3 条；8 ms 一包 11 包（跨 80 ms）→ 首包 3 + 80/5 = 19 条（照单全收会是 33 条、幅度 ×1.7）；
+    //   1 ms 后扎堆的包 → 0 条，15 ms 处的下一包补满 3 条；断流 1 秒 → 只补 3 条不追帐；取走时比「现在」早 40 ms 以上的丢掉。g[i].gyro_x = 组号作标记
+    {   s2a_imu_burst b = {0}; s2a_pad_motion g[3] = {{.gyro_x = 0}, {.gyro_x = 1}, {.gyro_x = 2}}, out[S2A_IMU_BURST_CAP];
+        const uint64_t t0 = 1000000;
+        expect(s2a_imu_burst_push(&b, g, t0) == 3 && s2a_imu_burst_push(&b, g, t0 + 15000) == 3, "IMU burst: 15 ms packets give 3 samples each");
+        int n = s2a_imu_burst_drain(&b, out, S2A_IMU_BURST_CAP, t0 + 15000), mono = n == 6;
+        for (int i = 0; i < n; i++) mono = mono && out[i].host_timestamp_us == t0 - 10000 + 5000ull * (uint64_t)i;
+        expect(mono, "IMU burst: 15 ms packets are 5 ms apart, newest = receive time");
+        s2a_imu_burst_reset(&b); int total = 0; uint64_t last = 0; mono = 1;
+        for (int p = 0; p <= 10; p++) {
+            total += s2a_imu_burst_push(&b, g, t0 + 8000ull * (uint64_t)p);
+            n = s2a_imu_burst_drain(&b, out, S2A_IMU_BURST_CAP, t0 + 8000ull * (uint64_t)p);
+            for (int i = 0; i < n; i++) { mono = mono && (!last || out[i].host_timestamp_us == last + 5000); last = out[i].host_timestamp_us; }
+        }
+        expect(total == 19 && mono && last == t0 + 80000, "IMU burst: 8 ms packets give elapsed / 5 ms samples, strictly 5 ms apart");
+        s2a_imu_burst_reset(&b);
+        int k0 = s2a_imu_burst_push(&b, g, t0), k1 = s2a_imu_burst_push(&b, g, t0 + 1000), k2 = s2a_imu_burst_push(&b, g, t0 + 15000);
+        s2a_imu_burst_drain(&b, out, S2A_IMU_BURST_CAP, t0 + 15000);
+        int k3 = s2a_imu_burst_push(&b, g, t0 + 25000);
+        n = s2a_imu_burst_drain(&b, out, S2A_IMU_BURST_CAP, t0 + 25000);
+        expect(k0 == 3 && k1 == 0 && k2 == 3 && k3 == 2 && n == 2 && out[0].gyro_x == 1 && out[1].gyro_x == 2 &&
+               out[0].host_timestamp_us == t0 + 20000 && out[1].host_timestamp_us == t0 + 25000, "IMU burst: bunched packet waits, partial packet keeps the newest groups");
+        expect(s2a_imu_burst_push(&b, g, t0 + 1025000) == 3 && s2a_imu_burst_drain(&b, out, S2A_IMU_BURST_CAP, t0 + 1025000) == 3 &&
+               out[0].host_timestamp_us == t0 + 1015000, "IMU burst: after a 1 s gap only the packet's own 15 ms is given");
+        s2a_imu_burst_reset(&b); s2a_imu_burst_push(&b, g, t0); s2a_imu_burst_push(&b, g, t0 + 15000);
+        expect(s2a_imu_burst_drain(&b, out, 2, t0 + 15000) == 2 && b.len == 4, "IMU burst: drain stops at max");
+        expect(s2a_imu_burst_drain(&b, out, S2A_IMU_BURST_CAP, t0 + 15000 + 37000) == 1 && out[0].host_timestamp_us == t0 + 15000 && b.len == 0,
+               "IMU burst: samples older than 40 ms are dropped, not replayed");
+    }
     // 兜底手柄（macos/hid_pad.m，#934）：Switch 简易 HID 键号 1 = B（南）、2 = A（东）、3 = Y（西）、4 = X（北）、9 = −、10 = +；13 Home 不进键位
     expect(s2a_hid_pad_switch_button_bit(1) == (1u << 1) && s2a_hid_pad_switch_button_bit(2) == (1u << 0) &&
            s2a_hid_pad_switch_button_bit(3) == (1u << 3) && s2a_hid_pad_switch_button_bit(4) == (1u << 2), "HID pad face buttons follow Switch labels");
@@ -1235,11 +1386,26 @@ int main(int argc, const char **argv) {
     expect(s2a_hid_pad_hat_bits(0, 0, 7) == (1u << 13) && s2a_hid_pad_hat_bits(3, 0, 7) == ((1u << 15) | (1u << 14)) &&
            s2a_hid_pad_hat_bits(8, 0, 7) == 0 && s2a_hid_pad_hat_bits(1, 1, 8) == (1u << 13), "HID pad hat switch to d-pad bits");
     // 轴：0..65535 中点约 0；Y 反向（HID 向下为正）
-    // 接不接（#934 11-15）：名字带 Pro Controller 就接，任天堂原厂 0x057e 也接（macOS 27 上原厂一代 Pro 手柄系统认不出）；别的手柄名不接
-    expect(s2a_hid_pad_wants("Pro Controller", 0x057e) && s2a_hid_pad_wants("PowerA Wireless Pro Controller", 0) &&
-           !s2a_hid_pad_wants("Xbox Wireless Controller", 0x045e) && !s2a_hid_pad_wants(NULL, 0), "HID pad fallback takes Pro Controllers, Nintendo's own too");
+    // 走不走 Switch Pro 协议那一支（#934 11-15）：名字带 Pro Controller 就走，任天堂原厂 0x057e 也走（macOS 27 上原厂一代 Pro 手柄系统认不出）；
+    //   别的手柄名走通用那一支（hid_generic.h，runtime/tests/t_hid_generic.c）；原厂一代 Pro 系统没列出时照旧占位、不等
+    expect(s2a_hidg_is_pro("Pro Controller") && s2a_hidg_is_pro("PowerA Wireless Pro Controller") &&
+           !s2a_hidg_is_pro("Xbox Wireless Controller") && !s2a_hidg_is_pro(NULL), "HID pad Pro protocol branch by name");
+    expect(s2a_hidg_route(1, 0x057e, 1, 0, 0) == S2A_HIDG_TAKE, "HID pad fallback takes Nintendo's own Pro Controller at once");
     expect(s2a_hid_pad_axis(0, 0, 65535, 0) == -32767 && s2a_hid_pad_axis(65535, 0, 65535, 0) == 32767 &&
            s2a_hid_pad_axis(0, 0, 65535, 1) == 32767 && abs(s2a_hid_pad_axis(32768, 0, 65535, 0)) <= 1, "HID pad axis normalisation");
+    // 兜底手柄六轴跟启动设置「体感」走（#1383：关了体感，GameController 不认的 Pro 仍把陀螺仪交给游戏）。期望手写
+    expect(s2a_hid_pad_motion_ok(1, 1000000, 900000) && !s2a_hid_pad_motion_ok(0, 1000000, 900000),
+           "HID pad motion passes only while motion is enabled");
+    expect(!s2a_hid_pad_motion_ok(1, 1000000, 0) && !s2a_hid_pad_motion_ok(1, 1000000, 800000) && s2a_hid_pad_motion_ok(1, 1000000, 800001),
+           "HID pad motion needs a sample younger than 200 ms");
+    setenv("S2A_MOTION", "0", 1);
+    s2a_pad_set_motion_enabled(1);   // 游戏要六轴，但启动设置关了体感
+    expect(!s2a_mac_hid_pad_motion_enabled(), "motion off in launch settings also turns off the HID fallback pad's motion");
+    unsetenv("S2A_MOTION");
+    s2a_pad_set_motion_enabled(1);
+    expect(s2a_mac_hid_pad_motion_enabled(), "HID fallback pad motion is on again when the setting allows it");
+    s2a_pad_set_motion_enabled(0);
+    expect(!s2a_mac_hid_pad_motion_enabled(), "game stops asking for motion: HID fallback pad motion off");
     {   // Switch Pro 协议（#934 11-15：PowerA 简易模式量程不对、摇杆慢五六倍；改发子命令切 0x30 完整报告）。期望全部手算：
         //   摇杆：中心 2048、行程 ±1600 → 3648 满、448 满负、2848 半程（800 / 1600 × 32767 = 16383.5 → 16383）
         expect(s2a_pro_axis(2048, 2048, 1600, 1600) == 0 && s2a_pro_axis(3648, 2048, 1600, 1600) == 32767 && s2a_pro_axis(448, 2048, 1600, 1600) == -32767 &&
@@ -1248,10 +1414,30 @@ int main(int argc, const char **argv) {
         //   右 = 中心 (0x800, 0x7E0)、下行程 (0x600, 0x610)、上行程 (0x620, 0x630)
         const uint8_t cal[18] = {0xA0, 0x05, 0x5B, 0xF0, 0x07, 0x81, 0xC0, 0x05, 0x5D, 0x00, 0x08, 0x7E, 0x00, 0x06, 0x61, 0x20, 0x06, 0x63};
         s2a_pro_cal l, r; int ok = s2a_pro_cal_parse(cal, &l, &r);
-        expect(ok && l.cx == 0x7F0 && l.cy == 0x810 && l.xmax == 0x5A0 && l.ymax == 0x5B0 && l.xmin == 0x5C0 && l.ymin == 0x5D0 &&
+        expect(ok && l.calibrated && r.calibrated && l.cx == 0x7F0 && l.cy == 0x810 && l.xmax == 0x5A0 && l.ymax == 0x5B0 && l.xmin == 0x5C0 && l.ymin == 0x5D0 &&
                r.cx == 0x800 && r.cy == 0x7E0 && r.xmax == 0x620 && r.ymax == 0x630 && r.xmin == 0x600 && r.ymin == 0x610, "Pro factory stick calibration (left / right field orders differ)");
         uint8_t blank[18]; memset(blank, 0xFF, sizeof blank); s2a_pro_cal keep; s2a_pro_cal_default(&keep);
-        expect(!s2a_pro_cal_parse(blank, &keep, &keep) && keep.cx == 2048, "Pro calibration left unwritten keeps the default");
+        expect(!s2a_pro_cal_parse(blank, &keep, &keep) && keep.cx == 2048 && !keep.calibrated, "Pro calibration left unwritten keeps the default");
+        uint8_t bad_cal[18]; memcpy(bad_cal, cal, sizeof bad_cal); bad_cal[3] = 0x00; bad_cal[4] = 0x01;   // 左 X 中心改成 0x100，超出合理范围
+        s2a_pro_cal bad_left, bad_right; s2a_pro_cal_default(&bad_left); s2a_pro_cal_default(&bad_right);
+        expect(!s2a_pro_cal_parse(bad_cal, &bad_left, &bad_right) && !bad_left.calibrated && bad_left.cx == 2048,
+               "Pro unreasonable factory calibration falls back to growing defaults");
+        // 先来一帧 +1800 尖峰（0x7F0 + 0x708 = 0xDF8），再推到出厂满行程 +1440（0xD90）。
+        // 改后：尖峰截到 +32767、行程仍 0x5A0；随后满行程也是 +32767。改前：尖峰把行程撑到 1800，满行程只有 1440/1800×32767 = 26213。
+        const uint8_t spike_rep[12] = {0x30, 0, 0, 0, 0, 0, 0xF8, 0x0D, 0x81, 0x00, 0xE8, 0x7E};
+        const uint8_t full_rep[12] = {0x30, 0, 0, 0, 0, 0, 0x90, 0x0D, 0x81, 0x00, 0xE8, 0x7E};
+        uint32_t factory_bt = 0; int16_t factory_ax[4] = {0};
+        expect(s2a_pro_parse(spike_rep, sizeof spike_rep, &l, &r, &factory_bt, factory_ax) == 1 &&
+               factory_ax[0] == 32767 && l.xmax == 0x5A0 && l.xmin == 0x5C0,
+               "Pro factory X calibration is fixed and never grows from a spike");
+        expect(s2a_pro_parse(full_rep, sizeof full_rep, &l, &r, &factory_bt, factory_ax) == 1 &&
+               factory_ax[0] == 32767 && l.xmax == 0x5A0,
+               "Pro factory X full travel stays full after an earlier spike");
+        // cx != cy：左 Y 中心 0x810 + 半行程 0x2D8 = 0xAE8，正确应为 16383；误用 X 中心 / 行程会得到约 23093。
+        const uint8_t y_half_rep[12] = {0x30, 0, 0, 0, 0, 0, 0xF0, 0x8F, 0xAE, 0x00, 0xE8, 0x7E};
+        expect(s2a_pro_parse(y_half_rep, sizeof y_half_rep, &l, &r, &factory_bt, factory_ax) == 1 &&
+               factory_ax[1] == 16383 && l.ymax == 0x5B0 && l.ymin == 0x5D0,
+               "Pro factory Y calibration uses Y center and travel when cx differs from cy");
         //   0x30 报告：A + ZR（字节 3 = 0x88）、+（字节 4 = 0x02）、上 + L（字节 5 = 0x42）；左摇杆 (3648, 2048) = 40 0E 80，右摇杆 (448, 3648) = C0 01 E4
         const uint8_t rep[12] = {0x30, 0, 0, 0x88, 0x02, 0x42, 0x40, 0x0E, 0x80, 0xC0, 0x01, 0xE4};
         s2a_pro_cal d; s2a_pro_cal_default(&d); uint32_t bt = 0; int16_t ax[4] = {0};
@@ -1259,7 +1445,134 @@ int main(int argc, const char **argv) {
                ax[0] == 32767 && ax[1] == 0 && ax[2] == -32767 && ax[3] == 32767, "Pro 0x30 report: buttons and sticks");
         uint8_t simple[12]; memcpy(simple, rep, sizeof simple); simple[0] = 0x3F;
         expect(s2a_pro_parse(simple, sizeof simple, &d, &d, &bt, ax) == 0, "Pro parser leaves the simple HID report (0x3F) to the element path");
+        //   读不到出厂校准（#1264 PowerA）：缺省行程 1003、随读数放大。期望手算：+500 → 500 / 1003 × 32767 = 16334.6 → 16334；
+        //   推到 +1200（超过 1003）→ 行程放大到 1200、满量程 32767；之后 +600 → 600 / 1200 × 32767 = 16383.5 → 16383；
+        //   负向没动过：-700 → -700 / 1003 × 32767 = -22868.3 → -22868（行程两向分开记）
+        s2a_pro_cal g; s2a_pro_cal_default(&g);
+        int16_t g1 = s2a_pro_axis_grow(2548, g.cx, &g.xmax, &g.xmin), g2 = s2a_pro_axis_grow(3248, g.cx, &g.xmax, &g.xmin);
+        int16_t g3 = s2a_pro_axis_grow(2648, g.cx, &g.xmax, &g.xmin), g4 = s2a_pro_axis_grow(1348, g.cx, &g.xmax, &g.xmin);
+        expect(g1 == 16334 && g2 == 32767 && g.xmax == 1200 && g3 == 16383 && g4 == -22868 && g.xmin == 1003,
+               "Pro stick without factory calibration: range starts at 1003 and grows to the farthest reading");
         expect(s2a_pro_player_lights(0) == 0x1 && s2a_pro_player_lights(1) == 0x3 && s2a_pro_player_lights(3) == 0xF, "Pro player lights: first n lit for player n");
+        // Xbox 有线手柄 GIP 协议纯函数验证（#1406）
+        expect(s2a_is_xbox_gip(0x045E, 0x02D1) == 1, "Xbox GIP: 0x045E:0x02D1 (Xbox One)");
+        expect(s2a_is_xbox_gip(0x045E, 0x0B12) == 1, "Xbox GIP: 0x045E:0x0B12 (Xbox Series)");
+        expect(s2a_is_xbox_gip(0x045E, 0x028E) == 0, "Xbox GIP: 0x045E:0x028E (Xbox 360 XUSB, 非 GIP) 返回 0");
+        expect(s2a_usb_has_hid_child(0) == 0, "USB has HID child: 空句柄返回 0");
+        expect(s2a_is_xbox_gip(0x045E, 0x9999) == 0, "Xbox GIP: 非 Xbox 手柄 PID 返回 0");
+        expect(s2a_is_xbox_gip(0x054C, 0x0CE6) == 0, "Xbox GIP: 非微软 VID 返回 0");
+
+        uint8_t ack_pkt[13];
+        const uint8_t req_ack[4] = {0x02, 0x10, 0x05, 0x01};
+        expect(s2a_gip_ack(req_ack, sizeof req_ack, ack_pkt) == 13 &&
+               ack_pkt[0] == 0x01 && ack_pkt[1] == 0x20 && ack_pkt[2] == 0x05 && ack_pkt[5] == 0x02,
+               "Xbox GIP ACK: 置有 ACK 标志时正确生成 13 字节应答包");
+        const uint8_t no_ack[4] = {0x20, 0x00, 0x05, 0x01};
+        expect(s2a_gip_ack(no_ack, sizeof no_ack, ack_pkt) == 0, "Xbox GIP ACK: 无 ACK 标志返回 0");
+
+        const uint8_t gip_rep[18] = {
+            0x20, 0x00, 0x01, 0x0E,
+            0x14, 0x10,             // buttons: Xbox A (0x0010), Menu (+, 0x0004), LB (0x1000)
+            0x00, 0x01,             // LT: 256 (> 200 -> ZL)
+            0x00, 0x00,             // RT: 0
+            0x00, 0x40,             // lx: 16384
+            0x00, 0xC0,             // ly: -16384
+            0x00, 0x00,             // rx: 0
+            0x00, 0x00              // ry: 0
+        };
+        uint32_t gip_bt = 0; int16_t gip_ax[4] = {0};
+        expect(s2a_gip_parse(gip_rep, sizeof gip_rep, &gip_bt, gip_ax) == 1, "Xbox GIP parse: valid 0x20 report");
+        expect(gip_bt == ((1u << 0) | (1u << 10) | (1u << 6) | (1u << 8)), "Xbox GIP parse buttons: A, +, L, ZL");
+        expect(gip_ax[0] == 16384 && gip_ax[1] == -16384 && gip_ax[2] == 0 && gip_ax[3] == 0, "Xbox GIP parse axes: lx, ly, rx, ry");
+        uint8_t invalid_gip[18]; memcpy(invalid_gip, gip_rep, sizeof invalid_gip); invalid_gip[0] = 0x07;
+        expect(s2a_gip_parse(invalid_gip, sizeof invalid_gip, &gip_bt, gip_ax) == 0, "Xbox GIP parse: non-0x20 report returns 0");
+
+        // Xbox GIP 启动器中继协议与宿主接收端验证（不碰物理 USB）
+        s2a_mac_hid_pad_clear_xbox_relay();
+        s2a_xbox_gip_relay_packet rp;
+        memset(&rp, 0, sizeof rp);
+        rp.magic = S2A_XBOX_GIP_RELAY_MAGIC;
+        rp.version = S2A_XBOX_GIP_RELAY_VERSION;
+        rp.flags = S2A_XBOX_GIP_FLAG_CONNECTED;
+        rp.slot = 0;
+        rp.vid = 0x045E;
+        rp.pid = 0x02D1;
+        strlcpy(rp.name, "Xbox Relay Test", sizeof rp.name);
+        expect(s2a_xbox_gip_relay_packet_valid(&rp) == 1, "Xbox GIP relay: valid packet");
+        rp.magic = 0;
+        expect(s2a_xbox_gip_relay_packet_valid(&rp) == 0 && s2a_mac_hid_pad_apply_xbox_relay(&rp, sizeof rp) == 0, "Xbox GIP relay: bad magic rejected");
+        rp.magic = S2A_XBOX_GIP_RELAY_MAGIC;
+        rp.slot = S2A_XBOX_GIP_RELAY_MAX;
+        expect(s2a_xbox_gip_relay_packet_valid(&rp) == 0 && s2a_mac_hid_pad_apply_xbox_relay(&rp, sizeof rp) == 0, "Xbox GIP relay: out-of-range slot rejected");
+        rp.slot = 0;
+
+        // 刚连上未按键（buttons == 0）保持 joined=0，不占玩家位
+        expect(s2a_mac_hid_pad_apply_xbox_relay(&rp, sizeof rp) == 1, "Xbox GIP relay: apply idle connected packet");
+        s2a_hid_pad hp_out[S2A_HID_PAD_MAX];
+        int hp_n = s2a_mac_hid_pad_read(hp_out);
+        int found_relay = 0;
+        for (int i = 0; i < hp_n; i++) if (!strcmp(hp_out[i].name, "Xbox Relay Test")) found_relay = 1;
+        expect(!found_relay, "Xbox GIP relay: idle controller does not join before first button press");
+
+        // 按下 A 键并推摇杆 → 立即加入玩家位并读到按键 / 摇杆
+        rp.buttons = (1u << 0) | (1u << 6);
+        rp.ax[0] = 12345; rp.ax[1] = -23456; rp.ax[2] = 1000; rp.ax[3] = -1000;
+        expect(s2a_mac_hid_pad_apply_xbox_relay(&rp, sizeof rp) == 1, "Xbox GIP relay: apply active button packet");
+        hp_n = s2a_mac_hid_pad_read(hp_out);
+        found_relay = 0;
+        for (int i = 0; i < hp_n; i++) {
+            if (!strcmp(hp_out[i].name, "Xbox Relay Test")) {
+                found_relay = 1;
+                expect(hp_out[i].buttons == ((1u << 0) | (1u << 6)) && hp_out[i].lx == 12345 && hp_out[i].ly == -23456 && hp_out[i].vid == 0x045E,
+                       "Xbox GIP relay: read returns relayed buttons, sticks and vid");
+            }
+        }
+        expect(found_relay == 1, "Xbox GIP relay: joined controller listed in hid_pad_read");
+
+        // 模拟两局游戏依次通过 socketpair 读取并在断开时自动清槽
+        s2a_mac_hid_pad_clear_xbox_relay();
+        for (int session = 0; session < 2; session++) {
+            int sp[2] = {-1, -1};
+            expect(socketpair(AF_UNIX, SOCK_STREAM, 0, sp) == 0, "Xbox GIP relay: socketpair");
+            rp.flags = S2A_XBOX_GIP_FLAG_CONNECTED;
+            rp.buttons = (session == 0) ? (1u << 0) : (1u << 1);
+            rp.ax[0] = (int16_t)(session == 0 ? 5000 : -5000);
+            expect(s2a_xbox_gip_write_all(sp[0], &rp, sizeof rp) == 0, "Xbox GIP relay: write packet to game fd");
+            close(sp[0]);
+            expect(s2a_mac_hid_pad_read_xbox_relay_fd(sp[1]) == 0, "Xbox GIP relay: read_fd drains and clears on EOF");
+            close(sp[1]);
+            hp_n = s2a_mac_hid_pad_read(hp_out);
+            found_relay = 0;
+            for (int i = 0; i < hp_n; i++) if (!strcmp(hp_out[i].name, "Xbox Relay Test")) found_relay = 1;
+            expect(!found_relay, "Xbox GIP relay: EOF clears relay slot cleanly");
+        }
+
+        // Xbox GIP 异常自愈与重唤醒纯函数验证（重通告 0x02、递增 seq、IO 错误分类、空闲保活节流）
+        const uint8_t ann_pkt[4] = {0x02, 0x20, 0x01, 0x1c};
+        expect(s2a_xbox_gip_is_announce(ann_pkt, sizeof ann_pkt) == 1, "Xbox GIP: 0x02 packet recognized as announce");
+        expect(s2a_xbox_gip_is_announce(gip_rep, sizeof gip_rep) == 0, "Xbox GIP: 0x20 input report is not announce");
+        expect(s2a_xbox_gip_is_announce(ann_pkt, 3) == 0, "Xbox GIP: truncated 0x02 packet rejected");
+
+        uint8_t seq = 254;
+        expect(s2a_xbox_gip_next_seq(&seq) == 255 && seq == 255, "Xbox GIP seq: 254 -> 255");
+        expect(s2a_xbox_gip_next_seq(&seq) == 1 && seq == 1, "Xbox GIP seq: 255 wraps to 1 (skips 0)");
+        uint8_t pwr[5] = {0}, wak[5] = {0};
+        s2a_xbox_gip_build_power(7, pwr);
+        s2a_xbox_gip_build_wake(8, wak);
+        expect(pwr[0] == 0x05 && pwr[1] == 0x20 && pwr[2] == 7 && pwr[3] == 0x01 && pwr[4] == 0x00, "Xbox GIP build_power packet");
+        expect(wak[0] == 0x05 && wak[1] == 0x20 && wak[2] == 8 && wak[3] == 0x0f && wak[4] == 0x06, "Xbox GIP build_wake packet");
+
+        uint32_t rec_errs = 0;
+        expect(s2a_xbox_gip_classify_io_error(0xe000404fu, &rec_errs, 2) == S2A_XBOX_GIP_IO_RECOVER && rec_errs == 1, "Xbox GIP IO: 1st pipe stall recoverable");
+        expect(s2a_xbox_gip_classify_io_error(0xe00002edu, &rec_errs, 2) == S2A_XBOX_GIP_IO_RECOVER && rec_errs == 2, "Xbox GIP IO: 2nd overrun recoverable");
+        expect(s2a_xbox_gip_classify_io_error(0xe0004051u, &rec_errs, 2) == S2A_XBOX_GIP_IO_FATAL && rec_errs == 3, "Xbox GIP IO: exceeding max_recoverable turns fatal");
+        expect(s2a_xbox_gip_classify_io_error(0, &rec_errs, 2) == S2A_XBOX_GIP_IO_OK && rec_errs == 0, "Xbox GIP IO: success resets recoverable error count");
+        expect(s2a_xbox_gip_classify_io_error(0xe00002c0u, &rec_errs, 2) == S2A_XBOX_GIP_IO_FATAL, "Xbox GIP IO: kIOReturnNoDevice is immediately fatal");
+
+        expect(s2a_xbox_gip_idle_should_rewake(5000, 1000, 1000, 10000, 10000) == 0, "Xbox GIP idle: below threshold does not rewake");
+        expect(s2a_xbox_gip_idle_should_rewake(11000, 1000, 0, 10000, 10000) == 1, "Xbox GIP idle: past threshold triggers rewake");
+        expect(s2a_xbox_gip_idle_should_rewake(15000, 1000, 11000, 10000, 10000) == 0, "Xbox GIP idle: throttled within rewake_interval");
+        expect(s2a_xbox_gip_idle_should_rewake(21000, 1000, 11000, 10000, 10000) == 1, "Xbox GIP idle: triggers again after rewake_interval");
     }
     char relayPath[96];
     snprintf(relayPath, sizeof relayPath, "/tmp/s2arm-motion-%d.sock", getpid());
@@ -1474,6 +1787,7 @@ int main(int argc, const char **argv) {
         test_active_pad();
         test_pro_sensor_control();
         test_pad_slots();
+    test_pad_slot_pin();
         // 同一个真实前端实现：通用 attach 先发布层，detach 先通知再清层；
         // 直连只发布/清层，不通知尚未初始化且不应初始化的通用 NxGal。
         CAMetalLayer *front = [CAMetalLayer layer];
@@ -1496,6 +1810,7 @@ int main(int argc, const char **argv) {
         test_pad_disconnect();
         test_pad_handler_install();
         test_pad_fast_path();
+        test_pad_unfocused_when_pause_off();
         test_profile_only_pad();
     test_pad_layout();
     test_shared_face_map();
@@ -1577,15 +1892,19 @@ int main(int argc, const char **argv) {
         S2AMetalView *motionView = [S2AMetalView new];
         mouse_captured = YES; // Handler precondition only; do not call the OS capture API in unit tests.
         TestMotion *motion = [TestMotion new]; motion.deltaX = 1; motion.deltaY = -1;
+        // #2131 回中模式按 33 ms 时间窗换算：摇杆量 = 窗内位移和 × 16 / 33（假时钟，期望手算：1 点 = 1500）
+        mouse_now = fake_mouse_now; g_fake_mouse_ns = 1000000000ull; reset_input();
         for (int i = 0; i < 8; i++) [motionView mouseMoved:(NSEvent *)motion];
-        sample_input(); sample_input(); // 120 Hz frontend may publish twice before the 60 Hz HID read.
-        s2a_vpad_read(sticks);
-        expect(sticks[2] == 12000 && sticks[3] == 12000, "all mouse deltas survive frontend polls until HID consumes them");
-        s2a_vpad_read(sticks); expect(!sticks[2] && !sticks[3], "mouse deltas consumed exactly once");
+        sample_input(); sample_input(); // 120 Hz frontend may publish twice before the HID read.
+        g_fake_mouse_ns += 1000000; s2a_vpad_read(sticks);
+        expectf(sticks[2] == 5818 && sticks[3] == 5818, "8 deltas inside the window: 12000 × 16 / 33 = 5818 (%d, %d)", sticks[2], sticks[3]);
+        g_fake_mouse_ns += 5000000; s2a_vpad_read(sticks);
+        expectf(sticks[2] == 5818, "a second HID read 5 ms later inside the window sees the same deflection (not consumed once): %d", sticks[2]);
+        g_fake_mouse_ns += 30000000; s2a_vpad_read(sticks); expect(!sticks[2] && !sticks[3], "36 ms after the last movement the stick is centered");
         motion.deltaX = 4; motion.deltaY = 0; [motionView mouseMoved:(NSEvent *)motion];
         motion.deltaX = -4; [motionView mouseMoved:(NSEvent *)motion];
-        s2a_vpad_read(sticks); expect(!sticks[2], "opposite mouse deltas cancel within one HID interval");
-        motion.deltaX = 100; [motionView mouseMoved:(NSEvent *)motion];
+        s2a_vpad_read(sticks); expect(!sticks[2], "opposite mouse deltas cancel within the window");
+        g_fake_mouse_ns += 40000000; motion.deltaX = 100; [motionView mouseMoved:(NSEvent *)motion];
         s2a_vpad_read(sticks); expect(sticks[2] == 32767, "mouse stick clamps only at HID read");
         [motionView mouseMoved:(NSEvent *)motion]; reset_input();
         s2a_vpad_read(sticks); expect(!sticks[2], "focus reset discards pending mouse movement");
@@ -1593,6 +1912,23 @@ int main(int argc, const char **argv) {
         s2a_vpad_read(sticks); expect(!sticks[2], "uncaptured cursor does not rotate the camera");
         mouse_captured = YES; focused = NO; [motionView mouseMoved:(NSEvent *)motion];
         s2a_vpad_read(sticks); expect(!sticks[2], "unfocused mouse motion is ignored");
+        focused = YES;
+        {   // #2131 的现场：鼠标每 8 ms 一个 1 点事件，HID 每 5 ms 读一次，30 帧的游戏每 33 ms 只看最新一条。
+            //   期望：游戏每帧看到的量都在 16 ms 的位移附近（1500 × 16 / 8 = 3000，窗内 4–5 个事件 → 2909–3636），不出现 0；
+            //   原先（读完清零）游戏看到的是最后 5 ms 里有没有事件，0 和 1500 交替
+            reset_input(); g_fake_mouse_ns = 2000000000ull; motion.deltaX = 1; motion.deltaY = 0;
+            uint64_t next_ev = g_fake_mouse_ns, next_game = g_fake_mouse_ns + 40000000; int frames = 0, zero = 0, lo = 1 << 30, hi = 0;
+            for (uint64_t t = g_fake_mouse_ns; frames < 30; t += 1000000) {
+                g_fake_mouse_ns = t;
+                if (t >= next_ev) { [motionView mouseMoved:(NSEvent *)motion]; next_ev += 8000000; }
+                if ((t - 2000000000ull) % 5000000 == 0) s2a_vpad_read(sticks);   // InputPump 的 5 ms 一格
+                if (t >= next_game) { frames++; zero += !sticks[2]; lo = MIN(lo, sticks[2]); hi = MAX(hi, sticks[2]); next_game += 33333333; }
+            }
+            expectf(!zero && lo >= 2909 && hi <= 3636, "steady mouse at 30 fps: no zero frames, every frame 2909..3636 (zero %d, %d..%d)", zero, lo, hi);
+            g_fake_mouse_ns += 40000000; s2a_vpad_read(sticks); expect(!sticks[2], "steady mouse stops: centered within the window");
+            reset_input();
+        }
+        mouse_now = mouse_clock;
         // 审计 P2-62：recenter = false（赛车预设）→ 停手后右摇杆停在原处；复位清零；recenter 缺省 / true → 下一拍回中。期望按 1500 × 灵敏度手算
         config = @{@"keyboard": @{}, @"mouse": @{}, @"gamepad": @{}, @"axes": @{}, @"deadzone": @0.15,
                    @"mouseOptions": @{@"mode": @"camera", @"sensitivityX": @1, @"sensitivityY": @1, @"recenter": @NO}};
@@ -1604,9 +1940,11 @@ int main(int argc, const char **argv) {
         s2a_vpad_read(sticks); expect(sticks[2] == 6000, "no-recenter stick accumulates further movement");
         reset_input(); s2a_vpad_read(sticks); expect(!sticks[2], "focus reset recenters a held stick");
         config = default_config(); apply_mouse_options();
+        mouse_now = fake_mouse_now; g_fake_mouse_ns = 3000000000ull;
         [motionView mouseMoved:(NSEvent *)motion];
-        s2a_vpad_read(sticks); expect(sticks[2] == 3000, "default recenter moves the stick");
-        s2a_vpad_read(sticks); expect(!sticks[2], "default recenter returns to center after the mouse stops");
+        s2a_vpad_read(sticks); expectf(sticks[2] == 1454, "default recenter moves the stick (3000 × 16 / 33 = 1454): %d", sticks[2]);
+        g_fake_mouse_ns += 40000000; s2a_vpad_read(sticks); expect(!sticks[2], "default recenter returns to center after the mouse stops");
+        mouse_now = mouse_clock;
         mouse_captured = NO; focused = YES;
         config = @{@"keyboard": @{@"A": @{@"code": @14, @"modifiers": @1}, @"B": @{@"code": @56}},
                    @"mouse": @{}, @"gamepad": @{}, @"axes": @{}, @"deadzone": @0.15};

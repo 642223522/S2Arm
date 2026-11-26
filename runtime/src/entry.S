@@ -19,6 +19,38 @@ PLAT_ASM_SYM(xs_stubs):
     .set k, k + 1
     .endr
 
+// 叶子桩（xstack.c k_leaf：memcpy / memset / strlen / 基本数学等，不切栈、在客体栈上跑）：第 k 个 = movz x9,#k; b xs_leaf_entry，目标同在 g_xs_fn[k]。
+//   客体 sp 可以不是 16 字节对齐（Horizon 不查，苹果芯片以 sp 为基址的访存要求对齐：宿主函数开头一压栈就 SIGBUS，D-DVZZ 远端版 memmove）。
+//   sp 对齐：直接尾跳（同原来）；不对齐：在客体栈当前 sp 之下取对齐的 16 字节存原 sp 与 lr，调完恢复——AAPCS 没有红区，sp 之下本就可用；
+//   名单里的函数参数都在寄存器（≤ 8 个整型 / 浮点参数、无栈上传参），挪 sp 不影响参数。只动 x9..x17
+    .globl PLAT_ASM_SYM(xs_leaf_stubs)
+    .p2align 3
+PLAT_ASM_SYM(xs_leaf_stubs):
+    .set k, 0
+    .rept 8192                // = xstack.c XS_MAX（和 xs_stubs 共用 g_xs_fn 的编号）
+    movz x9, #k
+    b PLAT_ASM_SYM(xs_leaf_entry)
+    .set k, k + 1
+    .endr
+
+    .p2align 2
+PLAT_ASM_SYM(xs_leaf_entry):
+    PLAT_ASM_ADRP(x16, PLAT_ASM_SYM(g_xs_fn))
+    PLAT_ASM_ADD(x16, PLAT_ASM_SYM(g_xs_fn))
+    ldr x16, [x16, x9, lsl #3]           // 目标
+    mov x17, sp
+    tst x17, #15
+    b.ne 1f
+    br x16                               // 对齐：尾跳
+1:  and x10, x17, #~15
+    sub x10, x10, #16
+    mov sp, x10
+    stp x17, x30, [sp]                   // 原 sp、lr
+    blr x16
+    ldp x17, x30, [sp]
+    mov sp, x17
+    ret
+
     .p2align 2
 PLAT_ASM_SYM(xs_entry):
     PLAT_ASM_ADRP(x16, PLAT_ASM_SYM(g_xs_fn))
@@ -27,8 +59,12 @@ PLAT_ASM_SYM(xs_entry):
     PLAT_ASM_ADRP(x10, PLAT_ASM_SYM(g_xs_off))
     PLAT_ASM_LDR(x10, x10, PLAT_ASM_SYM(g_xs_off))
     cbz x10, 1f                          // 偏移未就绪：直接跳
+#if defined(__OHOS__)
+    PLAT_TSD_BASE_PAIR(x11, x12)
+#else
     PLAT_TSD_BASE(x11)
     PLAT_TSD_BASE_SECOND(x11)
+#endif
     and x11, x11, #~7
     ldr x12, [x11, x10]                  // 本线程槽（偏移是字节，不再移位）
     cbz x12, 1f                          // 没登记：直接跳
@@ -40,11 +76,11 @@ PLAT_ASM_SYM(xs_entry):
     cmp x17, x15
     b.hi 1f                              // bottom < sp ≤ top ⇒ 已在宿主栈：直接跳
 2:  ldr x13, [x12]                       // cur
-    sub x13, x13, #208                   // 新帧：64 字节栈参数副本 + 保存区 + 钩子保存区（[0,64) 参数副本 / [64,80) 客体sp+旧cur / [80,96) fp,lr / [96,104) 槽 / [112,176) q0..q3 / [176,208) 备用）
+    sub x13, x13, #400                   // 新帧：256 字节栈参数副本 + 保存区 + 钩子保存区（[0,256) 参数副本 / [256,272) 客体sp+旧cur / [272,288) fp,lr / [288,296) 槽 / [304,368) q0..q3 / [368,400) 备用）
     and x13, x13, #~15
-    mov x9, x17                          // 拷客体 sp 起 64 字节（栈上传的参数，余量），不越过客体栈顶（槽 +24，0 = 不限）
+    mov x9, x17                          // 拷客体 sp 起 256 字节（AAPCS64 每个栈参数 8 字节；H.264 编码初始化有 13 格），不越过客体栈顶（槽 +24，0 = 不限）
     mov x14, x13
-    add x15, x17, #64
+    add x15, x17, #256
     ldr x10, [x12, #24]
     cbz x10, 3f
     cmp x15, x10
@@ -56,12 +92,12 @@ PLAT_ASM_SYM(xs_entry):
     cmp x9, x15
     b.lo 3b
 8:  ldr x10, [x12]
-    stp x17, x10, [x13, #64]             // 客体 sp、旧 cur
-    stp x29, x30, [x13, #80]             // 帧记录：fp 链接回客体帧（回溯能穿过去）
-    str x12, [x13, #96]                  // 槽
+    stp x17, x10, [x13, #256]            // 客体 sp、旧 cur
+    stp x29, x30, [x13, #272]            // 帧记录：fp 链接回客体帧（回溯能穿过去）
+    str x12, [x13, #288]                 // 槽
     str x13, [x12]                       // cur = 新帧
     mov sp, x13
-    add x29, sp, #80
+    add x29, sp, #272
     blr x16
     // 惰性取核钩子（10-30）：只有这条路径回客体代码（下面 ret 之后就是客体代码）；1: br x16 的尾跳不回，故不挂。
     //   x13 是 caller-saved、被 blr 打掉了，这里一律用 sp 寻址。
@@ -70,23 +106,23 @@ PLAT_ASM_SYM(xs_entry):
     PLAT_ASM_ADD(x16, PLAT_ASM_SYM(g_lazy_core))
     ldr w16, [x16]
     cbz w16, 9f                          // 0 = 关；-1 首次（钩子读 S2A_LAZY_CORE 后写回）/ 1 开
-    stp x0, x1, [sp, #0]                 // 覆盖已用完的栈参数副本 [0,64)
+    stp x0, x1, [sp, #0]                 // 覆盖已用完的栈参数副本 [0,256)
     stp x2, x3, [sp, #16]
     stp x4, x5, [sp, #32]
     stp x6, x7, [sp, #48]
-    stp q0, q1, [sp, #112]               // 整数返回 x0/x1、HFA 最多 q0..q3；x8 / x9..x18 出口无用，标志位 blr 已经打掉
-    stp q2, q3, [sp, #144]
+    stp q0, q1, [sp, #304]               // 整数返回 x0/x1、HFA 最多 q0..q3；x8 / x9..x18 出口无用，标志位 blr 已经打掉
+    stp q2, q3, [sp, #336]
     bl PLAT_ASM_SYM(s2a_guest_return)    // 宿主栈帧里调：不碰客体栈（entry.S:78 真机 svc 不碰用户栈）
-    ldp q2, q3, [sp, #144]
-    ldp q0, q1, [sp, #112]
+    ldp q2, q3, [sp, #336]
+    ldp q0, q1, [sp, #304]
     ldp x6, x7, [sp, #48]
     ldp x4, x5, [sp, #32]
     ldp x2, x3, [sp, #16]
     ldp x0, x1, [sp, #0]
-9:  ldr x12, [sp, #96]
-    ldp x17, x10, [sp, #64]
+9:  ldr x12, [sp, #288]
+    ldp x17, x10, [sp, #256]
     str x10, [x12]                       // 还原 cur
-    ldp x29, x30, [sp, #80]
+    ldp x29, x30, [sp, #272]
     mov sp, x17
     ret
 1:  br x16
@@ -104,8 +140,13 @@ PLAT_ASM_SYM(sw_gate):
     PLAT_ASM_ADRP(x16, PLAT_ASM_SYM(g_xs_off))
     PLAT_ASM_LDR(x16, x16, PLAT_ASM_SYM(g_xs_off))
     cbz x16, 4f                          // 偏移未就绪：不切栈
+#if defined(__OHOS__)
+    PLAT_TSD_BASE_PAIR(x17, x15)
+    mov x15, sp                          // recover the live guest stack value
+#else
     PLAT_TSD_BASE(x17)
     PLAT_TSD_BASE_SECOND(x17)
+#endif
     and x17, x17, #~7
     ldr x16, [x17, x16]                  // 槽（偏移是字节，不再移位）
     cbz x16, 4f
@@ -176,6 +217,8 @@ PLAT_ASM_SYM(sw_gate):
     mov x0, x30              // 返回点 = 门标识
     mov x1, sp               // regs
     bl PLAT_ASM_SYM(gate_dispatch)
+    .globl PLAT_ASM_SYM(sw_gate_ret)
+PLAT_ASM_SYM(sw_gate_ret):              // 即时存档续跑（sw_snap_resume）从这里接上门的返回段
     ldr x9, [sp, #784]
     msr fpcr, x9
     ldr x9, [sp, #776]
@@ -274,6 +317,13 @@ PLAT_ASM_SYM(sw_touch_tramp):
 PLAT_ASM_SYM(sw_touch_brk):
     brk #0x7a5
 #endif
-#if defined(__ANDROID__)
+// 即时存档续跑：x0 = 本线程宿主栈上已填好的 832 字节门帧（同 sw_gate 的布局），切到它、走门的返回段回到游戏代码
+    .globl PLAT_ASM_SYM(sw_snap_resume)
+    .p2align 2
+PLAT_ASM_SYM(sw_snap_resume):
+    mov sp, x0
+    b PLAT_ASM_SYM(sw_gate_ret)
+
+#if defined(__ANDROID__) || defined(__OHOS__)
     .section .note.GNU-stack,"",%progbits
 #endif

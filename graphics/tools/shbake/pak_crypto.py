@@ -5,6 +5,7 @@ environment), bcrypt.dll on Windows (the Windows packing host); no Python packag
 The index hash is FPakInfo.IndexHash (SHA-1 of the decrypted index bytes):
 https://dev.epicgames.com/documentation/en-us/unreal-engine/API/Runtime/PakFile/FPakInfo
 """
+import os as _pw_os, sys as _pw_sys; _pw_sys.path.append(_pw_os.path.join(_pw_os.path.dirname(_pw_os.path.abspath(__file__)), '..', '..', '..', 'tools')); from pool_workers import process_pool_size, env_jobs  # noqa: E402  核数 / 进程池路数唯一来源（tools/pool_workers.py，#1332）
 import os, ctypes
 import hashlib
 import struct
@@ -198,7 +199,7 @@ def _scan(image, index, index_hash, workers=None, first=()):
     能命中的窗口通过整份索引的 SHA-1，正常只有一把密钥：并行与顺序扫描的结果相同。fork 不可用或只给 1 路时本进程先试 first、再顺序扫"""
     global _SCAN
     end = max(0, len(image) - 31)
-    workers = workers or int(os.environ.get('S2A_KEYSCAN_J') or 0) or os.cpu_count() or 4
+    workers = process_pool_size(workers or env_jobs('S2A_KEYSCAN_J'))
     step = max(4096, -(-end // (workers * 8)) // 4 * 4) if end else 4096
     spans = [(a, min(a + step, end)) for a in range(0, end, step)]
     _SCAN = (image, index, index_hash)

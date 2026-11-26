@@ -87,6 +87,35 @@ class ImportTests(JobCase):
         self.assertNotIn("prod.keys", diagnostic["summary"])
         self.assertNotIn("重新导出", diagnostic["suggestion"])
 
+    def test_wrong_keys_reported_as_keys_not_tampered_file(self):
+        # #1511：分区头魔数不对（读取器【原因 keys_wrong】）→ 按密钥不对报（keys_outdated，叫玩家重新导出 prod.keys），不报哈希 / 内容读不出、不叫玩家换文件
+        self.import_keys(); self.install_reader_fixture()
+        source = self.root / "source.xci"; source.write_bytes(b"magic fixture")
+        _, terminal = self.worker("import", paths=[str(source)])
+        diagnostic = self.assert_failure(terminal, "keys_outdated")
+        self.assertIn("解不开", diagnostic["summary"]); self.assertNotIn("换一份", diagnostic["summary"])
+        self.assertNotIn("master_key_", diagnostic["summary"])   # 读取器没给密钥代：不补那句
+
+    def test_damaged_content_not_blamed_on_keys(self):
+        # #1511 再判：读取器判出同代密钥的别的内容能解开（【原因 content_damaged】）→ 报文件被改过 / 坏了（content_invalid），不叫玩家重导 prod.keys；期望句手写
+        self.import_keys(); self.install_reader_fixture()
+        source = self.root / "damaged.xci"; source.write_bytes(b"damaged fixture")
+        _, terminal = self.worker("import", paths=[str(source)])
+        diagnostic = self.assert_failure(terminal, "content_invalid")
+        self.assertIn("这份文件的内容被改过或损坏了：同一份文件里用同一代密钥的其它内容能正常解开，密钥是对的。请换一份原版完整的文件（XCI / NSP）再导入。", diagnostic["summary"])
+        self.assertNotIn("prod.keys", diagnostic["summary"])
+
+    def test_wrong_keys_names_key_generation(self):
+        # #1511：读取器给了【密钥代】（要的代、prod.keys 有到的代，十六进制）→ 玩家句补一句；期望句子手写
+        self.import_keys(); self.install_reader_fixture()
+        cases = [("0f|0e|1", "这份文件要 master_key_0f，你的 prod.keys 只到 master_key_0e：不够新。"),
+                 ("03|15|0", "这份文件要 master_key_03，你的 prod.keys 有到 master_key_15：代数够，多半是这一行的值不对。")]
+        for i, (line, want) in enumerate(cases):
+            source = self.root / f"gen{i}.xci"; source.write_bytes(b"magic fixture " + line.encode())
+            _, terminal = self.worker("import", paths=[str(source)])
+            diagnostic = self.assert_failure(terminal, "keys_outdated")
+            self.assertIn(want, diagnostic["summary"], line)
+
     def test_identity_from_content_ids_without_reading_whole_file(self):
         # 11-09 玩家反馈「只是添加也要跑几分钟」：读取器给了 content ID 就按 titleId / 类型 / 版本 / 排序后的 content ID / 文件大小算身份，不整份算 SHA-256；
         #   期望按 library.source_identity 文件头的公式手算（不调被测函数）
@@ -167,6 +196,25 @@ class ImportTests(JobCase):
         self.assertEqual(run(), [str(managed.relative_to(self.c.library))])
         managed.unlink()
         self.assertEqual(run(), [str(original.resolve())])
+
+
+    def test_relink_original_checks_it_is_this_game(self):
+        # #1961「重新添加原件…」带 expectGameId：是这一款 → 改记新位置（同重放原件）；不是 → input_wrong_game、catalog 一字不改、不把那款加进库。
+        #   替身读取器把这份原件读成 0100000000000000（期望手写）
+        import json
+        self.import_keys(); self.install_reader_fixture()
+        old = self.root / "drive" / "game.nsp"; old.parent.mkdir(); old.write_bytes(b"synthetic game fixture")
+        _, done = self.worker("import", paths=[str(old)])
+        self.assertEqual(done["state"], "succeeded")
+        moved = self.root / "other-drive" / "game.nsp"; moved.parent.mkdir(); old.rename(moved)
+        before = (self.c.library / "catalog.json").read_bytes()
+        _, done = self.worker("import", paths=[str(moved)], expectGameId="0100000000000099")
+        self.assertEqual((done["state"], [d["code"] for d in done["diagnostics"]]), ("failed", ["input_wrong_game"]))
+        self.assertEqual((self.c.library / "catalog.json").read_bytes(), before)
+        _, done = self.worker("import", paths=[str(moved)], expectGameId="0100000000000000")
+        self.assertEqual(done["state"], "succeeded")
+        games = json.loads((self.c.library / "catalog.json").read_text())["games"]
+        self.assertEqual([(g["id"], [p["path"] for p in g["packages"]]) for g in games], [("0100000000000000", [str(moved.resolve())])])
 
 
 class PartialImportTests(JobCase):

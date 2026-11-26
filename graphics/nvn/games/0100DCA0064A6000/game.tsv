@@ -38,9 +38,8 @@ sys_resource	0x0
 mem_used	0x4600000
 
 # ---- Frame rate ----
-# 60 fps (30 on the Switch): the frame limiter waits until 33.333 ms have passed since the frame started, a constant the host sets to 1000 / fps_target (hle_fpslock.c), and the game
+# 60 fps (30 on the Switch): the frame limiter waits until 33.333 ms have passed since the frame started, a constant the upstream host sets to 1000 / fps_target (its hle_fpslock.c; the S2Arm host never read fps_target), and the game
 # steps by the time that really passed (the same walk in the lobby ends at the same spot at 30 and 60 fps). The game asks for present interval 2 as well, which display ignores
-fps_target	60
 present_interval	display
 
 # ---- Input ----

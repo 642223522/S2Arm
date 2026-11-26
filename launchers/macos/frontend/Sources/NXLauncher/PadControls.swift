@@ -40,7 +40,7 @@ private struct PadRingOutsetKey: EnvironmentKey { static let defaultValue: CGFlo
 /// A operates the focused control; the right trigger submits the current page.
 /// Hints follow the primary player's controller family and face-button mapping.
 package enum PadShortcut: String, CaseIterable {
-    case primary, back, secondary, tertiary, rightTrigger
+    case primary, back, secondary, tertiary, leftTrigger, rightTrigger
     /// 界面上显示的键：确认键（rightTrigger）一律显示 A——单只 Joy-Con 没有 ZR（11-16）。ZR / R2 / RT 照样能按，只是不画出来
     package var displayed: PadShortcut { self == .rightTrigger ? .primary : self }
     package var symbol: String {
@@ -49,6 +49,7 @@ package enum PadShortcut: String, CaseIterable {
         case .back: return "b.circle"
         case .secondary: return "x.circle"
         case .tertiary: return "y.circle"
+        case .leftTrigger: return "lt.rectangle.roundedtop"
         case .rightTrigger: return "rt.rectangle.roundedtop"
         }
     }
@@ -223,9 +224,37 @@ private struct PadControlFrame: NSViewRepresentable {
 package struct PadToggleStyle<Style: ToggleStyle>: ToggleStyle {
     let style: Style
     package init(_ style: Style) { self.style = style }
-    package func makeBody(configuration: Configuration) -> some View {
-        Toggle(isOn: configuration.$isOn) { configuration.label }.toggleStyle(style)
-            .modifier(PadControlModifier(activate: { configuration.isOn.toggle() }, adjust: { configuration.isOn = $0 > 0 },
-                                         styleRadius: (style as? any PadRingShaped)?.padRingRadius))
+    @ViewBuilder package func makeBody(configuration: Configuration) -> some View {
+        if #available(macOS 15.0, *), style is CheckboxToggleStyle {
+            PadCheckboxToggleBody(style: style, configuration: configuration)
+        } else {
+            Toggle(isOn: configuration.$isOn) { configuration.label }.toggleStyle(style)
+                .modifier(PadControlModifier(activate: { configuration.isOn.toggle() }, adjust: { configuration.isOn = $0 > 0 },
+                                             styleRadius: (style as? any PadRingShaped)?.padRingRadius))
+        }
+    }
+}
+
+@available(macOS 15.0, *)
+private struct PadCheckboxToggleBody<Style: ToggleStyle>: View {
+    let style: Style
+    let configuration: ToggleStyleConfiguration
+    @Environment(\.labelsVisibility) private var labelsVisibility
+    var body: some View {
+        HStack(spacing: labelsVisibility == .hidden ? 0 : 6) {
+            Toggle("", isOn: configuration.$isOn)
+                .toggleStyle(style)
+                .labelsHidden()
+                .modifier(PadControlModifier(activate: { configuration.isOn.toggle() }, adjust: { configuration.isOn = $0 > 0 },
+                                             styleRadius: LauncherTheme.Focus.checkboxRadius, styleOutset: LauncherTheme.Focus.checkboxOutset))
+            if labelsVisibility != .hidden {
+                configuration.label
+                    .contentShape(Rectangle())
+                    .onTapGesture { configuration.isOn.toggle() }
+            }
+        }
+        .accessibilityRepresentation {
+            Toggle(isOn: configuration.$isOn) { configuration.label }.toggleStyle(style)
+        }
     }
 }

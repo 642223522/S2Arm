@@ -2,7 +2,9 @@
 //   全部画成和加载页（loadpage.m，10-30 维护者 批准）同一套样子：游戏图标放大模糊铺满整屏（不留边）+ 圆角图标（角上一个状态符号）+ 一句话标题 + 一句「下一步做什么」
 //   + 胶囊按钮（主按钮用启动器品牌色）。技术细节（失败码、文件名、地址上限）只进 host.log / unpack.log，经「导出诊断包」带走，不上屏。本文件只画
 #import "notice.h"
+#import "tv_compat.h"
 #import "s2a_l10n.h"
+#include "s2a_launch_ctx.h"   // s2a_launch_ctx_single_game：包里只有一款（独立 App）
 
 UIColor *s2a_notice_accent(void) { return [UIColor colorWithRed:0.02 green:0.53 blue:0.57 alpha:1]; }   // 启动器 Brand.accent（launchers/macos/Sources/S2ArmLauncher/Appearance.swift）
 
@@ -24,7 +26,7 @@ static UIView *backdrop(CGRect f, UIView **content) {
     page.layer.zPosition = 2000;   // 整页提示压过虚拟手柄（1000），低于开发浮层（10000）
     UIImageView *bg = [[UIImageView alloc] initWithImage:s2a_game_icon()]; bg.contentMode = UIViewContentModeScaleAspectFill; bg.clipsToBounds = YES; bg.alpha = 0.9;
     bg.frame = page.bounds; bg.autoresizingMask = page.autoresizingMask; [page addSubview:bg];
-    UIVisualEffectView *blur = [[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemMaterialDark]];
+    UIVisualEffectView *blur = [[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:S2A_BLUR_MATERIAL_DARK]];
     blur.frame = page.bounds; blur.autoresizingMask = page.autoresizingMask; [page addSubview:blur];
     *content = blur.contentView; return page;
 }
@@ -73,7 +75,7 @@ UIView *s2a_notice_page(CGRect f, NSString *symbol, NSString *title, NSString *b
     NSMutableArray *rows = [NSMutableArray arrayWithObjects:badge_icon(symbol), t, nil];
     if (body.length) { UILabel *b = label(16, UIFontWeightRegular, UIColor.secondaryLabelColor); b.text = body; b.textAlignment = NSTextAlignmentCenter; [rows addObject:b]; }
     if (progress >= 0) {
-        UIProgressView *bar = [[UIProgressView alloc] initWithProgressViewStyle:UIProgressViewStyleBar]; bar.translatesAutoresizingMaskIntoConstraints = NO;
+        UIProgressView *bar = [[UIProgressView alloc] initWithProgressViewStyle:S2A_PROGRESS_BAR]; bar.translatesAutoresizingMaskIntoConstraints = NO;
         bar.progressTintColor = [UIColor colorWithWhite:1 alpha:0.92]; bar.trackTintColor = [UIColor colorWithWhite:1 alpha:0.14]; bar.layer.cornerRadius = 2; bar.clipsToBounds = YES;
         bar.progress = progress; [bar.heightAnchor constraintEqualToConstant:4].active = YES;
         UILabel *c = label(13, UIFontWeightRegular, UIColor.tertiaryLabelColor); c.font = [UIFont monospacedDigitSystemFontOfSize:13 weight:UIFontWeightRegular]; c.text = caption ?: @"";
@@ -103,7 +105,7 @@ UIView *s2a_notice_help_page(CGRect f, NSString *title, NSString *detail, NSStri
     UIView *content, *page = backdrop(f, &content);
     UIStackView *pic = [[UIStackView alloc] initWithArrangedSubviews:@[glyph(@"laptopcomputer", @"Mac"), arrow(), glyph(@"cable.connector", S2AL(@"notice.cable")), arrow(), glyph(@"iphone.gen3", app)]];
     pic.spacing = 10; pic.alignment = UIStackViewAlignmentCenter;
-    // 两条路（11-11 维护者拍板，v0.3.0 起单一 IMG 交付）：电脑上点「装到 iPhone」；或把「S2Arm 自签导出」里这款的 .img 放进「文件」App（游戏库启动 / 回前台 / 重新检查时认领，ios/app.m img_scan）。
+    // 两条路（11-11 维护者拍板，v0.3.0 起单一 IMG 交付）：电脑上点「推到 iPhone」；或把「S2Arm 自签导出」里这款的 .img 放进「文件」App（游戏库启动 / 回前台 / 重新检查时认领，ios/app.m img_scan）。
     //   原先的第三条「用访达把『<游戏名>资源包』文件夹拷进来」连同宿主里认这种文件夹的改名 / 等拷完逻辑一起删了（iOS 装机剃刀 #28 / #20 / #33）
     UIImageView *folder = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"doc.fill" withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:24 weight:UIImageSymbolWeightRegular]]];
     folder.tintColor = s2a_notice_accent();
@@ -112,9 +114,12 @@ UIView *s2a_notice_help_page(CGRect f, NSString *title, NSString *detail, NSStri
     UIStackView *left = [[UIStackView alloc] initWithArrangedSubviews:@[pic, fr]]; left.axis = UILayoutConstraintAxisVertical; left.spacing = 20; left.alignment = UIStackViewAlignmentCenter;
     UILabel *t = label(24, UIFontWeightBold, UIColor.labelColor); t.text = title;
     UILabel *d = label(16, UIFontWeightRegular, UIColor.secondaryLabelColor); d.text = detail;
+    // 独立 App（一 App 一游戏，0.6.4）：电脑导出的 .s2arm / .img 在这款自己的游戏文件夹里（不是「S2Arm 游戏包」）；它打开就在起这款、闸门每轮扫导入文件夹（pack_apply.c gate_thread），
+    //   放好点「重新检查」即可，不用重开
+    char gid[64]; int single = s2a_launch_ctx_single_game(s2a_launch_ctx_bundle_dir(), gid, sizeof gid);
     NSArray *steps = @[
         S2AL(@"notice.step.auto"),
-        [NSString stringWithFormat:S2AL(@"notice.step.img"), app, app]];
+        single ? [NSString stringWithFormat:S2AL(@"notice.step.imgApp"), app] : [NSString stringWithFormat:S2AL(@"notice.step.img"), app, app]];
     NSMutableArray *rows = [NSMutableArray arrayWithObjects:t, d, nil];
     for (NSUInteger i = 0; i < steps.count; i++) {
         UILabel *n = label(13, UIFontWeightBold, UIColor.whiteColor); n.text = [NSString stringWithFormat:@"%lu", (unsigned long)i + 1]; n.textAlignment = NSTextAlignmentCenter;

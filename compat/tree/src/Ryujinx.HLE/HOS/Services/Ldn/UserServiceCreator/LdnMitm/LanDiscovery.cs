@@ -9,6 +9,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net;
+using System.Net.NetworkInformation;
 using System.Threading;
 
 namespace Ryujinx.HLE.HOS.Services.Ldn.UserServiceCreator.LdnMitm
@@ -23,6 +24,7 @@ namespace Ryujinx.HLE.HOS.Services.Ldn.UserServiceCreator.LdnMitm
         private const int FailureTimeout = 4000;
 
         private readonly LdnMitmClient _parent;
+        private readonly string _lanInterfaceId;
         private readonly LanProtocol _protocol;
         private bool _initialized;
         private readonly Ssid _fakeSsid;
@@ -33,8 +35,8 @@ namespace Ryujinx.HLE.HOS.Services.Ldn.UserServiceCreator.LdnMitm
 
         private readonly AutoResetEvent _apConnected = new(false);
 
-        internal readonly IPAddress LocalAddr;
-        internal readonly IPAddress LocalBroadcastAddr;
+        internal IPAddress LocalAddr { get; private set; }
+        internal IPAddress LocalBroadcastAddr { get; private set; }
         internal NetworkInfo NetworkInfo;
 
         public bool IsHost => _tcp is LdnProxyTcpServer;
@@ -44,11 +46,13 @@ namespace Ryujinx.HLE.HOS.Services.Ldn.UserServiceCreator.LdnMitm
         // NOTE: Credit to https://stackoverflow.com/a/39338188
         private static IPAddress GetBroadcastAddress(IPAddress address, IPAddress mask)
         {
-            uint ipAddress = BitConverter.ToUInt32(address.GetAddressBytes(), 0);
-            uint ipMaskV4 = BitConverter.ToUInt32(mask.GetAddressBytes(), 0);
+            // IPAddress bytes are network order; BitConverter is host order. Keep the
+            // conversion explicit so every supported host computes the same address.
+            uint ipAddress = NetworkHelpers.ConvertIpv4Address(address);
+            uint ipMaskV4 = NetworkHelpers.ConvertIpv4Address(mask);
             uint broadCastIpAddress = ipAddress | ~ipMaskV4;
 
-            return new IPAddress(BitConverter.GetBytes(broadCastIpAddress));
+            return NetworkHelpers.ConvertUint(broadCastIpAddress);
         }
 
         private static NetworkInfo GetEmptyNetworkInfo()
@@ -92,13 +96,22 @@ namespace Ryujinx.HLE.HOS.Services.Ldn.UserServiceCreator.LdnMitm
             return networkInfo;
         }
 
-        public LanDiscovery(LdnMitmClient parent, IPAddress ipAddress, IPAddress ipv4Mask)
+        public LanDiscovery(LdnMitmClient parent, string lanInterfaceId)
         {
-            Logger.Info?.PrintMsg(LogClass.ServiceLdn, $"Initialize LanDiscovery using IP: {ipAddress}");
-
             _parent = parent;
-            LocalAddr = ipAddress;
-            LocalBroadcastAddr = GetBroadcastAddress(ipAddress, ipv4Mask);
+            _lanInterfaceId = lanInterfaceId;
+
+            if (!RefreshLocalAddress(rebind: false))
+            {
+                throw new InvalidOperationException("No local IPv4 route is available for ldn_mitm.");
+            }
+
+            Logger.Info?.PrintMsg(LogClass.ServiceLdn,
+                $"Initialize LanDiscovery using IP: {LocalAddr}, broadcast: {LocalBroadcastAddr}");
+
+            // [DIAG] 建房/入房时立刻打印一行：不依赖 Switch 接入即可判断新宿主是否在跑、选的是哪张网卡。
+            Logger.Info?.PrintMsg(LogClass.ServiceLdn,
+                $"[DIAG] LanDiscovery init: ifaceId={_lanInterfaceId ?? "(null)"}, local={LocalAddr}, broadcast={LocalBroadcastAddr}");
 
             _fakeSsid = new Ssid
             {
@@ -107,9 +120,11 @@ namespace Ryujinx.HLE.HOS.Services.Ldn.UserServiceCreator.LdnMitm
             _random.NextBytes(_fakeSsid.Name.AsSpan()[..32]);
 
             _protocol = new LanProtocol(this);
-            _protocol.Accept += OnConnect;
+            _protocol.Accept += OnAccept;
+            _protocol.StationConnected += OnStationConnected;
             _protocol.SyncNetwork += OnSyncNetwork;
             _protocol.DisconnectStation += DisconnectStation;
+            _protocol.ClientDisconnected += OnClientDisconnected;
 
             NetworkInfo = GetEmptyNetworkInfo();
 
@@ -125,9 +140,35 @@ namespace Ryujinx.HLE.HOS.Services.Ldn.UserServiceCreator.LdnMitm
             _initialized = true;
         }
 
+        private bool RefreshLocalAddress(IPAddress remoteAddress = null, bool rebind = true)
+        {
+            (_, UnicastIPAddressInformation address) =
+                NetworkHelpers.GetLocalInterfaceForTarget(_lanInterfaceId, remoteAddress);
+
+            if (address == null)
+            {
+                return false;
+            }
+
+            bool changed = !address.Address.Equals(LocalAddr);
+            LocalAddr = address.Address;
+            LocalBroadcastAddr = GetBroadcastAddress(
+                address.Address,
+                address.IPv4Mask ?? IPAddress.Parse("255.255.255.0"));
+
+            if (changed && rebind && _udp != null && !InitUdp())
+            {
+                return false;
+            }
+
+            return true;
+        }
+
         protected void OnSyncNetwork(NetworkInfo info)
         {
             bool updated = false;
+            string advertiseHex;
+            string nodes;
 
             lock (_lock)
             {
@@ -138,7 +179,17 @@ namespace Ryujinx.HLE.HOS.Services.Ldn.UserServiceCreator.LdnMitm
 
                     Logger.Debug?.PrintMsg(LogClass.ServiceLdn, $"Host IP: {NetworkHelpers.ConvertUint(info.Ldn.Nodes[0].Ipv4Address)}");
                 }
+
+                advertiseHex = Convert.ToHexString(info.Ldn.AdvertiseData.AsSpan()[..info.Ldn.AdvertiseDataSize]);
+                nodes = string.Join(",", Enumerable.Range(0, LdnConst.NodeCountMax).Select(index =>
+                {
+                    NodeInfo node = info.Ldn.Nodes[index];
+                    return $"{node.NodeId}:{node.IsConnected}:{node.LocalCommunicationVersion}";
+                }));
             }
+
+            Logger.Info?.PrintMsg(LogClass.ServiceLdn,
+                $"LdnMitm SyncNetwork advertiseSize={info.Ldn.AdvertiseDataSize}, advertise={advertiseHex}, nodes={nodes}");
 
             if (updated)
             {
@@ -148,14 +199,31 @@ namespace Ryujinx.HLE.HOS.Services.Ldn.UserServiceCreator.LdnMitm
             _apConnected.Set();
         }
 
-        protected void OnConnect(LdnProxyTcpSession station)
+        protected void OnClientDisconnected(LdnProxyTcpClient client)
+        {
+            lock (_lock)
+            {
+                if (!ReferenceEquals(_tcp, client))
+                {
+                    return;
+                }
+            }
+
+            Logger.Warning?.PrintMsg(LogClass.ServiceLdn,
+                $"LdnMitm client lost remote host: {client.Endpoint}");
+            _parent.InvokeNetworkChange(NetworkInfo, false, DisconnectReason.SignalLost);
+        }
+
+        protected void OnAccept(LdnProxyTcpSession station)
         {
             lock (_lock)
             {
                 station.NodeId = LocateEmptyNode();
+                Logger.Info?.PrintMsg(LogClass.ServiceLdn, $"[DIAG] OnAccept: assigned node={station.NodeId}, stationsBefore={_stations.Count}");
 
                 if (_stations.Count > LdnConst.StationCountMax || station.NodeId == -1)
                 {
+                    Logger.Warning?.PrintMsg(LogClass.ServiceLdn, $"[DIAG] OnAccept REJECTED: node={station.NodeId}, stations={_stations.Count}");
                     station.Disconnect();
                     station.Dispose();
 
@@ -163,8 +231,19 @@ namespace Ryujinx.HLE.HOS.Services.Ldn.UserServiceCreator.LdnMitm
                 }
 
                 _stations.Add(station);
+                Logger.Info?.PrintMsg(LogClass.ServiceLdn, $"[DIAG] OnAccept added station node={station.NodeId}, stationsAfter={_stations.Count}");
+            }
+        }
 
-                UpdateNodes();
+        protected void OnStationConnected(LdnProxyTcpSession station)
+        {
+            Logger.Info?.PrintMsg(LogClass.ServiceLdn, $"[DIAG] OnStationConnected node={station.NodeId} inStations={_stations.Contains(station)}");
+            lock (_lock)
+            {
+                if (_stations.Contains(station))
+                {
+                    UpdateNodes();
+                }
             }
         }
 
@@ -207,6 +286,8 @@ namespace Ryujinx.HLE.HOS.Services.Ldn.UserServiceCreator.LdnMitm
 
             data.CopyTo(NetworkInfo.Ldn.AdvertiseData.AsSpan());
             NetworkInfo.Ldn.AdvertiseDataSize = (ushort)data.Length;
+            Logger.Info?.PrintMsg(LogClass.ServiceLdn,
+                $"LdnMitm SetAdvertiseData size={data.Length}, data={Convert.ToHexString(data)}");
 
             // NOTE: Otherwise this results in SessionKeepFailed or MasterDisconnected
             lock (_lock)
@@ -296,7 +377,7 @@ namespace Ryujinx.HLE.HOS.Services.Ldn.UserServiceCreator.LdnMitm
 
                 try
                 {
-                    tcpSocket = new LdnProxyTcpClient(_protocol, address, port);
+                    tcpSocket = new LdnProxyTcpClient(_protocol, address, port, LocalAddr);
                 }
                 catch (Exception ex)
                 {
@@ -321,9 +402,9 @@ namespace Ryujinx.HLE.HOS.Services.Ldn.UserServiceCreator.LdnMitm
                 // NOTE: Linux won't receive any broadcast packets if the socket is not bound to the broadcast address.
                 //       Windows only works if bound to localhost or the local address.
                 //       See this discussion: https://stackoverflow.com/questions/13666789/receiving-udp-broadcast-packets-on-linux
-                if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS() || OperatingSystem.IsIOS())
+                if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS() || (OperatingSystem.IsIOS() || OperatingSystem.IsTvOS()))   // 平台例外：tvOS 与 iOS 走同一分支
                 {
-                    _udp2 = new LdnProxyUdpServer(_protocol, LocalBroadcastAddr, DefaultPort);
+                    _udp2 = new LdnProxyUdpServer(_protocol, LocalBroadcastAddr, DefaultPort, subscribeToProtocol: false);
                 }
 
                 _udp = new LdnProxyUdpServer(_protocol, LocalAddr, DefaultPort);
@@ -340,6 +421,18 @@ namespace Ryujinx.HLE.HOS.Services.Ldn.UserServiceCreator.LdnMitm
 
         public NetworkInfo[] Scan(ushort channel, ScanFilter filter)
         {
+            // Re-evaluate before every discovery pass so unplugging Ethernet and moving to Wi-Fi
+            // takes effect without asking the player to choose an interface.
+            if (_tcp == null && !RefreshLocalAddress())
+            {
+                return [];
+            }
+
+            if (_udp == null)
+            {
+                return [];
+            }
+
             _udp.ClearScanResults();
 
             if (_protocol.SendBroadcast(_udp, LanPacketType.Scan, DefaultPort) < 0)
@@ -429,14 +522,17 @@ namespace Ryujinx.HLE.HOS.Services.Ldn.UserServiceCreator.LdnMitm
         {
             int countConnected = 1;
 
-            foreach (LdnProxyTcpSession station in _stations.Where(station => station.IsConnected))
+            foreach (LdnProxyTcpSession station in _stations)
             {
-                countConnected++;
-
                 station.OverrideInfo();
 
-                // NOTE: This is not part of the original implementation.
-                NetworkInfo.Ldn.Nodes[station.NodeId] = station.NodeInfo;
+                if (station.NodeInfo.IsConnected == 1)
+                {
+                    countConnected++;
+
+                    // NOTE: This is not part of the original implementation.
+                    NetworkInfo.Ldn.Nodes[station.NodeId] = station.NodeInfo;
+                }
             }
 
             byte nodeCount = (byte)countConnected;
@@ -447,7 +543,7 @@ namespace Ryujinx.HLE.HOS.Services.Ldn.UserServiceCreator.LdnMitm
 
             foreach (LdnProxyTcpSession station in _stations)
             {
-                if (station.IsConnected)
+                if (station.NodeInfo.IsConnected == 1)
                 {
                     if (_protocol.SendPacket(station, LanPacketType.SyncNetwork, SpanHelpers.AsSpan<NetworkInfo, byte>(ref NetworkInfo).ToArray()) < 0)
                     {
@@ -477,7 +573,10 @@ namespace Ryujinx.HLE.HOS.Services.Ldn.UserServiceCreator.LdnMitm
 
         public bool CreateNetwork(SecurityConfig securityConfig, UserConfig userConfig, NetworkConfig networkConfig)
         {
-            if (!InitTcp(true))
+            Logger.Info?.PrintMsg(LogClass.ServiceLdn,
+                $"LdnMitm CreateNetwork localCommunicationVersion={networkConfig.LocalCommunicationVersion}");
+
+            if (!RefreshLocalAddress() || !InitTcp(true))
             {
                 return false;
             }
@@ -524,6 +623,10 @@ namespace Ryujinx.HLE.HOS.Services.Ldn.UserServiceCreator.LdnMitm
         {
             _apConnected.Reset();
 
+            Logger.Info?.PrintMsg(LogClass.ServiceLdn,
+                $"LdnMitm Connect localCommunicationVersion={localCommunicationVersion}, " +
+                $"hostLocalCommunicationVersion={networkInfo.Ldn.Nodes[0].LocalCommunicationVersion}");
+
             if (networkInfo.Ldn.NodeCount == 0)
             {
                 return NetworkError.Unknown;
@@ -533,7 +636,7 @@ namespace Ryujinx.HLE.HOS.Services.Ldn.UserServiceCreator.LdnMitm
 
             Logger.Info?.PrintMsg(LogClass.ServiceLdn, $"Connecting to host: {address}");
 
-            if (!InitTcp(false, address))
+            if (!RefreshLocalAddress(address) || !InitTcp(false, address))
             {
                 Logger.Error?.PrintMsg(LogClass.ServiceLdn, "Could not initialize TCPClient");
 
@@ -565,9 +668,11 @@ namespace Ryujinx.HLE.HOS.Services.Ldn.UserServiceCreator.LdnMitm
                 _initialized = false;
             }
 
-            _protocol.Accept -= OnConnect;
+            _protocol.Accept -= OnAccept;
+            _protocol.StationConnected -= OnStationConnected;
             _protocol.SyncNetwork -= OnSyncNetwork;
             _protocol.DisconnectStation -= DisconnectStation;
+            _protocol.ClientDisconnected -= OnClientDisconnected;
         }
 
         public void DisconnectAndStop()

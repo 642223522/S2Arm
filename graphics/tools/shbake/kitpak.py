@@ -7,7 +7,8 @@
 # Volume Data.kit.<volume>: an entry's stored bytes are [offset, offset + stored length); entries with the same content share one range. Stored length == length: kept as it is;
 #   otherwise a sequence of 64 KB blocks, each {u32 stored length} + an LZ4 block, linked (each block may refer back into the 64 KB before it, as the blocks of an LZ4 frame).
 # Every entry is checked against its SHA-1, so a misread layout cannot pass silently (Unravel Two: 22,268 entries, 467 of them sharing content with another).
-import hashlib, os, struct
+import hashlib, os, struct, sys
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'nvn', 'tools')); import romfs_list   # 按路径读经 romfs_list（目录形态同 open；RomFS 不落散文件、只有镜像时从镜像读）
 
 shader = None   # no member is a shader by its own header (hgpak.shader): every entry goes through nxsh_extract.visit
 
@@ -17,7 +18,7 @@ ENTRY = struct.Struct('<QQQQ20sI')
 
 def kit_entries(path):
     """→ [(name hash, volume, offset, stored length, length, sha1)]; None when the file is not a kit! index. A layout that does not add up raises ValueError"""
-    with open(path, 'rb') as f: d = f.read()
+    d = romfs_list.read_file(path)
     if d[:4] != MAGIC: return None
     ver, _, _, table, _, n, vols = struct.unpack_from('<7I', d, 4)
     if ver != 1 or table % 8: raise ValueError(f'kit! version {ver}, hash table {table:#x} bytes: only version 1 with 8-byte slots is known')
@@ -50,7 +51,7 @@ def jobs(files, oodle=None, parts=64, heads=None):
     for p in files:   # heads = 文件头表（nxsh_extract 从 RomFS 清单给，#606）：有就不为读魔数打开文件
         h = heads.get(p) if heads is not None else None
         if h is None:
-            with open(p, 'rb') as f: h = f.read(4)
+            with romfs_list.open_file(p) as f: h = f.read(4)
         if h[:4] != MAGIC: continue
         seen, uniq = set(), []
         for e in kit_entries(p):
@@ -69,7 +70,7 @@ def members(path, ents, oodle=None):
     vols = {}
     try:
         for h, v, off, csz, usz, sha in ents:
-            f = vols.get(v) or vols.setdefault(v, open(f'{path}.{v}', 'rb'))
+            f = vols.get(v) or vols.setdefault(v, romfs_list.open_file(f'{path}.{v}'))
             f.seek(off); d = kit_data(f.read(csz), usz)
             if hashlib.sha1(d).digest() != sha: raise ValueError(f'entry {h:016x}: its data does not match its SHA-1')
             yield f'{h:016x}', d

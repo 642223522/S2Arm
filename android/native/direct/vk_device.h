@@ -5,6 +5,11 @@
 #include <stdint.h>
 #include <vulkan/vulkan.h>
 
+// 直连实例申请的 Vulkan 版本（VkApplicationInfo.apiVersion）。用更高核心版本才有的物理设备功能，要应用申请的版本和设备版本都够：
+//   有效版本 = 两者较低者；不够就只认对应扩展（Khronos：VkApplicationInfo 描述、初始化一章的 physical-device 扩展段）。
+#define S2A_VK_APP_API_VERSION VK_API_VERSION_1_1
+static inline uint32_t s2a_vk_effective_api(uint32_t device_api) { return device_api < S2A_VK_APP_API_VERSION ? device_api : S2A_VK_APP_API_VERSION; }
+
 // 等栅栏，按墙钟算时限。有的驱动在等待被信号打断时不接着等，直接返回 VK_TIMEOUT（#697：天玑 9000+ / Mali-G710 r32p1 上，
 // 一次计算解码的提交之后 vkWaitForFences(5 秒) 不到 1 毫秒就返回超时、栅栏其实稍后才触发；等待期间屏蔽本线程的异步信号后正常）。
 // 我们的进程里信号很多（写跟踪的缺页、游戏线程的挂起），所以超时返回不能当真：没到墙钟时限就接着等。
@@ -46,17 +51,31 @@ struct s2a_vk_device {
     int shader_draw_parameters_enabled;
     // VK_KHR_sampler_mirror_clamp_to_edge 已启用：采样器可用 MIRROR_CLAMP_TO_EDGE（实例按 1.1 建，用不到 1.2 核心里的同名特性）。
     int sampler_mirror_clamp_enabled;
+    // Vulkan 1.1 下显式启用 EXT；只读附件用 STORE_OP_NONE 避免隐式写。
+    int load_store_op_none_enabled;
+    int pipeline_creation_feedback_enabled; // 逻辑设备已启用 EXT，或有效 Vulkan 版本已达 1.3
+    int image_format_list_enabled;   // 启用了 VK_KHR_image_format_list（应用 apiVersion 1.1，1.2 核心的格式列表结构要靠这条扩展；保 Adreno UBWC 用）
     // VK_EXT_custom_border_color 已启用且 customBorderColors 特性开着：CLAMP_TO_BORDER 的采样器可用任意边框色（#976）。
     // custom_border_without_format：customBorderColorWithoutFormat 也开着，建采样器时可以不给视图格式。
     // custom_border_max：maxCustomBorderColorSamplers，同时存活的自定义边框色 VkSampler 个数上限。
     int custom_border_enabled;
     int custom_border_without_format;
     uint32_t custom_border_max;
+    // #976：VK_EXT_sampler_filter_minmax 已启用（采样器 min / max 归约）；minmax_image_mapping = filterMinmaxImageComponentMapping
+    // （0 时仅 R 分量有定义，未证明分量使用前拒绝归约）。
+    int sampler_minmax_enabled;
+    int minmax_image_mapping;
     // 0 = 没有校准扩展；1 = VK_KHR_calibrated_timestamps；2 = VK_EXT_calibrated_timestamps。
     // GPU 时间戳换算到游戏时钟需要用它求 GPU 域与 CLOCK_MONOTONIC 的偏移。
     int calibrated_timestamps;
     VkPhysicalDeviceFeatures core_features;
     uint32_t device_extension_count;
+    // descriptor indexing 仅建可选设备能力；编译器的 non-uniform profile 仍独立关闭。
+    // ext_state: -1 枚举失败（未知），0 未列出，1 列出。后续位为物理设备支持，不等于启用。
+    int descriptor_indexing_ext_state, descriptor_indexing_enabled;
+    int device_fault_ext_state;  // 仅诊断：1 已列出，0 未列出，-1 枚举失败
+    int descriptor_indexing_runtime, descriptor_indexing_partial, descriptor_indexing_sampled_nonuniform;
+    int descriptor_indexing_storage_nonuniform, descriptor_indexing_variable_count, descriptor_indexing_sampled_update_after_bind;
     // #1199：逐格式 BC 能力位（bit i 对应 NVN 格式 0x41+i）。
     // native=optimal-tiling 有 SAMPLED_IMAGE；decode=要走 compute 解码（native 补集，force 时全 1）。
     uint32_t bc_native_mask;

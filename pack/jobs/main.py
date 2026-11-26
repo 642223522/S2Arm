@@ -26,21 +26,27 @@ if os.name == "nt":   # 作业主程序自己也要长路径处理：子 Python 
     sys.path.insert(1, str(Path(__file__).resolve().parents[2]))
     from pack.orch import winlong as _winlong
     _winlong.install()
+import android_export
+import apple_login
 import awake
 import community
 import devcert
+import diagcode
 import diag
 import diag_upload
 import downstream
 import embedded
 import export_plan
+import host_update
 import install
+import tvos
 import ipa
 import layout
 import patches
 import library
 import winproc
 import saves
+import save_previous
 import sgrade
 import sizes
 import target
@@ -56,13 +62,71 @@ def partial_import_result(c):
     return getattr(c, "import_result", None) if c.operation == "import" and c.r.get("partialResults") is True else None
 
 
+def app_installed_result(c):
+    """独立 App 装上了、资源没推完就失败（install.put_app 记的 c.app_installed）：失败结果带 appInstalled，失败页写「App 已装上，资源没推完」、重试只推剩下的"""
+    got = getattr(c, "app_installed", None)
+    return dict(appInstalled=got) if c.operation == "install" and got else None
+
+
+class StderrGuard:
+    """作业进程的标准错误（D-FPQ8 等 34 份，Windows 0.6.0–0.6.9）：启动器只经 stderr 读作业的文字输出，读端不在了（启动器被关 / 崩了、读循环出错）
+    再写，Windows 上 Python 抛 OSError [Errno 22]（ERROR_NO_DATA 映射成 EINVAL），从装机 note()、[s2a] 日志、patches.py 等任何一处 print 冒上来，整单崩掉。
+    写不进只是看不到日志，不该让任务失败：第一次写失败起改写进本任务日志目录的 <任务>-stderr.log，之后不再碰原句柄；
+    子进程要继承标准错误时（fileno）给的也是这个文件，不接着用断掉的管道。断的那一刻正写的那一行多半已进原流的缓冲、到冲刷才失败，取不回来（只丢这一行）"""
+
+    def __init__(self, stream, fallback):
+        self._stream, self._fallback, self._file, self.broken = stream, Path(fallback), None, None
+
+    def _spill(self):
+        if self._file is None:
+            self._fallback.parent.mkdir(parents=True, exist_ok=True)
+            self._file = open(self._fallback, "a", encoding="utf-8", errors="replace")
+            self._file.write(f"[s2a] 标准错误写不进了（{self.broken}），之后的输出改写这里\n")  # 非玩家句
+        return self._file
+
+    def write(self, text):
+        if self.broken is None:
+            try:
+                return self._stream.write(text)
+            except (OSError, ValueError) as error:   # ValueError：流已关（I/O operation on closed file）
+                self.broken = f"{type(error).__name__}: {error}"
+        try:
+            return self._spill().write(text)
+        except OSError:
+            return len(text)
+
+    def flush(self):
+        if self.broken is None:
+            try:
+                return self._stream.flush()
+            except (OSError, ValueError) as error:
+                self.broken = f"{type(error).__name__}: {error}"
+        try:
+            self._spill().flush()
+        except OSError:
+            pass
+
+    def fileno(self):
+        return self._stream.fileno() if self.broken is None else self._spill().fileno()
+
+    def __getattr__(self, name):   # encoding / isatty / buffer 等照原流
+        return getattr(self._stream, name)
+
+
 def run_request(request_path, *, context_class=Context, operation_overrides=None):
+    saved = sys.stderr   # 下面换成 StderrGuard；同一进程里连跑几单（单测）时每单用自己的那份，跑完换回
+    try:
+        return _run_request(request_path, context_class=context_class, operation_overrides=operation_overrides)
+    finally:
+        sys.stderr = saved
+
+
+def _run_request(request_path, *, context_class=Context, operation_overrides=None):
     # 开发者证书密码（devCert 导入那一次由启动器经环境变量给，devcert.py ⑤）：先从环境摘掉，任何子进程都拿不到；请求文件里从不放
     devcert_password = os.environ.pop(devcert.PASSWORD_ENV, None)
+    apple_password = os.environ.pop(apple_login.PASSWORD_ENV, None)   # Mac 通用壳 Apple ID 登录（appleLogin）那一次：同上，只写进 plumesign 的标准输入
     winproc.prepare_child_environment()
     path = Path(request_path)
-    if os.name != "nt" and not winproc.request_is_private(path):   # Windows 由启动器建文件时就给只本人可读写的权限，不在这里再核（winproc.request_is_private 说明）
-        raise SystemExit("request must be owned by this user and private (0600)")
     request = json.loads(path.read_text())
     if request.get("schema") != 1:
         raise SystemExit("unsupported request schema")
@@ -77,7 +141,9 @@ def run_request(request_path, *, context_class=Context, operation_overrides=None
         # The job cannot even register its record (full disk, read-only volume): say why and come back non-zero instead of a traceback (J10)
         print(f"[s2a] 【红】任务记录写不进磁盘，任务未开始：{error}", file=sys.stderr, flush=True)
         return 1
+    sys.stderr = StderrGuard(sys.stderr, Path(c.logs) / f"{c.task}-stderr.log")
     c.devcert_password = devcert_password
+    c.apple_password = apple_password
     signal.signal(signal.SIGTERM, lambda *_: c.stop())
     signal.signal(signal.SIGINT, lambda *_: c.stop())
     ended = threading.Event()
@@ -94,11 +160,22 @@ def run_request(request_path, *, context_class=Context, operation_overrides=None
                   "setup": library.setup, "keys": library.keys, "import": library.import_games,
                   "catalog": library.catalog, "customize": library.customize, "remove": library.remove, "delete": library.delete, "clean": library.clean,
                   "spaceSurvey": library.space_survey, "spaceFree": library.space_free, "storageOverview": sizes.overview,
-                  "diagnostics": library.diagnostics, "diagnosticsUpload": diag_upload.upload, "saveInput": library.save_input,
+                  "phoneSaves": install.phone_saves,
+                  "phoneSaveRestore": install.restore_phone_save,
+                  "diagnostics": library.diagnostics, "diagnosticsUpload": diag_upload.upload, "saveInput": library.save_input, "loadInput": library.load_input, "resetInput": library.reset_input,
+                  "setDefaultInput": library.set_default_input,
+                  "phoneUsage": install.phone_usage,
                   "locations": library.list_locations, "moveGame": library.move_game, "relinkGame": library.relink_game, "forgetGame": library.forget_game,
-                  "build": build.prepare, "launch": build.launch, "pullDiagnostics": diag.pull, "ipa": ipa.build, "downstreamChoice": downstream.set_choice, "install": install.install, "installRemove": install.remove_from_phone, "installRestore": install.restore_previous, "installUpdate": install.update_phone, "phoneKeptPull": install.phone_kept_pull, "exportPush": install.push_export_job, "installMode": install.install_mode_job, "installCheck": install.readiness, "signingProject": install.signing_project, "installDotnet": toolchain.install_dotnet, "targetDevice": target.probe,
-                  "saveStatus": saves.status, "saveBackup": saves.backup, "saveInspect": saves.inspect, "saveRestore": saves.restore,
-                  "community": community.listing, "communitySave": community.save, "patchMatch": patches.match, "sgradeScan": sgrade.scan, "sgradeMac": sgrade.mac_all, "sgradeReenable": sgrade.reenable, "devCert": devcert.operation, "export": export_plan.export}
+                  "phoneIdentity": install.phone_identity, "phoneChooseApp": install.phone_choose_app,
+                  "appleLogin": apple_login.login, "appleAccount": apple_login.account,
+                  "build": build.prepare, "launch": build.launch, "pullDiagnostics": diag.pull, "ipa": ipa.build, "adoptProduct": ipa.adopt_product, "downstreamChoice": downstream.set_choice, "install": install.install, "updateGame": install.update_game, "installRemove": install.remove_from_phone, "installRestore": install.restore_previous, "installUpdate": install.update_phone, "installUpdatePrepare": install.update_prepare, "phoneKeptPull": install.phone_kept_pull, "pushSelected": install.push_selected, "installMode": install.install_mode_job, "installCheck": install.readiness, "signingProject": install.signing_project, "installDotnet": toolchain.install_dotnet, "targetDevice": target.probe,
+                  "tvInstall": tvos.install_tv, "tvExport": tvos.export_tv, "tvDevices": tvos.devices_job, "tvSaveBackup": tvos.autobackup,   # Apple TV（tvOS 版，pack/jobs/tvos.py）
+                  "pushSelected": install.push_selected,
+                  "signModeSet": install.sign_mode_set,
+                  "layoutSet": install.layout_set,   # 出法：通用 S2Arm / 独立 App（一 App 一游戏，0.6.3）
+                  "saveStatus": saves.status, "saveBackup": saves.backup, "saveInspect": saves.inspect, "saveRestore": saves.restore, "savePrevious": save_previous.status, "saveRestorePrevious": save_previous.restore, "saveDiscardSeed": saves.discard_seed,
+                  "community": community.listing, "communitySave": community.save, "patchMatch": patches.match, "sgradeScan": sgrade.scan, "sgradeUpgradeGame": sgrade.upgrade_one, "sgradeUpgradeBatch": sgrade.upgrade_batch, "sgradeUpgradeStop": sgrade.upgrade_stop, "sgradeUpgradeStatus": sgrade.upgrade_status, "updateHints": host_update.update_hints, "phoneOverview": host_update.phone_overview, "sgradeMac": sgrade.mac_all, "sgradeReenable": sgrade.reenable, "devCert": devcert.operation, "diagCode": diagcode.operation, "export": export_plan.export,
+                  "android": android_export.build_job, "androidDevices": android_export.devices_job}
     if operation_overrides:
         operations.update(operation_overrides)
     try:
@@ -106,11 +183,14 @@ def run_request(request_path, *, context_class=Context, operation_overrides=None
             raise Failure("不支持的任务类型。")
         if c.operation == "import" and c.r.get("partialResults") is True:   # 默认路径不带 sources（结果与任务记录同 #124 之前）
             c.import_result = library.initial_import_result(c)
-        if c.operation not in saves.OPERATIONS and c.operation not in ORCHESTRATION:
+        if c.operation not in saves.OPERATIONS and c.operation not in ORCHESTRATION + DEVICE_ONLY:
             embedded.install(c)
         if c.operation not in NO_LIBRARY:
             layout.ensure(c)   # 旧布局的库先一次性整理成新结构（layout.py），之后各作业只按新布局找路径
-        with awake.keep_awake() if c.operation in KEEP_AWAKE else contextlib.nullcontext():
+        if c.operation in AUTO_HEAVY or c.operation in LOW_PRIORITY:
+            background_priority()
+        with c.lock("auto-heavy", wait=AUTO_HEAVY_WAIT_S) if c.operation in AUTO_HEAVY else contextlib.nullcontext(), \
+                awake.keep_awake() if c.operation in KEEP_AWAKE else contextlib.nullcontext():
             result = operations[c.operation](c)
         if c.operation in HEAL_AFTER:
             # 英文名可能刚拿到（导入读 NACP、出包解出 control.nacp）：锁已放，空闲就把还叫游戏号的文件夹改名（剃刀 H3）。
@@ -140,7 +220,6 @@ def run_request(request_path, *, context_class=Context, operation_overrides=None
             log = c.logs / (c.task + "-exception.log")
             log.parent.mkdir(parents=True, exist_ok=True)
             log.write_text(c.redact(traceback.format_exc()))
-            os.chmod(log, 0o600)
             c.last_log = log
         # 取消（SIGTERM / 启动器没了）会把正在跑的工具一起停掉，工具因此报的错只是取消的后果，照取消收尾。否则 report_failure →
         #   diagnostic → emit 先查取消标志，在这个异常处理里再抛 Cancelled：作业带着回溯退出、没有终态事件也不是 130，
@@ -154,13 +233,49 @@ def run_request(request_path, *, context_class=Context, operation_overrides=None
             del c.job["diagnostics"][kept:]
             return _finish_cancelled(c)
         message = diagnostic["summary"]
+        integrity_note(c)
         if c.operation in CLEANS_AFTER_STOP:   # 错误摘要要读产物根里的日志，所以排在它后面
             library.clean_after_stop(c)
-        c.finish("failed", message, partial_import_result(c))
+        c.finish("failed", message, partial_import_result(c) or app_installed_result(c))
         return 1
     finally:
         ended.set()
         _drop_job_tmp(c)
+        forget_host_registrations(c)
+
+
+def forget_host_registrations(c):
+    """#2024：出包、准备、导入这类作业把内置宿主 S2ArmGame.app 当辅助工具执行（GLSLC / Oodle 工具模式、管线归档），
+    系统一执行带 Info.plist 的 .app 就登记它，「App」启动器里随即多一个 S2ArmGame。原先只有起局收尾注销（build.launch），
+    这些作业结束后登记一直留着。作业环境给过内置宿主（core.Context.env 记 host_app）就在结束时注销一遍；注销失败不影响作业结果"""
+    app = getattr(c, "host_app", None)
+    if app is None:
+        return
+    try:
+        host_update.forget_registrations(app=app)
+    except OSError as error:
+        print(f"[s2a] 【黄】作业结束注销宿主登记没做成：{error}", file=sys.stderr, flush=True)
+
+
+def integrity_note(c):
+    """出包 / 起局等带游戏号的作业失败时：这款导入时有内容跳过了完整性校验 → 补一条 warning 级诊断（维护者 11-17：免得难查）。
+    读不到游戏库或不是游戏作业就不补，不让补充说明本身把失败收尾弄坏"""
+    gid = c.r.get("gameId")
+    if not gid:
+        return
+    try:
+        game = next((g for g in c.catalog()["games"] if g["id"] == gid), None)
+        if library.integrity_skipped(game):
+            c.diagnostic(library.SOURCE_INTEGRITY_FAILED_NOTE, code="source_integrity_skipped", severity="warning")
+        # 出包时资源包核对没对上（pack/verify.py 改黄后照常出包，原因落 <包目录>.verify_warn.txt；全对时它会删掉旧的）：现行产物根里还留着就补一句
+        roots = (layout.current_root(c, p) for p in layout.build_dir(c, gid, create=False).glob("*/roots/*" + layout.CURRENT))
+        if any(r is not None and any(r.glob("pkg/*.verify_warn.txt")) for r in roots):
+            c.diagnostic(PACK_VERIFY_NOTE, code="source_integrity_skipped", severity="warning")
+    except (Failure, OSError, ValueError, KeyError, TypeError):
+        pass
+
+
+PACK_VERIFY_NOTE = "之前出包时这款的资源包核对没对上（包里有文件和原件不一致），这次失败可能与此有关；重新出包一次再试。"
 
 
 def _finish_cancelled(c):
@@ -187,10 +302,36 @@ def _drop_job_tmp(c):
 
 
 CLEANS_AFTER_STOP = ("build", "ipa")
-KEEP_AWAKE = ("build", "ipa", "install", "installUpdate", "installRestore", "exportPush")   # 出包 / 推送期间电脑不空闲休眠（awake.py；v0.3.1 玩家推大包被休眠打断成「传输中断」）
+# 打开启动器时自动起的后台重活（#1439 / #1442 / #1443）：installUpdatePrepare（有手机要更新就预出包）、sgradeMac（S 级规则变了重出）。
+#   两件同时跑时各按整机开满路数，玩家的 Mac 内存耗尽 panic。这两项只由启动器自动发起（S2ArmLauncherModel / +PhoneBanner），按作业名就能认：
+#   互相串行（游戏库里一把「auto-heavy」锁，后到的排队、显示在等谁、能取消），整条链低优先级（nice 19 子进程继承；macOS 再加后台档），不和玩家抢机器
+AUTO_HEAVY = ("installUpdatePrepare",)   # sgradeMac 11-17 起不自动（玩家点了才做单款，sgrade.upgrade_game），不再算后台重活
+AUTO_HEAVY_WAIT_S = 6 * 3600
+# 玩家点的 S 级升级（批量 / 单款同一个队列入口，sgrade.upgrade_batch；同一时刻只升一款）：不算自动任务（不拿 auto-heavy 锁、启动器照常算玩家发起），
+#   但同样整条链降到后台档——11-17 维护者「做好线程管理和内存管理，不要一次批量升级就把用户电脑干爆了」；路数另按 upgrade_budget 定
+LOW_PRIORITY = ("sgradeUpgradeGame", "sgradeUpgradeBatch")
+
+
+def background_priority():
+    """本进程（及之后起的子进程）降到最低优先级：nice 19；macOS 再设后台档（PRIO_DARWIN_BG：CPU / 磁盘都让前台）；
+    Windows 设空闲优先级类（IDLE_PRIORITY_CLASS，之后起的子进程继承）。做不成不挡作业"""
+    try:
+        if sys.platform == "win32":
+            import ctypes
+            ctypes.windll.kernel32.SetPriorityClass(ctypes.windll.kernel32.GetCurrentProcess(), 0x40)   # IDLE_PRIORITY_CLASS
+        if hasattr(os, "nice"):
+            os.nice(max(0, 19 - os.nice(0)))
+        if hasattr(os, "PRIO_DARWIN_BG"):
+            os.setpriority(os.PRIO_DARWIN_PROCESS, 0, os.PRIO_DARWIN_BG)
+    except OSError as error:
+        print(f"[s2a] 自动任务降优先级没做成，照常跑：{error}", file=sys.stderr, flush=True)
+
+
+KEEP_AWAKE = ("build", "ipa", "android", "install", "installUpdate", "installRestore", "exportPush", "tvInstall", "tvExport", "updateGame")   # 出包 / 推送 / 更新这款（重编着色器库可能几小时，11-21）期间电脑不空闲休眠（awake.py；v0.3.1 玩家推大包被休眠打断成「传输中断」）
 HEAL_AFTER = ("import", "build", "ipa")   # 结束时顺手把还叫游戏号的文件夹改英文名（layout.heal_folder_names）
 ORCHESTRATION = ("export",)   # 只起子作业的编排：引擎副本、游戏库结构由每一步的子作业自己核（剃刀 H13）
-NO_LIBRARY = ORCHESTRATION + ("preflight", "prepareEngine", "downloadMetal", "downloadIosPlatform", "installDotnet", "targetDevice", "setup", "signingProject", "devCert")
+DEVICE_ONLY = ("androidDevices",)   # 只问已连接设备（adb），不碰引擎副本与游戏库
+NO_LIBRARY = ORCHESTRATION + DEVICE_ONLY + ("preflight", "prepareEngine", "downloadMetal", "downloadIosPlatform", "installDotnet", "targetDevice", "setup", "signingProject", "devCert", "appleLogin", "appleAccount")
 
 
 def parser():

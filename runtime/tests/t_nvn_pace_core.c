@@ -51,6 +51,40 @@ int main(void) {
     eq_u64("重启后早到", nvn_pace(&p, 1660, P), 40);
     eq_pacer("重启后槽", &p, 1700);
 
+    // ---- 取图 / 上屏循环重放（hle_nvn.c）：取图等到这张图的槽时间 avail[i]（节拍器控节奏时），这一帧干 work，上屏排槽
+    //   （nvn_pace，或显示链路控了节奏的帧 nvn_pace_follow），这张图在槽后一个周期再可取。期望手算：周期 PP = 1/60 s
+    const uint64_t PP = 16666667ull, MS = 1000000ull;
+    // ① 真等节拍器的调用方、每帧 1 ms 活：交换链 2 / 3 / 4 张图都是 60 帧（三四张时槽领先上屏两三个周期，不能截断）
+    for (int ntex = 2; ntex <= 4; ntex++) {
+        nvn_pacer q = {0}; uint64_t avail[4] = {0}, t = 1000 * MS, t100 = 0;
+        for (int k = 0; k < 1100; k++) { if (k == 100) t100 = t; if (avail[k % ntex] > t) t = avail[k % ntex]; t += MS; avail[k % ntex] = t + nvn_pace(&q, t, PP) + PP; }
+        double fps = 1000.0 / ((t - t100) / 1e9); checks++;
+        if (!(fps > 59.9 && fps < 60.1)) { fails++; printf("FAIL %d 张图、节拍器控节奏：%.2f fps，期望 60\n", ntex, fps); }
+    }
+    // ② 显示链路控 18,000 帧（12.5 ms 一帧，120 Hz 可变刷新率链路）后沉默、节拍器接手：第一次等待 ≤ 一个周期，之后 16.667 ms 一帧
+    //   （每帧照旧走一个周期时，槽领先真实时间 75 s，兜底一次睡完）
+    for (int ntex = 2; ntex <= 3; ntex++) {
+        nvn_pacer q = {0}; uint64_t avail[4] = {0}, t = 5000 * MS, worst = 0, t0 = 0; int k;
+        for (k = 0; k < 18000; k++) { t += 12500000ull; nvn_pace_follow(&q, t); avail[k % ntex] = t + PP; }
+        for (; k < 18000 + 600; k++) {
+            uint64_t w = avail[k % ntex] > t ? avail[k % ntex] - t : 0; if (w > worst) worst = w;
+            t += w + MS; if (k == 18100) t0 = t;
+            avail[k % ntex] = t + nvn_pace(&q, t, PP) + PP;
+        }
+        double per = (t - t0) / 499.0 / 1e6; checks++;
+        if (!(worst <= PP && per > 16.66 && per < 16.67)) { fails++; printf("FAIL %d 张图、链路控 18000 帧后沉默：最长等待 %.3f ms（期望 ≤ %.3f），之后 %.3f ms 一帧（期望 16.667）\n", ntex, worst / 1e6, PP / 1e6, per); }
+    }
+    // ③ 链路控 / 沉默来回三次（三张图）：每次等待都 ≤ 一个周期
+    { nvn_pacer q = {0}; uint64_t avail[3] = {0}, t = 5000 * MS, worst = 0; int k = 0;
+      for (int phase = 0; phase < 6; phase++)
+          for (int j = 0; j < 300; j++, k++) {
+              if (phase % 2 == 0) { t += 12500000ull; nvn_pace_follow(&q, t); avail[k % 3] = t + PP; continue; }
+              uint64_t w = avail[k % 3] > t ? avail[k % 3] - t : 0; if (w > worst) worst = w;
+              t += w + 4 * MS; avail[k % 3] = t + nvn_pace(&q, t, PP) + PP;
+          }
+      checks++;
+      if (!(worst <= PP)) { fails++; printf("FAIL 链路控 / 沉默来回三次：最长等待 %.3f ms，期望 ≤ %.3f\n", worst / 1e6, PP / 1e6); } }
+
     if (fails) printf("✗ t_nvn_pace_core：%d / %d 项不符\n", fails, checks);
     else printf("✓ t_nvn_pace_core：上屏节拍 %d 项全过（0 处不符）\n", checks);
     return fails ? 1 : 0;

@@ -1,0 +1,94 @@
+diff --git a/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAmpereMem.cs b/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAmpereMem.cs
+index 7976d8b4f24d7a5be9e06bfb44077f64816cf3eb..b1aac02b67e6a11edebfd6924f9b9e4b5d9c3737 100644
+--- a/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAmpereMem.cs
++++ b/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAmpereMem.cs
+@@ -544,7 +544,7 @@ namespace Ryujinx.Graphics.Shader.Instructions
+         // at 61..64, the size at 73..76 and the operation at 87..91 (Eglantine's lowering to Maxwell names the fields). Mario Kart World's compute shader adds 1 at (R4, R5) of a 2D
+         // image; its word 2 is SUATOM's in Donkey Kong Bananza's encoding less the predicate result.
+         // S2Arm（上游参考实现（MIT）9507c221c）：操作取 87..91 的 SUATOM 同序字段（ADD / MIN / MAX / INC / DEC / AND / OR / XOR，耀西与神秘图鉴的计算着色器用了 MAX、OR、MIN），
+-        // 其余位仍须是那一式（32 位、无钳位位）；大小非 32 位（其 Nanite 着色器的 MAX.U64）或操作号越过 XOR 照旧拒。句柄在游戏自己的 uniform 缓冲（非 c[2]）的仍拒：宿主没有按 uniform 里的句柄绑图像的那条路
++        // 其余位仍须是那一式（32 位、无钳位位）；大小非 32 位（其 Nanite 着色器的 MAX.U64）或操作号越过 XOR 照旧拒。句柄在游戏自己的 uniform 缓冲（非 c[2]）的带库号下去，同 SULD / SUST（宿主按 uniform 里的句柄绑图像：反射 img_ubo / NVN_RB_IMGU，可做原子）
+         public static void ASured(EmitterContext context)
+         {
+             AmpereOp x = new(context.CurrOp);
+@@ -556,34 +556,24 @@ namespace Ryujinx.Graphics.Shader.Instructions
+ 
+             (int handle, int cbufSlot) = ATexHandle(context, x);
+ 
+-            if (cbufSlot != TextureOperation.DefaultCbufSlot)
+-            {
+-                throw AFail(context, $"SURED handle in bank {cbufSlot}");
+-            }
+-
+-            // S2Arm: no clamp argument (upstream's EmitSured takes one; ours has none, as EmitSuatom above)
+-            EmitSured(context, (SuDim)x.Bits(61, 64), (RedOp)x.Bits(87, 91), SuatomSize.U32, handle, x.Ra, x.Rb, 0, false, isBindless: false);
++            // S2Arm: no clamp argument (upstream's EmitSured takes one; ours has none, as EmitSuatom above). A handle in another bank goes with its bank, as SULD / SUST's (ASurface)
++            EmitSured(context, (SuDim)x.Bits(61, 64), (RedOp)x.Bits(87, 91), SuatomSize.U32, handle, x.Ra, x.Rb, 0, false, isBindless: false, cbufSlot: cbufSlot);
+         }
+ 
+         // SUATOM Rd, [Ra], Rb (0x593): an atomic on an image through a handle, laid out as SUST's (handle 40..59, dimension 61..64) and as ATOMG's (operation
+         // 87..91, size 73..76, Pu 81..83). Donkey Kong Bananza's append compute shaders take a counter with it (SUATOM.ADD.U32 on a 1D image, the old value
+-        // shuffled to the warp) before their SUST. Another handle bank or a predicate result is not met in a game: refused.
++        // shuffled to the warp) before their SUST. A handle in another bank goes with its bank (as ASurface; the host binds it from the uniform word, img_ubo); a predicate result is not met in a game: refused.
+         public static void ASuatom(EmitterContext context)
+         {
+             AmpereOp x = new(context.CurrOp);
+             (int handle, int cbufSlot) = ATexHandle(context, x);
+ 
+-            if (cbufSlot != TextureOperation.DefaultCbufSlot)
+-            {
+-                throw AFail(context, $"SUATOM handle in bank {cbufSlot}");
+-            }
+-
+             if (x.Bits(81, 84) != 7)
+             {
+                 throw AFail(context, "SUATOM with a predicate result");
+             }
+ 
+-            EmitSuatom(context, (SuDim)x.Bits(61, 64), (SuatomOp)x.Bits(87, 91), (SuatomSize)x.Bits(73, 76), handle, x.Ra, x.Rb, 0, x.Rd, false, isBindless: false, compareAndSwap: false);
++            EmitSuatom(context, (SuDim)x.Bits(61, 64), (SuatomOp)x.Bits(87, 91), (SuatomSize)x.Bits(73, 76), handle, x.Ra, x.Rb, 0, x.Rd, false, isBindless: false, compareAndSwap: false, cbufSlot: cbufSlot);
+         }
+ 
+         // BAR.SYNC: the workgroup barrier
+diff --git a/src/Ryujinx.Graphics.Shader/Instructions/InstEmitSurface.cs b/src/Ryujinx.Graphics.Shader/Instructions/InstEmitSurface.cs
+index 462476e143ea214667ca93c385af0e85dceba48c..f2c79232920c123ac9f8a1b69745e893eb5038e6 100644
+--- a/src/Ryujinx.Graphics.Shader/Instructions/InstEmitSurface.cs
++++ b/src/Ryujinx.Graphics.Shader/Instructions/InstEmitSurface.cs
+@@ -189,7 +189,8 @@ namespace Ryujinx.Graphics.Shader.Instructions
+             int dest,
+             bool byteAddress,
+             bool isBindless,
+-            bool compareAndSwap)
++            bool compareAndSwap,
++            int cbufSlot = TextureOperation.DefaultCbufSlot)
+         {
+             SamplerType type = ConvertSamplerType(dimensions);
+ 
+@@ -283,7 +284,7 @@ namespace Ryujinx.Graphics.Shader.Instructions
+                 type,
+                 format,
+                 flags,
+-                TextureOperation.DefaultCbufSlot,
++                cbufSlot,
+                 imm);
+ 
+             Operand res = context.ImageAtomic(type, format, flags, setAndBinding, sources);
+@@ -471,7 +472,8 @@ namespace Ryujinx.Graphics.Shader.Instructions
+             int srcB,
+             int srcC,
+             bool byteAddress,
+-            bool isBindless)
++            bool isBindless,
++            int cbufSlot = TextureOperation.DefaultCbufSlot)
+         {
+             SamplerType type = ConvertSamplerType(dimensions);
+ 
+@@ -558,7 +560,7 @@ namespace Ryujinx.Graphics.Shader.Instructions
+                 type,
+                 format,
+                 flags,
+-                TextureOperation.DefaultCbufSlot,
++                cbufSlot,
+                 imm);
+ 
+             context.ImageAtomic(type, format, flags, setAndBinding, sources);

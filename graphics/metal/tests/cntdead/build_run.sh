@@ -4,5 +4,5 @@ set -e
 HERE=$(cd "$(dirname "$0")" && pwd); ROOT=$(cd "$HERE/../../../.." && pwd); OUT=$ROOT/build/cntdead
 mkdir -p "$OUT"
 make -s -C "$ROOT/graphics/metal" "$ROOT/build/gal/libnxgal.dylib"
-timeout 600 dotnet build "$HERE/CntDead.csproj" -c Release --artifacts-path "$OUT/art" -p:OutDir="$OUT/bin/" -v quiet -nologo > "$OUT/build.log" 2>&1 || { grep -E ' error ' "$OUT/build.log" | sort -u | head -20; exit 2; }
+timeout 600 bash "$ROOT/tools/cs_cache.sh" "$OUT/art" "$OUT/bin" "$HERE/CntDead.csproj" -- dotnet build "$HERE/CntDead.csproj" -c Release --artifacts-path "$OUT/art" -p:OutDir="$OUT/bin/" -v quiet -nologo > "$OUT/build.log" 2>&1 || { grep -E ' error ' "$OUT/build.log" | sort -u | head -20; exit 2; }
 cd "$OUT/bin" && NXGAL_LIB="$ROOT/build/gal/libnxgal.dylib" timeout 60 dotnet CntDead.dll

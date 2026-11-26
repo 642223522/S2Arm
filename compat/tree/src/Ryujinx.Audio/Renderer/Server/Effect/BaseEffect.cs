@@ -15,6 +15,9 @@ namespace Ryujinx.Audio.Renderer.Server.Effect
     /// </summary>
     public class BaseEffect
     {
+        // S2Arm 即时存档：恢复后让带 DSP 状态的效果在下一拍按参数重新初始化状态（托管状态不随渲染器缓冲拷回）
+        public virtual void S2AForceReinit() { }
+
         /// <summary>
         /// The <see cref="EffectType"/> of the effect.
         /// </summary>

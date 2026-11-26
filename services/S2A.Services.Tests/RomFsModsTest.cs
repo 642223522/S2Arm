@@ -187,13 +187,32 @@ namespace S2A.Services.Tests
                     File.SetUnixFileMode(Path.Combine(mods, "30_bad/romfs/locked.bin"), UnixFileMode.UserRead | UnixFileMode.UserWrite);
                     File.SetUnixFileMode(Path.Combine(mods, "30_bad/romfs/lockdir"), UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
 
-                    // ⑤ 多程序合集的子程序（序号 ≥ 1）：mod 只叠主程序，记黄、原对象返回
+                    // ⑤ 多程序合集：未标目标的 mod 只叠主程序；标了目标的 mod 只叠完整程序号匹配的程序。
+                    const ulong mainId = 0x0100ABCD00010000, subId = mainId + 1;
+                    string targeted = Path.Combine(root, form, "docs_target", RomFsMods.DirName);
+                    Put(targeted, "Default/romfs/a.bin", 13, 0xA0);
+                    Put(targeted, $"Target/romfs.{subId:X16}/a.bin", 17, 0xA1);
+                    Put(targeted, $"Wrong/romfs.{subId + 0x10:X16}/a.bin", 19, 0xA2);
                     using (IStorage b = OpenBase(program, image))
                     {
-                        lines.Clear();
-                        IStorage s = RomFsMods.Apply(b, mods, 1);
-                        Check($"{form}：子程序不叠 mod、原对象返回", "True", ReferenceEquals(s, b).ToString());
-                        Check($"{form}：子程序不叠 mod 记黄", "1", lines.Count(l => l.Contains("【黄】") && l.Contains("序号 1")).ToString());
+                        using IStorage s = RomFsMods.Apply(b, targeted, 0, mainId);
+                        Check($"{form}：主程序仅叠未标目标的 mod", "13×0xA0", Read(s, "/a.bin"));
+                    }
+                    using (IStorage b = OpenBase(program, image))
+                    {
+                        using IStorage s = RomFsMods.Apply(b, targeted, 1, subId);
+                        Check($"{form}：目标子程序只叠完整 ID 匹配的 mod", "17×0xA1", Read(s, "/a.bin"));
+                    }
+                    using (IStorage b = OpenBase(program, image))
+                    {
+                        IStorage s = RomFsMods.Apply(b, targeted, 2, mainId + 2);
+                        Check($"{form}：无关子程序返回原对象", "True", ReferenceEquals(s, b).ToString());
+                    }
+                    Directory.Move(Path.Combine(targeted, "Target"), Path.Combine(targeted, ".off-Target"));
+                    using (IStorage b = OpenBase(program, image))
+                    {
+                        IStorage s = RomFsMods.Apply(b, targeted, 1, subId);
+                        Check($"{form}：关掉 mod，目标子程序返回原对象", "True", ReferenceEquals(s, b).ToString());
                     }
 
                     string corrupted = ResultFs.HostFileDataCorrupted.Value.ToString();

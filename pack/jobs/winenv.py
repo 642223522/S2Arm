@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 S2Arm contributors
 """Read-only Windows packaging inventory: the launcher's single start-of-job check (bundled packing items from oneclick_win.env_items + Impactor + system components). See WINDOWS_ENV.md."""
+# 应用布局：只从引擎快照里的 pack/jobs 起（toolchain.py 用 c.engine/pack/jobs/winenv.py 当脚本跑），不从应用的 Jobs 里跑；这里的 ROOT 就是引擎根
 from __future__ import annotations
 
 import argparse
@@ -622,7 +623,10 @@ def _metal(request, probe):
             raise ValueError()
         versions = re.findall(r"(?m)^Apple metal version ([0-9][A-Za-z0-9_.+() -]{0,240})$", output.strip())
         if len(versions) != 1 or re.search(r"error:", output, re.IGNORECASE):
-            return _item("metal", "官方Windows Metal编译器", "missing", "未取得有效Apple metal version。" + hint, METAL_LOCK)  # 非玩家句
+            # 带上输出原文（D-NJGH：metal.exe 找到了、--version 也跑了却认不出，诊断里没原文定不了因）；只取末尾一段，换行并成「 / 」
+            raw = " / ".join(line.strip() for line in output.strip().splitlines() if line.strip())[-400:]
+            said = "未取得有效Apple metal version。--version 输出：" + (raw or "（空）") + "。"  # 非玩家句
+            return _item("metal", "官方Windows Metal编译器", "missing", said + hint, METAL_LOCK)
         actual = "Apple metal version " + versions[0]
         message = actual
         if actual != tested:

@@ -63,6 +63,14 @@ class RegistryTest(unittest.TestCase):
         self.assertEqual(s["id"], "d2r-mobile")
         self.assertIsNone(ds.match(dict(id="01006F8002326000"), schemes))
 
+    def test_real_registry_bundle_is_consistent(self):
+        # 换下游版本时 tag / 网址 / 摘要一起改（d2r-mobile #299 换 v2.3.4）：每个网址都指本 tag，下载站在前、GitHub 在后，摘要与提交号格式对
+        b = ds.load()["d2r-mobile"]["bundle"]
+        self.assertTrue(all(f"/{b['tag']}/" in u for u in b["urls"]), b["urls"])
+        self.assertEqual([u.split("/")[2] for u in b["urls"]], ["dl.s2arm.com", "github.com"])
+        self.assertRegex(b["sha256"], r"^[0-9a-f]{64}$")
+        self.assertRegex(b["commit"], r"^[0-9a-f]{40}$")
+
     def test_registry_text_has_no_game_name(self):
         # 公开仓文字不写游戏名：界面上的游戏名取玩家自己游戏包里的；登记表只写程序号与方案名
         text = ds.REGISTRY.read_text(encoding="utf-8")
@@ -173,6 +181,29 @@ class RequestTest(unittest.TestCase):
         self.assertEqual(ds.requested(FakeContext("/nonexistent", dict(scheme="d2r-mobile")), dict(id=TITLE))["id"], "d2r-mobile")
 
 
+class WorkDirTest(unittest.TestCase):
+    """#1915：DM_ROOT 跨出包复用，换了包件还留着上一版工具放的翻译器 → 用错。工作目录归属某一份包件，换包件整个清掉"""
+    def test_same_bundle_keeps_work_other_bundle_clears_it(self):
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d) / "out"
+            old = scheme(bundle=dict(tag="v2.3.1", commit=COMMIT, urls=[], sha256="a" * 64))
+            new = scheme(bundle=dict(tag="v2.3.3", commit=COMMIT, urls=[], sha256="b" * 64))
+            w = ds.work_dir(out, old)
+            stale = w / "build/gfx/dmsh_xlate/dmsh_xlate"; stale.parent.mkdir(parents=True); stale.write_bytes(b"old")
+            self.assertEqual(ds.work_dir(out, old), out / "work")
+            self.assertEqual(stale.read_bytes(), b"old")                      # 同一份包件：照旧复用
+            w = ds.work_dir(out, new)
+            self.assertFalse(stale.exists())                                  # 换包件：上一版放的东西清掉
+            self.assertEqual((w / ".bundle").read_text(), "b" * 64)
+
+    def test_work_left_by_old_version_without_mark_is_cleared(self):
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d) / "out"
+            stale = out / "work/build/gfx/dmsh_xlate/dmsh_xlate"; stale.parent.mkdir(parents=True); stale.write_bytes(b"old")
+            ds.work_dir(out, scheme(bundle=dict(tag="v1", commit=COMMIT, urls=[], sha256="c" * 64)))
+            self.assertFalse(stale.exists())                                  # 修复前留下的、没记归属：清一次
+
+
 class BundleTest(unittest.TestCase):
     def make(self, d, commit=COMMIT):
         z = Path(d) / "bundle.zip"
@@ -209,6 +240,41 @@ class BundleTest(unittest.TestCase):
             with self.assertRaisesRegex(Failure, "不一致"):
                 ds.fetch_bundle(c, s)
 
+    def test_corrupt_download_is_fetched_again(self):
+        """维护者 11-17（玩家判断不了的我们替他判）：下载的包件 SHA 不对 → 不用它、自动重下；重下对了就照常用。期望手写：
+        第一次读到坏字节、第二次读到原样 → 照常解开，同一地址共请求 2 次"""
+        import io, unittest.mock as um
+        with tempfile.TemporaryDirectory() as d:
+            z, sha = self.make(d)
+            good = z.read_bytes(); calls = []
+            class Resp(io.BytesIO):
+                headers = {}
+                def __enter__(self): return self
+                def __exit__(self, *a): return False
+            def fake(req, timeout=None):
+                calls.append(req.full_url)
+                return Resp(b"bad" if len(calls) == 1 else good)
+            s = scheme(bundle=dict(tag="v1", commit=COMMIT, urls=["https://example.invalid/b.zip"], sha256=sha))
+            c = FakeContext(Path(d) / "private"); c.private.mkdir()
+            with um.patch.object(ds.urllib.request, "urlopen", fake):
+                root = ds.fetch_bundle(c, s)
+            self.assertEqual((root / "src/dm/tools/d2rm_pack.py").read_bytes(), b"print(1)\n")
+            self.assertEqual(len(calls), 2)
+
+    def test_other_commit_is_fetched_again_then_refused_and_not_kept(self):
+        """内容和登记的不一致：删掉这份、整件重下一遍；还不对才报（说明重下过），且不留这份 zip（下次不再用它）。期望手写：请求 2 次"""
+        import unittest.mock as um
+        with tempfile.TemporaryDirectory() as d:
+            z, sha = self.make(d, commit="d" * 40)
+            s = scheme(bundle=dict(tag="v1", commit=COMMIT, urls=[z.as_uri()], sha256=sha))
+            c = FakeContext(Path(d) / "private"); c.private.mkdir()
+            real = ds.urllib.request.urlopen; calls = []
+            with um.patch.object(ds.urllib.request, "urlopen", lambda req, timeout=None: (calls.append(1), real(req, timeout=timeout))[1]):
+                with self.assertRaisesRegex(Failure, "重新下载后还是不对"):
+                    ds.fetch_bundle(c, s)
+            self.assertEqual(len(calls), 2)
+            self.assertFalse(list((c.private / "downstream").rglob("*.zip")))
+
     def test_unpublished_bundle_says_so(self):
         with self.assertRaisesRegex(Failure, "还没上线"):
             ds.fetch_bundle(FakeContext("/nonexistent"), scheme())
@@ -241,10 +307,10 @@ class WinContext:
     def begin(self, name, i, n): self.steps.append((i, n, name))
     def emit(self, kind, m): self.messages.append(m)
 
-    def run(self, cmd, log, env=None):
-        self.runs.append([str(x) for x in cmd])
+    def run(self, cmd, log, env=None, cwd=None):
+        self.runs.append([str(x) for x in cmd]); self.cwds = getattr(self, "cwds", []) + [cwd]
         if "-e" in self.runs[-1]:
-            self.ents = plistlib.loads(Path(self.runs[-1][self.runs[-1].index("-e") + 1]).read_bytes())
+            self.ents = plistlib.loads((Path(cwd or ".") / self.runs[-1][self.runs[-1].index("-e") + 1]).read_bytes())
 
 
 class FakeWin:
@@ -307,6 +373,11 @@ class WinInstallTest(unittest.TestCase):
         self.assertEqual(self.c.ents, {IML: True})
         self.assertEqual(self.c.runs[0][:3], ["rcodesign.exe", "sign", "-e"])
         self.assertTrue(self.c.runs[0][-1].endswith("Demo.app"))
+        # D-J7CH：rcodesign 的 -e 是「作用范围:值」、按第一个冒号拆，Windows 盘符路径会把权限挂到「C」上（os error 3）
+        #   → 只传不含冒号的文件名、在权限文件所在目录里跑；被签的 .app 传绝对路径（运行目录换了也找得到）
+        e = self.c.runs[0][self.c.runs[0].index("-e") + 1]
+        self.assertNotIn(":", e); self.assertEqual(e, "downstream.entitlements")
+        self.assertIsNotNone(self.c.cwds[0]); self.assertTrue(Path(self.c.runs[0][-1]).is_absolute())
         self.assertIn("Payload/Demo.app/Demo", W.names)   # 交给 plumesign 的是重新打好的 .ipa
         self.assertEqual((W.ns.udid, W.ns.plumesign), ("UDID1", "plumesign.exe"))
         self.assertEqual((W.pushed["udid"], W.pushed["bid"], W.pushed["pack"]), ("UDID1", "io.s2arm.ds.demo.abcde12345", self.rec["pack"]))
@@ -320,7 +391,7 @@ class WinInstallTest(unittest.TestCase):
         W = FakeWin(team=None)
         with self.assertRaises(Failure) as e:
             self.go(W)
-        self.assertEqual(e.exception.code, "apple_session_expired")
+        self.assertEqual(e.exception.code, "apple_not_signed_in")
         self.assertIsNone(W.ns)
 
     def test_signing_failure_keeps_its_code(self):
@@ -366,9 +437,40 @@ class HostTest(unittest.TestCase):
         s = scheme(targets=dict(ios=dict(tool="t.py", hosts=["mac", "windows"])))
         self.assertEqual(ds.eligibility(s, game(), host="windows"), (True, ""))
 
-    def test_real_registry_is_mac_only_for_now(self):
+    def test_real_registry_opens_windows(self):
+        # 下游 v2.3.3 起做包不再要 C 编译器 / .NET / spirv-cross（壳里自带预编件，#1272），Windows 也能出：登记表放开
         real = ds.load()
-        self.assertEqual(ds.hosts(real["d2r-mobile"]), ["mac"])
+        self.assertEqual(ds.hosts(real["d2r-mobile"]), ["mac", "windows"])
+
+
+class DownstreamInput(unittest.TestCase):
+    """#1570：共用解包只有 RomFS 镜像 romfs.std 时，交给下游做包工具的目录要有逐文件的 romfs/。期望手写：
+    ① 只有 romfs.std → 工具拿到 work/downstream-input：exefs、ctl 里的文件是解包目录对应文件的硬链接（同 inode），romfs/ 下每个文件与镜像里逐字节相同，镜像不放进去；
+    ② 解包目录本来就有 romfs/ 真目录 → 原样交解包目录、不展开；③ 两种都没有 → 原样交（缺什么由工具自己报）"""
+    def setUp(self):
+        from test_onerom import std_romfs
+        self.d = Path(tempfile.mkdtemp()); self.addCleanup(lambda: __import__("shutil").rmtree(self.d, ignore_errors=True))
+        self.ex = self.d / "extract"; (self.ex / "exefs").mkdir(parents=True); (self.ex / "ctl").mkdir()
+        (self.ex / "exefs/main").write_bytes(b"MAIN")
+        self.files = {"build_manifest.psv": b"psv" * 1000, "a.bin": bytes(range(256)) * 300, "empty": b""}
+        self.std = std_romfs(self.files)
+        c = unittest.mock.Mock(); c.engine = str(JOBS.parents[1]); self.c = c
+
+    def test_image_is_expanded(self):
+        (self.ex / "romfs.std").write_bytes(self.std)
+        got, expanded = ds._downstream_input(self.c, self.ex, self.d / "work")
+        self.assertEqual((got, expanded), (self.d / "work/downstream-input", self.d / "work/downstream-input/romfs"))
+        self.assertEqual(sorted(p.name for p in got.iterdir()), ["ctl", "exefs", "romfs"])
+        self.assertEqual(((got / "exefs/main").read_bytes(), (got / "exefs/main").stat().st_ino), (b"MAIN", (self.ex / "exefs/main").stat().st_ino))
+        self.assertEqual({p.name: p.read_bytes() for p in (got / "romfs").iterdir()}, self.files)
+
+    def test_real_romfs_dir_passes_through(self):
+        (self.ex / "romfs").mkdir(); (self.ex / "romfs/x").write_bytes(b"x")
+        self.assertEqual(ds._downstream_input(self.c, self.ex, self.d / "work"), (self.ex, None))
+        self.assertFalse((self.d / "work").exists())
+
+    def test_no_romfs_passes_through(self):
+        self.assertEqual(ds._downstream_input(self.c, self.ex, self.d / "work"), (self.ex, None))
 
 
 if __name__ == "__main__":

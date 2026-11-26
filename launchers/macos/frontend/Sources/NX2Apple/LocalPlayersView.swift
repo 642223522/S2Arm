@@ -28,14 +28,15 @@ struct PlayerToolbarButton: View {
             Label(currentPlayer.map(name) ?? loc.t("s2arm.players.first"), systemImage: "person.crop.circle")
                 .lineLimit(1).frame(maxWidth: 140)
         }
-        .controllerButtonStyle(ConsoleIconButtonStyle())
-        .help((currentPlayer.map(name) ?? loc.t("s2arm.players.first")) + " · " + loc.t("s2arm.players.help"))
+        .controllerButtonStyle(ConsoleIconButtonStyle(backgroundless: true))
+        .launcherTooltip((currentPlayer.map(name) ?? loc.t("s2arm.players.first")) + " · " + loc.t("s2arm.players.help"), placement: .below)
         .accessibilityLabel(loc.t("s2arm.players.player") + "：" + (currentPlayer.map(name) ?? ""))
         .controllerID("top.player")
         .onAppear(perform: reload)
         .popover(isPresented: $show, arrowEdge: .bottom) {
             popover.frame(width: 340).padding(LauncherTheme.Metrics.cardInset).background(.regularMaterial)
                 .controllerButtonStyle(LauncherSecondaryButtonStyle())
+                .controllerBackAction("players.back") { if editing != .none { finish() } else { show = false } }
         }
     }
 

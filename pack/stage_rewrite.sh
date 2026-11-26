@@ -40,7 +40,11 @@ VT="${S2A_WIDEN_DIR:-$R/graphics/widen/tables}/verified.tsv"; VR=$([ -f "$VT" ] 
 [ -n "$VR" ] && [ ${#EN[@]} -eq 0 ] && { echo "【黄】$G 在宽屏已验证名单（${PID} ${BID}）但仓库没有它依赖的宽屏表（graphics/widen/tables/*_${BID}），不算已验证、按满屏关出包"; VR=; }
 # 同身份的仓库表和最近 30 局真实日志只提高已知下限（不读现行根上一次出的表：采集结果回灌自己会让旧值永不退场）。先采集再判缓存；坏表不可退成无表。
 # 帧率表（10-26，体系提升方案 D）：仓库 runtime/fps/<main 构建号前 16 位>.tsv 有就拷进产物根作 fps.tsv（runtime/src/fps.c 装载后读），按「文件名 + 内容」进键；没有 = 原生帧率
-FT="$R/runtime/fps/${BID:0:16}.tsv"; [ -f "${FT}" ] || FT=
+#   11-18：我方帧率表（改指令 c 行打进游戏代码，如去掉游戏自己的 30 帧下限）只在内部对照口径 S2A_CAPS_OWN=1 才进包。11-13 撤我方 60 帧后运行时只把槽写成关值，
+#   但 c 行照样打进程序：玩家 60 帧关着游戏也能跑到 60，按 30 帧口径写死的时钟（布料 / 头发）快一倍（#1607 过场加速）。不进包 = 程序与原版一致、社区帧率补丁照常收
+FT="$R/runtime/fps/${BID:0:16}.tsv"; { [ -f "${FT}" ] && [ "${S2A_CAPS_OWN:-}" = 1 ]; } || FT=
+# 游戏缺陷修补表（11-16，runtime/fix/README.md）：仓库 runtime/fix/<main 构建号前 16 位>.tsv 有就交改写器（S2A_FIX_TSV，fix_rows），按内容进键；不进产物根
+XT="$R/runtime/fix/${BID:0:16}.tsv"; [ -f "${XT}" ] || XT=
 # 社区画面补丁（pack/cpatch.py）：匹配上的补丁编成「双路 + 槽」进包，开关在运行时。
 #   11-12 维护者拍板：出包时自动对接公开库（pack/jobs/patches.py 按真构建号查索引、取文件，交 S2A_CPATCH_DIRS），查到的全部进包、缺省关、玩家在启动设置里开；
 #   10-30「公开发布的包不带上游补丁字节」作废。我方不托管补丁字节，只在玩家本机按需下载
@@ -97,7 +101,7 @@ CP=; PK=; [ -n "${S2A_PATCH_DIR:-}" ] && [ -f "$S2A_PATCH_DIR/$PID/patch.tsv" ] 
 source "$H/patch_ship.sh"; PS=; [ -n "$CP" ] && ipa_patch_ship "$CP" "$BID" && PS=$CP
 [ -z "$PS" ] || PK="$PK ship=$(shasum -a 256 < "$PS" | cut -c1-16)"
 # 改写器进键：替换显式 C 二进制（S2A_REWRITER_C / App 自带）必须重改写，不能复用另一份二进制的阶段戳。
-K=$(printf '%s backend=%s%s%s%s%s' "$K" "$RK" "$CK" "$PK" "$([ -n "${FT}" ] && printf ' fps=%s' "$(shasum -a 256 < "${FT}" | cut -c1-16)")" "$([ -n "$VR" ] && printf ' verified=%s' "$(printf '%s' "$VR" | shasum -a 256 | cut -c1-16)")" | shasum -a 256 | cut -c1-10)
+K=$(printf '%s backend=%s%s%s%s%s' "$K" "$RK" "$CK" "$PK" "$([ -n "${FT}" ] && printf ' fps=%s' "$(shasum -a 256 < "${FT}" | cut -c1-16)")$([ -n "${XT}" ] && printf ' fix=%s' "$(shasum -a 256 < "${XT}" | cut -c1-16)")" "$([ -n "$VR" ] && printf ' verified=%s' "$(printf '%s' "$VR" | shasum -a 256 | cut -c1-16)")" | shasum -a 256 | cut -c1-10)
 # 仓库输入清单不含产物根：main 构建号相同也可能换了 subsdk 或 NRO，按相对路径 + 完整内容进键。
 # NRO 枚举同 nro_to_nso.py：任意深度（含点目录）、后缀不分大小写；分块读取只限内存，不抽样内容。
 # RomFS 遍历经 graphics/nvn/tools/romfs_list.py（仓库里唯一的 RomFS 遍历，walk 同 os.walk）
@@ -116,14 +120,14 @@ paths = [p for p in (root / 'exefs').iterdir() if p.is_file()]
 def walk_error(error):
     raise error
 romfs = root / 'romfs'
-if romfs.is_dir():
+if romfs_list.is_dir(romfs):   # RomFS 目录或镜像 romfs.std（romfs_list image_of）；镜像里的 NRO / NRR 下面经 open_file 读
     for directory, _, names in romfs_list.walk(romfs, onerror=walk_error):
         paths.extend(Path(directory) / name for name in names if name.lower().endswith(('.nro', '.nrr')))
 digest = hashlib.sha256(b'rewrite-inputs-v1\0')
 for path in sorted(paths, key=lambda p: os.fsencode(p.relative_to(root).as_posix())):
     relative = os.fsencode(path.relative_to(root).as_posix())
     content = hashlib.sha256()
-    with path.open('rb') as stream:
+    with romfs_list.open_file(path) as stream:   # 盘上的文件同 open；RomFS 只有镜像时从镜像读
         for block in iter(lambda: stream.read(1024 * 1024), b''):
             content.update(block)
     digest.update(len(relative).to_bytes(8, 'little'))
@@ -162,6 +166,7 @@ for t in ${EN[@]+"${EN[@]}"}; do cp "$t" "$W/" || { root_abort "$G" "$TAG"; exit
 [ -z "$PS" ] || cp "$PS" "$W/patch.tsv" || { root_abort "$G" "$TAG"; exit 1; }
 # 帧率表的 c 行（按构建号改指令）由改写器读（rewriter.c）；没有帧率表就不给，改写产物与原先逐字节相同
 if [ -n "${FT}" ]; then export S2A_FPS_TSV="$W/fps.tsv"; else unset S2A_FPS_TSV; fi
+if [ -n "${XT}" ]; then export S2A_FIX_TSV="${XT}"; else unset S2A_FIX_TSV; fi
 if [ -n "$CP" ]; then export S2A_CODE_PATCH=$CP S2A_CODE_BUILD=$BID; else unset S2A_CODE_PATCH S2A_CODE_BUILD; fi
 # 各模块并行改写（10-25 维护者「多核加速……要适配机器的核心数」）：改写器只读本模块与 widen_sites.tsv、产物都带模块名前缀（<模块>.patched.bin / .fixups.tsv / …），
 #   互不依赖；同时最多 S2A_JOBS（缺省本机核数，读不出就停：#824 F-pack-sysctl-jobs）个，退出码记临时目录（不进产物根），全部跑完再按模块名顺序判

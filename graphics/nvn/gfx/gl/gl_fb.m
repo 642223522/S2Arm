@@ -332,7 +332,21 @@ static MTLPixelFormat rb_format(GLenum f) {
     }
     return MTLPixelFormatInvalid;
 }
-// 渲染缓冲查询（FINAL FANTASY VII 建帧缓冲后读回宽高 / 格式）：宽、高、内部格式、采样数；其它参数报红
+// 渲染缓冲各分量位数（GL 4.6 §9.2.6 RENDERBUFFER_{RED..STENCIL}_SIZE）：按建存储时要的内部格式报（深度 24 实存 32 位浮点，报游戏要的 24）；
+//   没建存储 / 不认的格式全 0（规范初值）。顺序 红 绿 蓝 alpha 深度 模板
+static void rb_bits(GLenum f, int b[6]) {
+    static const struct { GLenum f; uint8_t b[6]; } t[] = {
+        {0x8058, {8, 8, 8, 8, 0, 0}}, {0x1908, {8, 8, 8, 8, 0, 0}}, {0x8051, {8, 8, 8, 0, 0, 0}}, {0x1907, {8, 8, 8, 0, 0, 0}},
+        {0x8C43, {8, 8, 8, 8, 0, 0}}, {0x881A, {16, 16, 16, 16, 0, 0}}, {0x8814, {32, 32, 32, 32, 0, 0}},
+        {0x822D, {16, 0, 0, 0, 0, 0}}, {0x822E, {32, 0, 0, 0, 0, 0}}, {0x8C3A, {11, 11, 10, 0, 0, 0}}, {0x8059, {10, 10, 10, 2, 0, 0}},
+        {0x81A5, {0, 0, 0, 0, 16, 0}}, {0x1902, {0, 0, 0, 0, 24, 0}}, {0x81A6, {0, 0, 0, 0, 24, 0}}, {0x81A7, {0, 0, 0, 0, 32, 0}}, {0x8CAC, {0, 0, 0, 0, 32, 0}},
+        {0x84F9, {0, 0, 0, 0, 24, 8}}, {0x88F0, {0, 0, 0, 0, 24, 8}}, {0x8CAD, {0, 0, 0, 0, 32, 8}}, {0x8D48, {0, 0, 0, 0, 0, 8}},
+    };
+    for (int k = 0; k < 6; k++) b[k] = 0;
+    for (size_t i = 0; i < sizeof t / sizeof *t; i++) if (t[i].f == f) { for (int k = 0; k < 6; k++) b[k] = t[i].b[k]; return; }
+}
+// 渲染缓冲查询（FINAL FANTASY VII 建帧缓冲后读回宽高 / 格式）：宽、高、内部格式、采样数、各分量位数；其它参数报红。
+//   报错时 *v 不写（规范），游戏不查 glGetError 就读到自己栈上的旧值——所以游戏会问的都要答
 GL(glGetRenderbufferParameteriv, void, GLenum target, GLenum what, GLint *v) {
     CTX(); if (target != GL_RENDERBUFFER) { gl_set_error(GL_INVALID_ENUM); return; }
     gl_renderbuffer *r = gl_name_get(&renderbuffers, gl_cur->rb_bound); if (!r) { gl_set_error(GL_INVALID_OPERATION); return; }
@@ -341,6 +355,8 @@ GL(glGetRenderbufferParameteriv, void, GLenum target, GLenum what, GLint *v) {
         case 0x8D43: *v = r->tex ? (GLint)r->tex.height : 0; return;             // RENDERBUFFER_HEIGHT
         case 0x8D44: *v = r->format ? (GLint)r->format : 0x8056; return;          // RENDERBUFFER_INTERNAL_FORMAT（没建存储 = RGBA4，GL 缺省）
         case 0x8CAB: *v = r->tex ? (GLint)(r->tex.sampleCount > 1 ? r->tex.sampleCount : 0) : 0; return;   // RENDERBUFFER_SAMPLES
+        case 0x8D50: case 0x8D51: case 0x8D52: case 0x8D53: case 0x8D54: case 0x8D55: {   // RENDERBUFFER_RED / GREEN / BLUE / ALPHA / DEPTH / STENCIL_SIZE
+            int b[6]; rb_bits(r->tex ? r->format : 0, b); *v = b[what - 0x8D50]; return; }
     }
     GLRED1("glGetRenderbufferParameteriv 参数 %#x 没实现", what); gl_set_error(GL_INVALID_ENUM);
 }
@@ -606,8 +622,14 @@ GLB(glBlitFramebuffer, void, GLint sx0, GLint sy0, GLint sx1, GLint sy1, GLint d
 GLB(glReadPixels, void, GLint x, GLint y, GLsizei w, GLsizei h, GLenum format, GLenum type, void *data) { @autoreleasepool {
     CTX();
     if (w < 0 || h < 0) { gl_set_error(GL_INVALID_VALUE); return; }
-    if (!w || !h || !data) return;
     if (format != 0x1908 || type != 0x1401) { GLRED1("glReadPixels 格式 %#x / 类型 %#x 没实现（只有 RGBA / UNSIGNED_BYTE）", format, type); gl_set_error(GL_INVALID_OPERATION); return; }
+    // 绑着像素打包缓冲：data 是缓冲内偏移，读回写进缓冲（GL 4.5 §18.2 / ES 3.0 §4.3.2）。缓冲映射着（持久映射除外）或放不下 → INVALID_OPERATION
+    if (gl_pack_buffer_name()) {
+        struct gl_buffer *pb = gl_pack_buffer(); size_t off = (size_t)(uintptr_t)data, need = (size_t)w * (size_t)h * 4;
+        if (!pb || !pb->buf || (pb->map_access && !(pb->map_bits & 0x40)) || off > pb->size || need > pb->size - off) { gl_set_error(GL_INVALID_OPERATION); return; }
+        data = (uint8_t *)pb->buf.contents + off; pb->idx16 = nil; pb->fan32_cache = nil;   // 写进新内容：索引副本失效（同 BufferSubData）
+    }
+    if (!w || !h || !data) return;
     fb_side rs; if (!fb_resolve(1, &rs)) return;
     id<MTLTexture> t = rs.col; if (!t) { gl_set_error(GL_INVALID_OPERATION); return; }   // 读缓冲 GL_NONE / 没有附件（规范：INVALID_OPERATION）
     MTLPixelFormat pf = t.pixelFormat; int bgra = pf == MTLPixelFormatBGRA8Unorm || pf == MTLPixelFormatBGRA8Unorm_sRGB;
@@ -644,24 +666,40 @@ static const char *const k_exts[] = {"GL_ARB_ES3_2_compatibility", "GL_ARB_ES3_c
     "GL_EXT_texture_compression_s3tc", "GL_EXT_texture_filter_anisotropic", "GL_ARB_vertex_array_object", "GL_ARB_direct_state_access", "GL_ARB_half_float_vertex",
     "GL_ARB_framebuffer_object", "GL_ARB_texture_float", "GL_EXT_texture_sRGB", "GL_KHR_texture_compression_astc_ldr", "GL_NV_shadow_samplers_cube"};
 enum { NEXTS = sizeof k_exts / sizeof *k_exts };
-GL(glGetString, const GLchar *, GLenum name) {
-    CTX(NULL);
+// 交出的串（静态区地址，游戏可能拷走指针）：按「gl:str:<名>:<es>」/「gl:str:i:<号>」登记身份，恢复时 gl_snap_str 按身份找回本进程的串
+static const char *gl_str_of(GLenum name, int es) {
     switch (name) {
         case 0x1F00: return "NVIDIA Corporation";                              // VENDOR
         case 0x1F01: return "NVIDIA Tegra X1 (nvgpu)/integrated (Metal)";      // RENDERER
-        case 0x1F02: return gl_es() ? "OpenGL ES 3.2 NVIDIA 349.00" : "4.5.0 NVIDIA 349.00";      // VERSION
-        case 0x8B8C: return gl_es() ? "OpenGL ES GLSL ES 3.20" : "4.50 NVIDIA";                   // SHADING_LANGUAGE_VERSION
+        case 0x1F02: return es ? "OpenGL ES 3.2 NVIDIA 349.00" : "4.5.0 NVIDIA 349.00";      // VERSION
+        case 0x8B8C: return es ? "OpenGL ES GLSL ES 3.20" : "4.50 NVIDIA";                   // SHADING_LANGUAGE_VERSION
         case 0x1F03: {                                                          // EXTENSIONS：兼容配置的整串
             static char all[1024]; if (!all[0]) for (int i = 0; i < NEXTS; i++) { strlcat(all, k_exts[i], sizeof all); strlcat(all, " ", sizeof all); }
             return all;
         }
     }
+    return NULL;
+}
+void s2a_snap_handout_id(uint64_t v, const char *id) __attribute__((weak));
+int s2a_snap_mode(void) __attribute__((weak));
+static void str_ho(const char *p, const char *fmt, unsigned a, unsigned b) {
+    if (!p || !s2a_snap_handout_id || !s2a_snap_mode || !s2a_snap_mode()) return;
+    char id[48]; snprintf(id, sizeof id, fmt, a, b); s2a_snap_handout_id((uint64_t)(uintptr_t)p, id);
+}
+const char *gl_snap_str(const char *id) {
+    unsigned a = 0, b = 0;
+    if (sscanf(id, "i:%u", &a) == 1) return a < NEXTS ? k_exts[a] : NULL;
+    return sscanf(id, "%x:%u", &a, &b) == 2 ? gl_str_of((GLenum)a, (int)b) : NULL;
+}
+GL(glGetString, const GLchar *, GLenum name) {
+    CTX(NULL);
+    const char *r = gl_str_of(name, gl_es()); if (r) { str_ho(r, "gl:str:%x:%u", name, (unsigned)gl_es()); return r; }
     gl_set_error(GL_INVALID_ENUM); return NULL;
 }
 GL(glGetStringi, const GLchar *, GLenum name, GLuint i) {
     CTX(NULL); if (name != 0x1F03) { gl_set_error(GL_INVALID_ENUM); return NULL; }
     if (i >= NEXTS) { gl_set_error(GL_INVALID_VALUE); return NULL; }
-    return k_exts[i];
+    str_ho(k_exts[i], "gl:str:i:%u", i, 0); return k_exts[i];
 }
 // 每个 draw buffer 的颜色状态；普通查询取第 0 路，indexed 查询按 i 取。
 static int color_query(GLenum p, GLuint i, double v[4]) {
@@ -683,7 +721,8 @@ static int draw_samples(void) {
     for (int k = 0; k < ATT_N; k++) if (f->att[k].kind == 2) { gl_renderbuffer *r = gl_name_get(&renderbuffers, f->att[k].name); if (r && r->tex) return (int)r->tex.sampleCount; }
     return 1;   // 纹理附件：本层没有多采样纹理
 }
-// 整数与浮点查询共用一张表：返回分量个数（0 = 没实现），值写进 v（double 不丢 uint32 掩码精度）
+// 整数与浮点查询共用一张表：返回分量个数（0 = 没实现；QUERY_EMPTY = 认得、清单长度 0、一个都不写），值写进 v（double 不丢 uint32 掩码精度）
+enum { QUERY_EMPTY = -1 };
 static int query(GLenum p, double v[4]) {
     int n = color_query(p, 0, v); if (n) return n;
     if (p == 0x0C01 || (p >= 0x8825 && p < 0x8825 + GL_COLOR_TARGETS)) {   // DRAW_BUFFER / DRAW_BUFFERi
@@ -724,6 +763,8 @@ static int query(GLenum p, double v[4]) {
         case 0x8B8D: v[0] = gl_cur->prog; return 1;                             // CURRENT_PROGRAM
         case 0x85B5: v[0] = gl_cur->vao; return 1;                              // VERTEX_ARRAY_BINDING
         case 0x8894: v[0] = gl_cur->buf_bound[0]; return 1;                     // ARRAY_BUFFER_BINDING
+        case 0x88ED: v[0] = gl_pack_buffer_name(); return 1;                    // PIXEL_PACK_BUFFER_BINDING
+        case 0x88EF: v[0] = gl_unpack_buffer_name(); return 1;                  // PIXEL_UNPACK_BUFFER_BINDING
         case 0x84E0: v[0] = 0x84C0 + gl_cur->active_unit; return 1;             // ACTIVE_TEXTURE
         case 0x8069: v[0] = gl_cur->tex_unit[gl_cur->active_unit][0]; return 1; // TEXTURE_BINDING_2D
         case 0x8514: v[0] = gl_cur->tex_unit[gl_cur->active_unit][1]; return 1; // TEXTURE_BINDING_CUBE_MAP
@@ -737,6 +778,14 @@ static int query(GLenum p, double v[4]) {
         case 0x0D50: v[0] = 8; return 1; case 0x0D51: v[0] = 0; return 1;       // SUBPIXEL_BITS / INDEX_BITS（RGBA 模式没有颜色索引）
         case 0x0D56: v[0] = 24; return 1; case 0x0D57: v[0] = 8; return 1;      // DEPTH_BITS / STENCIL_BITS
         case 0x86A2: v[0] = 0; return 1;                                        // NUM_COMPRESSED_TEXTURE_FORMATS（逐个格式按扩展认）
+        // D-5MW2（一款 GL 款游戏 1.3.1，iPad，起局 3/3 崩）：开局逐个查统一块上限与格式清单，原先没实现、置 INVALID_ENUM 且往 *v 写 0——
+        //   游戏按 NUM_COMPRESSED_TEXTURE_FORMATS = 0 开了个空缓冲（空指针）再查 COMPRESSED_TEXTURE_FORMATS，写 0 正好写到空指针上崩。
+        //   统一块：本层每个程序最多 8 个命名块（gl_int.h blk[8]）、绑定点 32 个（gl_buf.m）；块大小按 64 KB（Metal 常量缓冲在这以内无额外限制）
+        case 0x8A2B: case 0x8A2D: case 0x8A2E: v[0] = 8; return 1;              // MAX_VERTEX / FRAGMENT / COMBINED_UNIFORM_BLOCKS
+        case 0x8A2F: v[0] = 32; return 1;                                       // MAX_UNIFORM_BUFFER_BINDINGS
+        case 0x8A30: v[0] = 65536; return 1;                                    // MAX_UNIFORM_BLOCK_SIZE
+        case 0x87FE: case 0x8DF9: v[0] = 0; return 1;                           // NUM_PROGRAM_BINARY_FORMATS / NUM_SHADER_BINARY_FORMATS：都不支持
+        case 0x86A3: case 0x87FF: case 0x8DF8: return QUERY_EMPTY;              // COMPRESSED_TEXTURE / PROGRAM_BINARY / SHADER_BINARY_FORMATS：清单长度是上面的 0，一个都不写
         case 0x826E: v[0] = 1024; return 1;                                     // MAX_UNIFORM_LOCATIONS
         case 0x82DA: v[0] = 16; return 1;                                       // MAX_VERTEX_ATTRIB_BINDINGS
         case 0x8A34: v[0] = 256; return 1;                                      // UNIFORM_BUFFER_OFFSET_ALIGNMENT（Metal 常量缓冲偏移按 256 对齐；NVIDIA 同值）
@@ -748,6 +797,10 @@ static int query(GLenum p, double v[4]) {
         case 0x88FF: v[0] = 2048; return 1;                                     // MAX_ARRAY_TEXTURE_LAYERS（Metal 纹理数组上限 2048 层）
         case 0x0B11: v[0] = gl_cur->point_size; return 1;                       // POINT_SIZE
         case 0x0B12: case 0x846D: v[0] = 1; v[1] = 511; return 2;               // POINT_SIZE_RANGE（桌面）/ ALIASED_POINT_SIZE_RANGE：Metal [[point_size]] 上限 511
+        // glReadPixels 推荐的读回格式 / 类型（D-S6VQ：一款 GL 前端游戏开局查这两项，原先没实现回 0 并置 INVALID_ENUM，之后一帧不出）：
+        //   RGBA / UNSIGNED_BYTE 是 ES 规范必须支持的那一对，本层 glReadPixels 就按它读
+        case 0x8B9A: v[0] = 0x1401; return 1;                                   // IMPLEMENTATION_COLOR_READ_TYPE = UNSIGNED_BYTE
+        case 0x8B9B: v[0] = 0x1908; return 1;                                   // IMPLEMENTATION_COLOR_READ_FORMAT = RGBA
     }
     if (p == 0x9126 && !gl_es()) { v[0] = 1; return 1; }                        // CONTEXT_PROFILE_MASK：core（本层没有固定管线 / 显示列表这些兼容配置的入口）；ES 没有这个查询
     return 0;
@@ -758,20 +811,24 @@ static void query_red(const char *fn, GLenum p) {
     if (!known && n < 64) { seen[n++] = p; GLOG("【红】 %s(%#x) 没实现（回 0）", fn, p); }
     pthread_mutex_unlock(&mu);
 }
+// 查不到的 pname：置 INVALID_ENUM、不写输出（GLES 3.2 §2.3.1：出错的命令除置错外没有别的作用；原先写 *v = 0，D-5MW2 空指针上崩）
 GL(glGetIntegerv, void, GLenum p, GLint *v) {
     CTX(); double d[4]; int n = query(p, d);
-    if (!n) { query_red("glGetIntegerv", p); gl_set_error(GL_INVALID_ENUM); *v = 0; return; }
+    if (n == QUERY_EMPTY) return;
+    if (!n) { query_red("glGetIntegerv", p); gl_set_error(GL_INVALID_ENUM); return; }
     // 颜色 / 深度类浮点值按规范线性映射到整数全域；其余取整
     int norm = p == 0x0C22 || p == 0x0B73 || p == 0x0B70 || p == 0x8005;
     for (int i = 0; i < n; i++) v[i] = norm ? (GLint)llround(d[i] * 2147483647.0) : (GLint)(int64_t)d[i];
 }
 GL(glGetFloatv, void, GLenum p, GLfloat *v) {
     CTX(); double d[4]; int n = query(p, d);
-    if (!n) { query_red("glGetFloatv", p); gl_set_error(GL_INVALID_ENUM); *v = 0; return; }
+    if (n == QUERY_EMPTY) return;
+    if (!n) { query_red("glGetFloatv", p); gl_set_error(GL_INVALID_ENUM); return; }
     for (int i = 0; i < n; i++) v[i] = (GLfloat)d[i];
 }
 GL(glGetBooleanv, void, GLenum p, GLboolean *v) {
     CTX(); double d[4]; int n = query(p, d);
+    if (n == QUERY_EMPTY) return;
     if (!n) { query_red("glGetBooleanv", p); gl_set_error(GL_INVALID_ENUM); return; }
     for (int i = 0; i < n; i++) v[i] = d[i] != 0;
 }
@@ -866,3 +923,38 @@ GL(glGetFramebufferAttachmentParameteriv, void, GLenum target, GLenum attachment
     }
     GLRED1("glGetFramebufferAttachmentParameteriv 参数 %#x 没实现", what); gl_set_error(GL_INVALID_ENUM);
 }
+
+// ---------- 即时存档：帧缓冲对象（附件按「对象名字 + 级 / 面」，不含 Metal 贴图）与渲染缓冲（存储整张存） ----------
+enum { GF_NAME = 1, GF_ATT, GF_DRAW, GF_READ, GF_USED, GR_NAME = 1, GR_FORMAT, GR_USED, GR_HAS };
+int gl_fb_snap_save(FILE *f) {
+    if (!nvn_snap_tex_save) return -1;
+    sfw w; sfw_sec(&w, f, "gl.fbo", 1);
+    for (GLuint i = 1; i < framebuffers.n; i++) { struct gl_framebuffer *b = framebuffers.v[i]; if (!b) continue;
+        sfw_rec(&w); GLSF_W(&w, GF_NAME, i); GLSF_W(&w, GF_ATT, b->att); GLSF_W(&w, GF_DRAW, b->draw); GLSF_W(&w, GF_READ, b->read); GLSF_W(&w, GF_USED, b->used); sfw_end_rec(&w); }
+    if (sfw_end(&w)) return -1;
+    sfw_sec(&w, f, "gl.rbo", 1);
+    for (GLuint i = 1; i < renderbuffers.n; i++) { gl_renderbuffer *b = renderbuffers.v[i]; if (!b) continue; int has = b->tex != nil;
+        sfw_rec(&w); GLSF_W(&w, GR_NAME, i); GLSF_W(&w, GR_FORMAT, b->format); GLSF_W(&w, GR_USED, b->used); GLSF_W(&w, GR_HAS, has); sfw_end_rec(&w); }
+    if (sfw_end(&w)) return -1;
+    for (GLuint i = 1; i < renderbuffers.n; i++) { gl_renderbuffer *b = renderbuffers.v[i]; if (b && b->tex && nvn_snap_tex_save(f, (__bridge void *)b->tex) < 0) return -1; }
+    return 0;
+}
+int gl_fb_snap_restore(FILE *f) {
+    if (!nvn_snap_tex_load) return -1;
+    sfr r; int bad = sfr_sec(&r, f, "gl.fbo", 1) != 0;
+    while (!bad && sfr_rec(&r) == 1) { GLuint nm = 0; GLSF_R(&r, GF_NAME, nm); struct gl_framebuffer *b = calloc(1, sizeof *b); if (!nm || !b) { free(b); continue; }
+        GLSF_RC(&r, GF_ATT, b->att, "gl.att", gl_att); GLSF_R(&r, GF_DRAW, b->draw); GLSF_R(&r, GF_READ, b->read); GLSF_R(&r, GF_USED, b->used);
+        if (!gl_name_put(&framebuffers, nm, b)) { free(b); bad = 1; } }
+    sfr_done(&r);
+    if (bad || sfr_sec(&r, f, "gl.rbo", 1)) return -1;
+    GLuint *has = NULL; uint32_t n = 0, cap = 0;
+    while (sfr_rec(&r) == 1) { GLuint nm = 0; int h = 0; GLSF_R(&r, GR_NAME, nm); gl_renderbuffer *b = calloc(1, sizeof *b); if (!nm || !b) { free(b); continue; }
+        GLSF_R(&r, GR_FORMAT, b->format); GLSF_R(&r, GR_USED, b->used); GLSF_R(&r, GR_HAS, h);
+        if (!gl_name_put(&renderbuffers, nm, b)) { free(b); bad = 1; break; }
+        if (h) { if (n == cap) { cap = cap ? cap * 2 : 64; has = realloc(has, cap * sizeof *has); } has[n++] = nm; } }
+    sfr_done(&r);
+    for (uint32_t i = 0; !bad && i < n; i++) { void *p = nvn_snap_tex_load(f); if (!p) { bad = 1; break; } gl_renderbuffer *b = gl_name_get(&renderbuffers, has[i]); b->tex = (__bridge_transfer id<MTLTexture>)p; }
+    free(has);
+    return bad ? -1 : 0;
+}
+void gl_fb_snap_fps(gl_fp_cb cb) { cb("gl.att", SNAP_FP_TYPE(gl_att)); }

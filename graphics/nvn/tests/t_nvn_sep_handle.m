@@ -92,7 +92,7 @@ int main(void) { @autoreleasepool {
            "① 反射另一半：贴图项 pair %u 槽 %u 字节 %u（期望 1 / 13 / 16），采样器项 pair %u 槽 %u 字节 %u（期望 1 / 12 / 0）",
            rb[0].pair, rb[0].pair_reg, rb[0].pair_off, rb[1].pair, rb[1].pair_reg, rb[1].pair_off);
     VERIFY(v == 7.0f, "② 贴图号在槽 13、采样器句柄在槽 12 → 读到 A = %.1f（期望 7.0；只读槽 12 是贴图号 0、读 0.0）", v);
-    pthread_mutex_lock(&g_rmu); int sid = bind_sid(&rb[1], 5); pthread_mutex_unlock(&g_rmu);
+    os_unfair_lock_lock(&g_rmu); int sid = bind_sid(&rb[1], 5); os_unfair_lock_unlock(&g_rmu);
     VERIFY(sid == 0x102, "③ 同一句柄的采样器号 = %#x（期望 0x102 = (9 | 0x10200000) >> 20；只读槽 13 是 0）", sid);
 
     // 缓冲纹理，同名同布局：槽 13 字节 16 = 贴图号 11

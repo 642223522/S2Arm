@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 S2Arm contributors
+// 等中继读线程处理完包：一律「等到为止、30 秒兜底」（11-19：原先只等 100 ms，负载高时中继线程没跑到就 assert → 假红）
 #include "../../macos/ns2_controller.h"
 #include "../../macos/ns2_relay.h"
 #include "../../ios/haptic_retry.h"
@@ -161,14 +162,14 @@ int main(void) {
         .motion_known = 1,
     };
     assert(send(relay, &packet, sizeof packet, 0) == sizeof packet);
-    for (int i = 0; i < 100 && !s2a_mac_ns2_read(&input, NULL); i++) usleep(1000);
+    for (int i = 0; i < 30000 && !s2a_mac_ns2_read(&input, NULL); i++) usleep(1000);
     assert(input.buttons == 1 && input.lx == -123 && input.ly == 456);
     assert(s2a_mac_ns2_status() == NS2_STATUS_READY);
     int kicks_relay = kicks;
     assert(send(relay, &packet, sizeof packet, 0) == sizeof packet);   // 同包重发：不通知
     packet.state.buttons = 4;   // 这一包变了
     assert(send(relay, &packet, sizeof packet, 0) == sizeof packet);
-    for (int i = 0; i < 100 && !(s2a_mac_ns2_read(&input, NULL) && input.buttons == 4); i++) usleep(1000);
+    for (int i = 0; i < 30000 && !(s2a_mac_ns2_read(&input, NULL) && input.buttons == 4); i++) usleep(1000);
     assert(input.buttons == 4);
     assert(kicks == kicks_relay + 1);   // 重发的不通知，变了的那包通知一次（ready 没变）
 
@@ -183,7 +184,7 @@ int main(void) {
         .motion_known = 1,
     };
     assert(send(relay, &packet, sizeof packet, 0) == sizeof packet);
-    for (int i = 0; i < 100; i++) {
+    for (int i = 0; i < 30000; i++) {
         if (s2a_mac_ns2_read_motion(&motion) && motion.host_timestamp_us == 888) break;
         usleep(1000);
     }
@@ -209,9 +210,9 @@ int main(void) {
     assert(send(relay, &packet, sizeof packet, 0) == sizeof packet);
     packet.player = 1; packet.kind = NS2_KIND_JOYCON_R;
     assert(send(relay, &packet, sizeof packet, 0) == sizeof packet);
-    for (int i = 0; i < 100 && !s2a_mac_ns2_player_present(1); i++) usleep(1000);
+    for (int i = 0; i < 30000 && !s2a_mac_ns2_player_present(1); i++) usleep(1000);
     assert(s2a_mac_ns2_player_present(1));
-    for (int i = 0; i < 100 && s2a_mac_ns2_kind() != NS2_KIND_JOYCON_L; i++) usleep(1000);
+    for (int i = 0; i < 30000 && s2a_mac_ns2_kind() != NS2_KIND_JOYCON_L; i++) usleep(1000);
     // 玩家 2 起的单只 Joy-Con 照它那一格的样式（#520：拆开的两只握法一致，同玩家 1）：没报样式 → 转横握；那一格是双 Joy-Con → 原样给、不转；
     //   负对照：那一格扮 Pro → 照旧转横握
     {
@@ -230,7 +231,7 @@ int main(void) {
             .kind = NS2_KIND_JOYCON_R, .player = 1, .mouse_kind = NS2_KIND_JOYCON_R, .mouse = {.x = 321, .y = -5}};
         assert(send(relay, &pm, sizeof pm, 0) == sizeof pm);
         s2a_pad_mouse ms[2] = {{0}};
-        for (int i = 0; i < 100 && !(s2a_mac_ns2_read_mouse_player(1, ms) && ms[1].known && ms[1].x == 321); i++) usleep(1000);
+        for (int i = 0; i < 30000 && !(s2a_mac_ns2_read_mouse_player(1, ms) && ms[1].known && ms[1].x == 321); i++) usleep(1000);
         assert(ms[1].known && ms[1].x == 321 && ms[1].y == -5 && ms[0].side == 0xff);
         pm.mouse_kind = 0;
         assert(send(relay, &pm, sizeof pm, 0) == sizeof pm);
@@ -250,7 +251,7 @@ int main(void) {
     // 第二组（玩家 3）：单独一包、头部 player = 2，第一组的两侧不受影响
     packet = (ns2_relay_packet){.magic = NS2_RELAY_MAGIC, .version = NS2_RELAY_VERSION, .type = NS2_RELAY_INPUT, .ready = 1, .status = NS2_STATUS_READY, .kind = NS2_KIND_PRO, .player = 2};
     assert(send(relay, &packet, sizeof packet, 0) == sizeof packet);
-    for (int i = 0; i < 100 && !s2a_mac_ns2_player_present(2); i++) usleep(1000);
+    for (int i = 0; i < 30000 && !s2a_mac_ns2_player_present(2); i++) usleep(1000);
     assert(s2a_mac_ns2_player_present(2));
     s2a_mac_ns2_set_rumble_player(2, p2);
     memset(&packet, 0, sizeof packet);
@@ -262,7 +263,7 @@ int main(void) {
         .motion = {.known = 1, .host_timestamp_us = 999, .gyro_x = 77, .acceleration_z = 1}, .motion_known = 1};
     assert(send(relay, &packet, sizeof packet, 0) == sizeof packet);
     s2a_pad_motion m3 = {0};
-    for (int i = 0; i < 100 && !(s2a_mac_ns2_read_motion_player(2, &m3) && m3.gyro_x == 77); i++) usleep(1000);
+    for (int i = 0; i < 30000 && !(s2a_mac_ns2_read_motion_player(2, &m3) && m3.gyro_x == 77); i++) usleep(1000);
     assert(m3.gyro_x == 77 && m3.acceleration_z == 1);
     assert(!s2a_mac_ns2_read_motion_player(3, &m3) && !s2a_mac_ns2_read_motion_player(NS2_RELAY_PLAYERS, &m3) && !s2a_mac_ns2_read_motion_player(0, &m3));
     assert(!s2a_mac_ns2_read_motion(&motion) || motion.gyro_x != 77);
@@ -281,7 +282,7 @@ int main(void) {
     // The launcher helper restarts while the game keeps running: the game reattaches to the new relay.
     close(relay);
     close(listener);
-    for (int i = 0; i < 100 && s2a_mac_ns2_status() != NS2_STATUS_DISCONNECTED; i++) usleep(1000);
+    for (int i = 0; i < 30000 && s2a_mac_ns2_status() != NS2_STATUS_DISCONNECTED; i++) usleep(1000);
     assert(s2a_mac_ns2_status() == NS2_STATUS_DISCONNECTED);
     listener = make_listener(socket_path);
     assert(s2a_mac_ns2_connect());
@@ -292,7 +293,7 @@ int main(void) {
         .epoch = 10, .state = {.buttons = 2}, .ready = 1, .status = NS2_STATUS_READY,
     };
     assert(send(relay, &packet, sizeof packet, 0) == sizeof packet);
-    for (int i = 0; i < 100 && !(s2a_mac_ns2_read(&input, NULL) && input.buttons == 2); i++) usleep(1000);
+    for (int i = 0; i < 30000 && !(s2a_mac_ns2_read(&input, NULL) && input.buttons == 2); i++) usleep(1000);
     assert(input.buttons == 2);
     s2a_mac_ns2_disconnect();
     memset(&packet, 0, sizeof packet);

@@ -22,9 +22,13 @@
 #include <dlfcn.h>
 #include "gal_pstat.h"
 #import <QuartzCore/CAMetalLayer.h>
+#import <QuartzCore/CATransaction.h>
 #include <pthread.h>
 #include <stdatomic.h>
 #include <string.h>
+// PR7：同一策略抽象（评审稿 v3 §2.2 接缝「gal_present.m 只读」/ §4 PR7）：层态与出图模式经直连层的 nvn2_hdr_* 入口只读
+//   （存储与层状态机在 graphics/nvn/gfx/nvn/nvn2.c——gal 不各自判，策略单源）；纯 C 不引平台头，gal 同样能包
+#include "../nvn/gfx/nvn/nvn_hdr_policy.h"
 
 // ---------- 定格贴图环 ----------
 #define NSLOT 12   // 平时至多用 6 张（按需建，空槽不占内存）；逐帧亮度 / 存帧诊断另钉至多 LQN 张
@@ -104,7 +108,145 @@ static void tex_col(void *t, int x, uint8_t *buf) { id<MTLTexture> q = (__bridge
 static void tex_row(void *t, int y, uint8_t *px) { id<MTLTexture> q = (__bridge id<MTLTexture>)t; [q getBytes:px bytesPerRow:q.width * 4 fromRegion:MTLRegionMake2D(0, y, q.width, 1) mipmapLevel:0]; }
 static fj_src tex_src(id<MTLTexture> t) { return (fj_src){(int)t.width, (int)t.height, (__bridge void *)t, tex_col, tex_row}; }
 
+// ---------- PR7：HDR 上屏策略接缝（评审稿 v3 §4 PR7 / §2.2「gal_present.m 只读」/ §2.3 判定次序）----------
+//   同一策略抽象（nvn_hdr_policy.h，直连层 PR3a/PR3b/PR4 已接）：gal 只读——层态经 nvn2_hdr_snapshot_probe、出图模式经
+//   nvn2_hdr_present、每帧排空喂入经 nvn2_hdr_tick_frame（层状态机与 vi 门控在宿主 / 直连层，gal 不判）。
+//   跨层可选符号按名字取（dlsym 一次，同下方 ap_direct 先例）：渲染器单测与 libnxgal.dylib 不链直连层，取不到就按
+//   无 HDR = 现状行为；宿主里直连图形层与 gal 静态链进同一可执行文件（graphics/build.mk），符号恒在。
+static struct {
+    int (*hdr_switch)(void);
+    int (*hdr_layer_sw)(void);
+    int (*hdr_present)(float p[8], int src_pf, int dst_pt);
+    void (*hdr_snapshot_probe)(hdr_snapshot *out);
+    void (*hdr_tick_frame)(int sw, int frame_is_pq);
+} g_hdr; static int g_hdr_look;
+static int hdr_api(void) {
+    if (!g_hdr_look) {
+        g_hdr_look = 1;
+        g_hdr.hdr_switch = (int (*)(void))dlsym(RTLD_DEFAULT, "nvn2_hdr_switch");
+        g_hdr.hdr_layer_sw = (int (*)(void))dlsym(RTLD_DEFAULT, "nvn2_hdr_layer_sw");   // PR-B 终稿：层视角开关（排空喂入用）——与 hdr_switch 同源同宿主，整组同进同出
+        g_hdr.hdr_present = (int (*)(float *, int, int))dlsym(RTLD_DEFAULT, "nvn2_hdr_present");
+        g_hdr.hdr_snapshot_probe = (void (*)(hdr_snapshot *))dlsym(RTLD_DEFAULT, "nvn2_hdr_snapshot_probe");
+        g_hdr.hdr_tick_frame = (void (*)(int, int))dlsym(RTLD_DEFAULT, "nvn2_hdr_tick_frame");
+        if (!g_hdr.hdr_switch || !g_hdr.hdr_layer_sw || !g_hdr.hdr_present || !g_hdr.hdr_snapshot_probe || !g_hdr.hdr_tick_frame)
+            g_hdr.hdr_present = NULL;   // 整组要不全有要不全无：直连层是一整体，部分缺失 = 不认识的宿主——按无 HDR
+    }
+    return g_hdr.hdr_present != NULL;
+}
+
+// PR7：层配置的两态物理属性（§2.3 S0/S1 行 + 注意事项①）。S0 的色彩空间必须显式重设（kCGColorSpaceSRGB）——
+//   从 PQ 层切回的层保留 PQ 色彩空间，设 NULL 则无色彩匹配、字节直进屏幕原生 primaries（P3 屏过饱和）。
+//   CAEDRMetadata 两态都不挂（默认关——PR8+ 经 S2A_HDR_META 实验）。tvOS SDK 没有 wantsEDR 属性（同 host_adapt.m 口径）。
+static void hdr_layer_set_props(CAMetalLayer *l, int pq, CGColorSpaceRef cs_pq, CGColorSpaceRef cs_srgb) {
+    l.pixelFormat = pq ? MTLPixelFormatRGB10A2Unorm : MTLPixelFormatBGRA8Unorm;
+    l.colorspace = pq ? cs_pq : cs_srgb;   // S1 = BT.2100 PQ；S0 = 显式 sRGB tag（创建与切回同一份配置——注意事项①）
+#if !TARGET_OS_TV
+    l.wantsExtendedDynamicRangeContent = pq ? YES : NO;
+#endif
+}
+// PR7：把快照层态（hdr_layer_config 同一份配置）应用到 gal 出图层。层持不持 PQ（快照 layer_pq，宿主 tick 状态机维护）
+//   是唯一输入：off 缺省 / can 不行 / 排空未完成都落 S0（off ⇒ 从不进层——preattach / tick_can 都让位，缺省路径零变化）。
+//   gal 侧 applied 簿记幂等（宿主侧 Mac 也对同一出图层按同一快照应用——同值重复写无扰）。iOS 层属性只在主线程改
+//   （同下方 drawableSize 先例——出图线程直接设会开隐式 CATransaction 连带布局 UIKit 视图）：异步设、不等它——
+//   这期间几帧按旧格式出（模式选路按层实际格式走，不崩）。
+static _Atomic int g_hdr_layer_pq_applied;   // gal 侧已应用的层态：-1 未知 / 0 S0 / 1 S1（set_layer 创建点归位、摘层归 -1）
+static void gal_hdr_layer_apply_to(CAMetalLayer *l, int pq) {
+    int was = atomic_exchange(&g_hdr_layer_pq_applied, pq);
+    if (was == pq) return;   // 已是这个层态（宿主侧同快照同配置的重复 apply 也由此幂等）
+    static CGColorSpaceRef cs_pq, cs_srgb;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        cs_pq = CGColorSpaceCreateWithName(kCGColorSpaceITUR_2100_PQ);   // BT.2100 PQ（§2.3 S1 行）
+        cs_srgb = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);         // 显式 sRGB tag（§2.3 注意事项①）
+    });
+    if (pq) GLOG("出图：层切 PQ（RGB10A2Unorm + BT.2100 PQ + wantsExtendedDynamicRangeContent；CAEDRMetadata 默认不挂，PR8+ 实验项）");
+    else if (was >= 0) GLOG("出图：层切回 SDR（BGRA8Unorm + 显式 sRGB tag——从 PQ 层切回的层保留 PQ 色彩空间，必须显式重设；评审稿 §2.3 注意事项①）");
+#if TARGET_OS_IPHONE
+    CAMetalLayer *L = l; int p = pq;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [CATransaction begin]; [CATransaction setDisableActions:YES];
+        hdr_layer_set_props(L, p, cs_pq, cs_srgb);
+        [CATransaction commit];
+    });
+#else
+    hdr_layer_set_props(l, pq, cs_pq, cs_srgb);
+#endif
+}
+// PR7：层态跟随（出图线程，present_prep——层配置要在取 drawable 前落定）。层持 PQ 时不过节流（排空切回要几帧内跟上，
+//   切回即显式重设 sRGB tag）；SDR 层（缺省路径）按事件档节流 250ms 探进不进层（同宿主 tick 频率——S2A_HDR=off 缺省
+//   在层簿记上让位，layer_pq 恒 0，零写）。
+static void gal_hdr_tick(CAMetalLayer *l) {
+    if (!l || !hdr_api()) return;
+    if (atomic_load_explicit(&g_hdr_layer_pq_applied, memory_order_relaxed) != 1) {
+        static uint64_t last_ns;
+        uint64_t now = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+        if (last_ns && now - last_ns < 250000000ull) return;
+        last_ns = now;
+    }
+    hdr_snapshot s;
+    g_hdr.hdr_snapshot_probe(&s);
+    gal_hdr_layer_apply_to(l, s.layer_pq);
+}
+// PR7：创建点应用（nxgal_window_set_layer）——探快照层态再应用（off ⇒ layer_pq 恒 0 与已应用态一致：零写）
+static void gal_hdr_layer_apply(CAMetalLayer *l) {
+    if (!l || !hdr_api()) return;
+    hdr_snapshot s;
+    g_hdr.hdr_snapshot_probe(&s);
+    gal_hdr_layer_apply_to(l, s.layer_pq);
+}
+// PR7：present_mode 变体选路（§2.4 模式矩阵 / §4 PR7；模式判定走 nvn2_hdr_present——与直连路径同一单源）。
+//   gal 出图源恒为 SDR 定格贴图（cap_fs 固定 BGRA8Unorm——§2.3 判定次序 2 的「8 位窗」）⇒ 可达模式域 = {平凡直通,
+//   mode 2（SDR→PQ 按纸白 100 nit 编码，层不因源切回）}。8 位目标（S0 缺省路径）一次格式比较直通——off 不变量、
+//   快路径零锁。layer_path（出图层 present_one）：层格式即事实（PQ 层 + off 的排空过渡帧也按 mode 2 编码——SDR 内容
+//   正确编进 PQ 层不糊画面；直连路径 nvn2_hdr_present 同判）；render_to（诊断）：off 缺省直通（与改前逐字节一致——
+//   读开关，诊断路径事件档频率）。
+static int present_hdr_uv(float p[8], MTLPixelFormat dst_pf, int layer_path) {
+    for (int i = 0; i < 8; i++) p[i] = 0.0f;
+    if (dst_pf != MTLPixelFormatRGB10A2Unorm) return HDR_PV_TRIVIAL;
+    if (!hdr_api()) return HDR_PV_TRIVIAL;
+    if (!layer_path && g_hdr.hdr_switch() == HDR_OFF) return HDR_PV_TRIVIAL;
+    return g_hdr.hdr_present(p, HDR_PF_SDR8, HDR_PT_PQ10);
+}
+
 // ---------- 着色器 ----------
+// PR-A（#625 第二阶段）：present_itm 的 MSL 文本——S4「SDR 转 HDR」扩张曲线（ITU-R BT.2446-1 §4.2〔Method A〕逆色调
+//   映射通用解析式，设计稿 §2.2 逐段转写；手写 MSL——公式源自 ITU 免费标准文本，未复制 gamescope/libplacebo 任何代码
+//   文本，登记 THIRD_PARTY_LICENSES.md）。k_present_msl（pr_fs_hdr 的 fs 源）与单测独立判据
+//   （graphics/metal/tests/t_present_hdr.m ⑦ 的探针着色器，经独立导出的 k_present_itm_msl 取同一份文本）共用——
+//   与直连副本 nvn_mtl.m 同式（「数学逐条对齐……两处同改」惯例，K_PRESENT_ITM_MSL 同款宏化）。
+//   不用 Table 4 快速路径：target 由设置+净空推导，非 100→1000 设计点。
+//   勘误登记（上游评审 PR #2080 第 1 轮自 THIRD_PARTY_LICENSES.md 挪入——本仓无单测佐证的技术勘误不进对外出处声明）：
+//   gamescope 的 Table 4 快速路径常数 c2 误写 1.2328（正确 1.2528——ITU-R BT.2446-1 Table 4〔第 12 页〕官方原文；
+//   libplacebo 的 Table 4 形逆同用 1.2528，两处独立源互证）。本仓用通用解析式、不走 Table 4，不受该笔误影响——
+//   复核者若拿 gamescope 的 Table 4 常数对拍会踩坑，登记于此。
+//   入 n：线性光（BT.2020 基色，1.0 = sdr_nits）；出：线性光（1.0 = target_nits——调用侧乘 target/纸白 喂 present_linear_to_pq）。
+#define K_GAL_ITM_MSL \
+"static inline float3 present_itm(float3 n, float sdr_nits, float target_nits) {\n" \
+"  const float3 k2020 = float3(0.262698338956556, 0.678008765772817, 0.0592928952706273);   // BT.2020 亮度系数（gamescope 同值）\n" \
+"  const float kR = 1.47460332208689, kB = 1.88141420945875;   // 2 − 2·k2020.r / 2 − 2·k2020.b\n" \
+"  n = pow(max(n, float3(0.0)), float3(1.0 / 2.4));   // γ 压缩（线性 → 码值域）\n" \
+"  float y = dot(n, k2020);   // Y'tmo（BT.2020 亮度变换）\n" \
+"  float cb = (n.b - y) / kB, cr = (n.r - y) / kR;   // C'b / C'r\n" \
+"  float y_sdr = y + max(0.1 * cr, 0.0);   // 亮度调整（逆）：Y'sdr = Y'tmo + max(0.1·C'r, 0)\n" \
+"  float p_sdr = 1.0 + 32.0 * pow(sdr_nits / 10000.0, 1.0 / 2.4);\n" \
+"  float y_c = log(y_sdr * (p_sdr - 1.0) + 1.0) / log(p_sdr);   // psdr 归一\n" \
+"  float y_p0 = y_c / 1.0770;   // 段 1 逆式（前向 Y'c = 1.0770·Y'p）\n" \
+"  float y_p1 = (-2.7811 + sqrt(4.83307641 - 4.604 * y_c)) / -2.302;   // 段 2 逆式（前向二次段的代数逆）\n" \
+"  float y_p2 = (y_c - 0.5) / 0.5;   // 段 3 逆式（前向 Y'c = 0.5·Y'p + 0.5）\n" \
+"  float y_p;\n" \
+"  if (y_p0 <= 0.7399) y_p = y_p0;   // 段界 0.7399 / 0.9909（libplacebo 同值；标准自身段 1/2 交界有不连续 ~6e-4——对拍期望按同式复算，不假设严格单调）\n" \
+"  else if (y_p1 > 0.7399 && y_p1 < 0.9909) y_p = y_p1;\n" \
+"  else if (y_p2 >= 0.9909) y_p = y_p2;\n" \
+"  else y_p = y_p1;   // 段界浮点兜底（gamescope 同款：误差 <0.001）\n" \
+"  float p_hdr = 1.0 + 32.0 * pow(target_nits / 10000.0, 1.0 / 2.4);\n" \
+"  float y_ = (pow(p_hdr, y_p) - 1.0) / (p_hdr - 1.0);   // phdr 归一（Y'hdr）\n" \
+"  float col_scale = y_ > 0.0 ? y_sdr / (1.1 * y_) : 1.0;   // 保色调标量（gamescope else 0 会得 0/0=NaN——恰黑本就该出黑，兜底 1.0 后黑→黑精确）\n" \
+"  float3 o;\n" \
+"  o.b = cb * kB / col_scale + y_;   // 色度按 col_scale 重建（逆方向除）\n" \
+"  o.r = cr * kR / col_scale + y_;\n" \
+"  o.g = (y_ - (k2020.r * o.r + k2020.b * o.b)) / k2020.g;   // 亮度逆推 G'（白仍是白）\n" \
+"  return pow(clamp(o, float3(0.0), float3(1.0)), float3(2.4));   // saturate 后回线性\n" \
+"}\n"
 NSString *const k_present_msl = @
 "#include <metal_stdlib>\n"
 "using namespace metal;\n"
@@ -119,12 +261,86 @@ NSString *const k_present_msl = @
 "  s = clamp(s, int2(0), p.tmax); return float4(t.read(uint2(s)).rgb, 1.0); }\n"
 // 上屏：视口 = 目标矩形，按采样器（双线性 / 最近，边缘钳位）缩放
 "fragment float4 pr_fs(VO in [[stage_in]], texture2d<float> t [[texture(0)]], sampler s [[sampler(0)]]) {\n"
-"  return float4(t.sample(s, in.uv).rgb, 1.0); }\n";
+"  return float4(t.sample(s, in.uv).rgb, 1.0); }\n"
+// PR7：present_mode 变体（评审稿 v3 §2.4 / §4 PR7）——数学与直连路径 nvn_mtl.m fs 的六分支逐条对齐
+//   （ST 2084 EOTF/逆 EOTF、BT.709↔BT.2020 矩阵、present_shoulder 有理肩部；两处同改）。参数经 UV 常量缓冲
+//   p[0..7]（nvn_hdr_policy.h hdr_present_fill 同一布局，mode/xf 两组并一行）：p[0]=模式号 / p[1]=纸白（nit）/
+//   p[2]=knee / p[3]=target；p[4]=源峰 / p[5]=膝点码值 / p[6]=SDR gamma。gal 可达模式域 = {0 平凡直通（不走本
+//   变体——present_one 直接走 pr_fs，逐字节同改前）, 2}；其余分支与直连路径同码备用（gal 出图源恒 SDR 定格，
+//   未来源域扩展时数学已在位）。采样同 pr_fs（裁切在 cap_fs 已做，这里整幅）；gal 出图层不透明——alpha 恒 1。
+"struct HP { float4 mode; float4 xf; };\n"
+// 线性 BT.709 与 BT.2020（ITU-R BT.2087；每行和 = 1，白仍是白。Metal 的 float3x3 按列取参——这里的列即矩阵的列）
+"constant float3x3 kRec709To2020 = float3x3(float3(0.627404, 0.069097, 0.016391), float3(0.329283, 0.919540, 0.088013), float3(0.043313, 0.011362, 0.895595));\n"
+"constant float3x3 kRec2020To709 = float3x3(float3(1.660491, -0.124550, -0.018151), float3(-0.587641, 1.132900, -0.100579), float3(-0.072850, -0.008349, 1.118730));\n"
+// SDR 图像码值 ↔ 线性光（BT.709 基色、D65）：gamma g 的纯幂曲线（g > 0），g = 0 时分段 sRGB 曲线（会抬暗部：码 16 = 2.2 的 2.3 倍光）
+"static inline float3 present_sdr_to_linear(float3 c, float g) {\n"
+"    if (g > 0.0) return pow(max(c, float3(0.0)), float3(g));\n"
+"    float3 lo = c * (1.0 / 12.92);\n"
+"    float3 hi = pow((c + 0.055) * (1.0 / 1.055), float3(2.4));\n"
+"    return select(hi, lo, c <= 0.04045);\n"
+"}\n"
+"static inline float3 present_linear_to_sdr(float3 l, float g) {\n"
+"    if (g > 0.0) return pow(max(l, float3(0.0)), float3(1.0 / g));\n"
+"    float3 lo = l * 12.92;\n"
+"    float3 hi = 1.055 * pow(l, float3(1.0 / 2.4)) - 0.055;\n"
+"    return select(hi, lo, l <= 0.0031308);\n"
+"}\n"
+// ST 2084 EOTF：码值 → 绝对亮度（10000 nit = 1.0）再除纸白（1.0 = 屏的 SDR 白，其上是净空）
+"static inline float3 present_pq_to_linear(float3 e, float paper) {\n"
+"    const float m1 = 0.1593017578125, m2 = 78.84375, c1 = 0.8359375, c2 = 18.8515625, c3 = 18.6875;\n"
+"    float3 ep = pow(max(e, float3(0.0)), float3(1.0 / m2));\n"
+"    float3 num = max(ep - c1, float3(0.0));\n"
+"    float3 den = max(c2 - c3 * ep, float3(1e-6));\n"
+"    return 10000.0 * pow(num / den, float3(1.0 / m1)) / paper;\n"
+"}\n"
+// ST 2084 逆 EOTF：1.0 = 纸白的线性光 → 码值。pow 的底恒正（快速数学下安全）
+"static inline float3 present_linear_to_pq(float3 l, float paper) {\n"
+"    const float m1 = 0.1593017578125, m2 = 78.84375, c1 = 0.8359375, c2 = 18.8515625, c3 = 18.6875;\n"
+"    float3 ym = pow(max(l * (paper / 10000.0), float3(1e-30)), float3(m1));\n"
+"    return pow((c1 + c2 * ym) / (1.0 + c3 * ym), float3(m2));\n"
+"}\n"
+// 有理肩部：膝点 k 以上、最亮通道 m 向 target t 压缩，各通道同缩放保色相（线性光、目标基色、无负值）。
+// 膝点处斜率 1、单调升、源峰 s 精确落 t（s ≤ t 时只在 t 截断）；每像素一次除法
+"static inline float3 present_shoulder(float3 n, float k, float t, float s) {\n"
+"  float m = max(max(n.r, n.g), n.b);\n"
+"  if (!(m > k)) return n;\n"
+"  float a = t - k, x = m - k, f = min(k + x / (1.0 + x * (1.0 / a - 1.0 / max(s - k, a))), t);\n"
+"  return n * (f / m);\n"
+"}\n"
+// PR-A（#625 第二阶段）：S4「SDR 转 HDR」扩张曲线 present_itm 的 MSL 文本（K_GAL_ITM_MSL——上方定义；与直连副本
+//   nvn_mtl.m 同式〔「数学逐条对齐……两处同改」惯例、勘误与登记注释同在宏定义处〕，独立导出 k_present_itm_msl）
+K_GAL_ITM_MSL
+"fragment float4 pr_fs_hdr(VO in [[stage_in]], texture2d<float> t [[texture(0)]], sampler s [[sampler(0)]], constant HP &p [[buffer(0)]]) {\n"
+"    float4 v = float4(t.sample(s, in.uv).rgb, 1.0);\n"
+"    if (p.mode.x > 3.5) {   // 4：PQ 层无 metadata——游戏可能画过屏当前净空的，膝点码值（xf.y）以上压进屏峰（mode.w）\n"
+"        if (max(max(v.r, v.g), v.b) > p.xf.y) v.rgb = present_linear_to_pq(present_shoulder(present_pq_to_linear(v.rgb, 1.0), p.mode.z, p.mode.w, p.xf.x), 1.0);\n"
+"    } else if (p.mode.x > 2.5) {   // 3：float 源（线性 BT.709）按纸白编成 HDR10；负值在矩阵后才截断，scRGB 的广色域保住其 BT.2020 值\n"
+"        v = float4(present_linear_to_pq(max(kRec709To2020 * clamp(v.rgb, -65504.0, 65504.0), 0.0), p.mode.y), 1.0);\n"
+// PR-A（#625 第二阶段）：mode 2 参数化扩展——S4「SDR 转 HDR」扩张（BT.2446A 逆映射 present_itm；矩阵提前到曲线之前——
+//   BT.2446A 的 Y'CbCr 变换按 BT.2020 设计，扩张必须在 709→2020 矩阵之后）。p.mode.z = sdr nits（p[2]）、
+//   p.mode.w = target nits（p[3]）——双零 = 不扩张（off 判定，nvn_hdr_policy.h hdr_present_fill 的 engage 门；
+//   HP 槽位与直连 Crop 一一对应）。engage 守卫 p.mode.z > 0.0 && p.mode.w > p.mode.z——严格大于：target ≤ sdr 会
+//   压暗/重塑（设计稿 §2.2 实测），绝不进曲线。未 engage 路径与改前同一式、同一输入、同一求值次序（仅中间量命名）——
+//   逐字节一致（off 不变量；gal 的 mode 0 平凡直通不经本变体，off 路径零触碰）。
+"    } else if (p.mode.x > 1.5) {\n"
+"      float3 lin2 = kRec709To2020 * present_sdr_to_linear(v.rgb, p.xf.z);\n"
+"      if (p.mode.z > 0.0 && p.mode.w > p.mode.z)\n"
+"        lin2 = present_itm(lin2, p.mode.z, p.mode.w) * (p.mode.w / p.mode.y);\n"   // 扩张：1.0=sdr nits 入 → 1.0=target nits 出 → 纸白相对域
+"      v = float4(present_linear_to_pq(lin2, p.mode.y), 1.0);\n"
+"    }\n"
+"    else if (p.mode.x > 0.5) v = float4(present_linear_to_sdr(saturate(present_shoulder(max(kRec2020To709 * present_pq_to_linear(v.rgb, p.mode.y), 0.0), p.mode.z, p.mode.w, p.xf.x)), p.xf.z), 1.0);   // 1：先矩阵后肩部——BT.709 后压缩，保高光层次与色相\n"
+"    return v; }\n";
+// PR-A（#625 第二阶段）：present_itm 文本独立导出（与 k_present_msl 拼进 pr_fs_hdr 的同一份——上方 K_GAL_ITM_MSL）。
+//   单测独立判据（PR #2080 评审第 1 轮，graphics/metal/tests/t_present_hdr.m ⑦）经 dlsym 按名取它编探针着色器上 GPU
+//   直测 present_itm 本体（RGBA32F 线性直出，不经 PQ 10 位量化）——探针测的就是生产文本，不是手抄副本。
+NSString *const k_present_itm_msl = @K_GAL_ITM_MSL;
 typedef struct { int32_t org[2], size[2], flip[2], tmax[2]; } cap_params;
 
 static id<MTLLibrary> g_plib;
 static id<MTLRenderPipelineState> g_cap_pso;
 static struct { MTLPixelFormat f; id<MTLRenderPipelineState> p; } g_pr_pso[4]; static int g_npr;   // 上屏管线按目标格式（g_mu 护：出图线程读）
+static struct { MTLPixelFormat f; id<MTLRenderPipelineState> p; } g_prh_pso[4]; static int g_nprh;   // PR7：present_mode 变体管线按目标格式（同款表；g_mu 护）
+static id g_pth_t, g_rth_t;   // PR7：变体参数表（buffer 0 = p[8] UV 常量缓冲、texture 0、sampler 0；出图线程 / Gpu 线程 render_to 各一）。类型记号不落本文件（MTL4 棘轮只许减：Metal 4 专有类型经 gal_be.h / 型擦除 id，同 gal_aa.m 参数表先例）
 static id<MTLSamplerState> g_smp_lin, g_smp_near;
 static id<MTL4ArgumentTable> g_cap_t, g_rt_t;   // Gpu 线程用：定格 / render_to
 
@@ -160,6 +376,7 @@ static int p_init(void) {
     if (!g_plib) { GLOG("【红】出图着色器编译失败：%s", e.localizedDescription.UTF8String); return 0; }
     g_smp_lin = mk_smp(MTLSamplerMinMagFilterLinear); g_smp_near = mk_smp(MTLSamplerMinMagFilterNearest);
     g_cap_t = mk_tab(); g_rt_t = mk_tab();
+    g_pth_t = mk_tab(); g_rth_t = mk_tab();   // PR7：变体参数表（建不出在用点各自回退平凡直通并已记红，不拖垮 SDR 现状路径）
     g_pev = [g_gdev newSharedEvent];
     MTLResidencySetDescriptor *rd = [MTLResidencySetDescriptor new]; rd.initialCapacity = NSLOT;
     g_pset = [g_gdev newResidencySetWithDescriptor:rd error:&e];
@@ -179,6 +396,18 @@ static id<MTLRenderPipelineState> pr_pso_get(MTLPixelFormat f, int compile) {
     if (g_npr >= 4) { GRED_ONCE("出图：上屏目标格式超过 4 种"); return nil; }
     p = mk_pso(@"pr_fs", f); if (!p) return nil;
     pthread_mutex_lock(&g_mu); g_pr_pso[g_npr].f = f; g_pr_pso[g_npr].p = p; g_npr++; pthread_mutex_unlock(&g_mu);
+    return p;
+}
+// PR7：变体管线（pr_fs_hdr）查表 / 现编——同 pr_pso_get 的表形态（Gpu 线程编，出图线程只查表）
+static id<MTLRenderPipelineState> pr_hdr_pso_get(MTLPixelFormat f, int compile) {
+    pthread_mutex_lock(&g_mu);
+    id<MTLRenderPipelineState> p = nil;
+    for (int i = 0; i < g_nprh; i++) if (g_prh_pso[i].f == f) { p = g_prh_pso[i].p; break; }
+    pthread_mutex_unlock(&g_mu);
+    if (p || !compile) return p;
+    if (g_nprh >= 4) { GRED_ONCE("出图：变体上屏目标格式超过 4 种"); return nil; }
+    p = mk_pso(@"pr_fs_hdr", f); if (!p) return nil;
+    pthread_mutex_lock(&g_mu); g_prh_pso[g_nprh].f = f; g_prh_pso[g_nprh].p = p; g_nprh++; pthread_mutex_unlock(&g_mu);
     return p;
 }
 
@@ -215,6 +444,20 @@ static void pr_encode(id<MTL4RenderCommandEncoder> e, id<MTL4ArgumentTable> t, i
     [e setCullMode:MTLCullModeNone];
     [e drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
 }
+// PR7：变体上屏编码——pr_encode 同款几何 / 采样 + UV 常量缓冲 p[8]（buffer 0 = 参数地址，模式 / 纸白 / 膝点 / 源峰 / gamma）。
+//   Metal 4 专有类型不落本文件（MTL4 棘轮只许减）：编码器 / 参数表 / 绑定经 gal_be.h 的入口（参数绑定一行，同 gal_aa.m aa_pass 先例）。
+static void pr_encode_hdr(id e, id t, id<MTLRenderPipelineState> p, id<MTLTexture> src, irect r, int filter, uint64_t p_gpu) {
+    if (r.w <= 0 || r.h <= 0) return;
+    gal_be_table_texture(t, src, 0);
+    gal_be_table_sampler(t, filter == 1 ? g_smp_near : g_smp_lin, 0);
+    gal_be_table_address(t, p_gpu, 0);
+    [e setArgumentTable:t atStages:MTLRenderStageFragment];
+    [e setRenderPipelineState:p];
+    [e setViewport:(MTLViewport){r.x, r.y, r.w, r.h, 0, 1}];
+    [e setScissorRect:(MTLScissorRect){(NSUInteger)r.x, (NSUInteger)r.y, (NSUInteger)r.w, (NSUInteger)r.h}];
+    [e setCullMode:MTLCullModeNone];
+    [e drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+}
 
 // ---------- 出图线程 ----------
 static id<MTL4CommandQueue> g_pq;
@@ -222,6 +465,16 @@ static id<MTLSharedEvent> g_pdone; static uint64_t g_pdone_n;   // 出图命令�
 #define NPALLOC 2
 static id<MTL4CommandAllocator> g_palloc[NPALLOC]; static uint64_t g_palloc_fence[NPALLOC];
 static id<MTL4ArgumentTable> g_pt;
+// PR7：变体参数缓冲按分配器槽轮转（出图线程独占）——同槽上一用家在下面的 ev_wait（g_pdone）里已确认完成，写无竞态
+static id<MTLBuffer> g_pth_buf[NPALLOC];
+static uint64_t gal_hdr_pth_fill(int a, const float p[8]) {
+    if (!g_pth_buf[a]) {
+        g_pth_buf[a] = [g_gdev newBufferWithLength:32 options:MTLResourceStorageModeShared | MTLResourceCPUCacheModeWriteCombined];
+        if (!g_pth_buf[a]) { GRED_ONCE("出图：HDR 变体参数缓冲建不出"); return 0; }
+    }
+    memcpy(g_pth_buf[a].contents, p, 32);
+    return g_pth_buf[a].gpuAddress;
+}
 static void ev_wait(id<MTLSharedEvent> ev, uint64_t v, const char *what) {
     // GPU 工作事件（定格完成，主队列发）3 秒不到即判卡死退出（gal_core.m）；上屏分配器等的是出图队列交给显示，受显示节拍 / 前后台影响（iOS 进后台本就拿不到画布），
     // 不算 GPU 卡死，照旧只记红继续等
@@ -233,11 +486,10 @@ int gal_present_drain(int timeout_ms) { uint64_t v = g_pdone_n; return !g_pdone 
 static void slot_unpresent(int s) { pthread_mutex_lock(&g_mu); g_slot[s].presenting--; pthread_cond_broadcast(&g_cv); pthread_mutex_unlock(&g_mu); }
 
 #if TARGET_OS_IPHONE
-id<CAMetalDrawable> s2a_ios_reflection_drawable(CAMetalLayer *game) __attribute__((weak_import));   // ios/play_reflection.m：上下分屏下区倒影（App 壳才有）
 #endif
-static CALayer *g_mirror_resident;   // 出图线程独占：倒影层的驻留集已加进出图队列
 static CAMetalLayer *g_applied; static int g_applied_vsync = -1; static CGSize g_applied_size;   // 出图线程独占
 static int present_prep(CAMetalLayer *layer, int s, int vsync, int rw, int rh) {
+    gal_hdr_tick(layer);   // PR7：层态跟随（S2A_HDR 非 off 时进层 / 排空切回 + sRGB 重设，§4 PR7）——层配置要在取 drawable 前落定
     CAMetalLayer *applied = g_applied; int applied_vsync = g_applied_vsync; CGSize applied_size = g_applied_size;
     id<MTLRenderPipelineState> pso = pr_pso_get(layer.pixelFormat, 0);
     if (!pso) { GRED_ONCE("出图线程：图层格式 %lu 没有上屏管线", (unsigned long)layer.pixelFormat); slot_unpresent(s); return 0; }
@@ -250,7 +502,18 @@ static int present_prep(CAMetalLayer *layer, int s, int vsync, int rw, int rh) {
 #else
     (void)vsync; (void)applied_vsync;
 #endif
-    if (rw > 0 && rh > 0 && (applied_size.width != rw || applied_size.height != rh)) { layer.drawableSize = CGSizeMake(rw, rh); applied_size = CGSizeMake(rw, rh); }
+    if (rw > 0 && rh > 0 && (applied_size.width != rw || applied_size.height != rh)) {
+        applied_size = CGSizeMake(rw, rh);
+#if TARGET_OS_IPHONE
+        // iOS：图层属性只在主线程改。出图线程直接设 drawableSize 会在本线程开隐式 CATransaction，提交时连带布局 UIKit 视图——
+        //   iPadOS 27 判「后台线程改布局引擎」抛 NSInternalInconsistencyException 退出（D-HHEG，第一次出图碰上主线程有待布局时）。
+        //   交主线程异步设（不等它：主线程可能正等出图），这期间的几帧按旧可画尺寸出（上屏按画布实际尺寸算区域，见 present_one）
+        CAMetalLayer *L = layer; CGSize sz = applied_size;
+        dispatch_async(dispatch_get_main_queue(), ^{ [CATransaction begin]; [CATransaction setDisableActions:YES]; L.drawableSize = sz; [CATransaction commit]; });
+#else
+        layer.drawableSize = applied_size;
+#endif
+    }
     g_applied = applied; g_applied_vsync = applied_vsync; g_applied_size = applied_size;
     return 1;
 }
@@ -276,28 +539,22 @@ static void present_one(CAMetalLayer *layer, id<CAMetalDrawable> dr, int s, pslo
     int a = (int)(g_pdone_n % NPALLOC);
     ev_wait(g_pdone, g_palloc_fence[a], "上屏分配器");
     [g_palloc[a] reset];
+    // PR7：present_mode 变体选路（§4 PR7 / §2.3 判定次序 2）：PQ 层（RGB10A2）上 SDR 定格源按 mode 2 编码（纸白 100 nit，
+    //   层不因源切回）；8 位目标零成本直通（下方 else 走原路——逐字节同改前）
+    float hp[8];
+    int pv = present_hdr_uv(hp, layer.pixelFormat, 1);
+    if (pv != HDR_PV_TRIVIAL && pv != HDR_PV_TO_PQ) { GRED_ONCE("出图：策略给的模式 %d 不在 gal 可达域（SDR 定格源 → {直通, mode 2}），本帧按原样直通", pv); pv = HDR_PV_TRIVIAL; }
+    id<MTLRenderPipelineState> pso_h = pv == HDR_PV_TO_PQ ? pr_hdr_pso_get(layer.pixelFormat, 0) : nil;
+    uint64_t hp_gpu = pso_h ? gal_hdr_pth_fill(a, hp) : 0;
     id<MTL4CommandBuffer> cb = [g_gdev newCommandBuffer];
     [cb beginCommandBufferWithAllocator:g_palloc[a]];
     id<MTL4RenderCommandEncoder> e = [cb renderCommandEncoderWithDescriptor:pr_pass(dt, r)];
-    pr_encode(e, g_pt, pso, sl.aa ? sl.post : sl.tex, r, filter);
+    if (pso_h && hp_gpu && g_pth_t) pr_encode_hdr(e, g_pth_t, pso_h, sl.aa ? sl.post : sl.tex, r, filter, hp_gpu);
+    else pr_encode(e, g_pt, pso, sl.aa ? sl.post : sl.tex, r, filter);
     [e endEncoding];
-    // 上下分屏下区倒影：同一张画面在同一个命令缓冲里再画进倒影层的小画布（不分屏 / 后台时取到 nil）
-#if TARGET_OS_IPHONE
-    id<CAMetalDrawable> mdr = s2a_ios_reflection_drawable ? s2a_ios_reflection_drawable(layer) : nil;
-#else
-    id<CAMetalDrawable> mdr = nil;
-#endif
-    if (mdr) {
-        id<MTLTexture> mt = mdr.texture; irect mr = dst_rect((int)mt.width, (int)mt.height, sl.stretched, sl.ax, sl.ay);
-        if (g_mirror_resident != mdr.layer) { [g_pq addResidencySet:mdr.layer.residencySet]; g_mirror_resident = mdr.layer; }
-        e = [cb renderCommandEncoderWithDescriptor:pr_pass(mt, mr)];   // 复用上面的编码器变量
-        pr_encode(e, g_pt, pso, sl.aa ? sl.post : sl.tex, mr, filter);
-        [e endEncoding];
-    }
     [cb endCommandBuffer];
     if (gpuwait) [g_pq waitForEvent:g_pev value:sl.fence];   // 旧做法（A/B）：定格那次提交做完再读，在 GPU 上等
     [g_pq waitForDrawable:dr];
-    if (mdr) [g_pq waitForDrawable:mdr];
     MTL4CommitOptions *o = [MTL4CommitOptions new];
     [o addFeedbackHandler:^(id<MTL4CommitFeedback> f) {
         if (f.error) gal_gpu_error_exit("上屏", f.error);
@@ -307,7 +564,6 @@ static void present_one(CAMetalLayer *layer, id<CAMetalDrawable> dr, int s, pslo
     [g_pq commit:bufs count:1 options:o];
     uint64_t t_c = trace ? clock_gettime_nsec_np(CLOCK_UPTIME_RAW) : 0;
     [g_pq signalDrawable:dr];
-    if (mdr) { [g_pq signalDrawable:mdr]; [mdr present]; }
     uint64_t v = ++g_pdone_n; [g_pq signalEvent:g_pdone value:v]; g_palloc_fence[a] = v;
     [dr addPresentedHandler:^(id<MTLDrawable> d) {   // 画面真正上屏的时刻（显示节拍）：frames.tsv 的 disp_us 用；presentedTime 为 0 = 没上屏（被丢）
         CFTimeInterval t = d.presentedTime;
@@ -376,10 +632,15 @@ NXGAL_API void nxgal_window_set_layer(void *ca_metal_layer) { GAL_API_LOCK();
         CGColorSpaceRef cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);   // 同 Vulkan 端 SrgbNonlinear 表面：按 sRGB 做色彩匹配（广色域屏不过饱和）
         if (cs) { L.colorspace = cs; CGColorSpaceRelease(cs); }
         L.maximumDrawableCount = 3;
+        // PR7：上面刚强制设过 S0——gal 侧层簿记归 0（进层 / 切回从这里起算）
+        atomic_store(&g_hdr_layer_pq_applied, 0);
+    } else {
+        atomic_store(&g_hdr_layer_pq_applied, -1);   // 摘层：簿记未知
     }
     g_layer = L;
     pthread_cond_broadcast(&g_cv);
     pthread_mutex_unlock(&g_mu);
+    if (L) gal_hdr_layer_apply(L);   // PR7 创建点：off ⇒ layer_pq 恒 0 与已应用态一致（零写，零变化）；on/auto + 预挂过的层直接 PQ（同直连层 front_metal_layer 取用点先例，§4 PR4 ①）
 }
 
 NXGAL_API void nxgal_window_set_size(int32_t w, int32_t h) { GAL_API_LOCK(); pthread_mutex_lock(&g_mu); g_req_w = w; g_req_h = h; pthread_mutex_unlock(&g_mu); }
@@ -651,7 +912,16 @@ NXGAL_API void nxgal_present(uint32_t tex, const nxgal_crop *crop) { nxgal_pool_
         uint64_t v = ++g_pev_n; [g_gq signalEvent:g_pev value:v];
         // 上屏管线（图层格式）在 Gpu 线程编好，出图线程只查表
         pthread_mutex_lock(&g_mu); CAMetalLayer *layer = g_layer; pthread_mutex_unlock(&g_mu);
-        if (layer) { pr_pso_get(layer.pixelFormat, 1); }
+        if (layer) {
+            MTLPixelFormat lpf = layer.pixelFormat;   // 读一次（与改前同一处读）：管线预编 / 下面的 PQ 门共用
+            pr_pso_get(lpf, 1);
+            if (lpf == MTLPixelFormatRGB10A2Unorm) {   // PR7：PQ 层——变体管线一并预编（首帧 / 首切换无现编卡顿，T11 口径）+ 排空喂入
+                //   （层持 PQ 才可能要排空——门在层格式上，SDR 层缺省路径零新增开销，同直连路径 nvn_mtl.m 形态；
+                //   PQ 窗口 = 游戏出图源是 RGB10A2：排空途中又见清零重等——无 HDR 帧落进 SDR 层）
+                pr_hdr_pso_get(MTLPixelFormatRGB10A2Unorm, 1);
+                if (hdr_api()) g_hdr.hdr_tick_frame(g_hdr.hdr_layer_sw(), t->tex.pixelFormat == MTLPixelFormatRGB10A2Unorm);   // sw = 层视角开关（PR-B 终稿）：S4 开而玩家 off 时喂玩家开关会把 SDR 帧两帧排空、层掉回 S0（gal 源恒 8 位 SDR），S4 失载体——故喂层视角
+            }
+        }
         pthread_mutex_lock(&g_mu);
         sl->frame = g_gp_frame - 1; sl->t_sig = clock_gettime_nsec_np(CLOCK_UPTIME_RAW); sl->aa = antialiasing;
         sl->fence = v; sl->stretched = c.stretched != 0; sl->ax = c.aspect_x; sl->ay = c.aspect_y;
@@ -720,10 +990,20 @@ NXGAL_API int32_t nxgal_window_render_to(uint32_t dst) { GAL_API_LOCK();
         pthread_mutex_unlock(&g_mu);
         if (s < 0) return -1;
         id<MTLRenderPipelineState> p = pr_pso_get(t->tex.pixelFormat, 1); if (!p) return -1;
+        // PR7：render_to = 上屏同一段编码——PQ 层目标（RGB10A2）上同走 present_mode 变体（§4 PR7）；off 缺省直通
+        //   （读开关——诊断路径，事件档频率；与改前逐字节一致）
+        float hp[8];
+        int pv = present_hdr_uv(hp, t->tex.pixelFormat, 0);
+        if (pv != HDR_PV_TRIVIAL && pv != HDR_PV_TO_PQ) { GRED_ONCE("出图：策略给的模式 %d 不在 gal 可达域（SDR 定格源 → {直通, mode 2}）", pv); pv = HDR_PV_TRIVIAL; }
         irect r = dst_rect((int)t->tex.width, (int)t->tex.height, sl.stretched, sl.ax, sl.ay);
         gal_pass_clears_touch(t->root); gal_pass_close();
         id<MTL4RenderCommandEncoder> e = gal_render_begin_desc(pr_pass(t->tex, r));
-        pr_encode(e, g_rt_t, p, sl.aa ? sl.post : sl.tex, r, filter);
+        if (pv == HDR_PV_TO_PQ) {
+            id<MTLRenderPipelineState> ph = pr_hdr_pso_get(t->tex.pixelFormat, 1);
+            uint64_t pg = 0; float *q = gal_transient((uint32_t)sizeof hp, 16, &pg);   // Gpu 线程临时池（同 cap_params）
+            if (ph && g_rth_t && q) { memcpy(q, hp, sizeof hp); pr_encode_hdr(e, g_rth_t, ph, sl.aa ? sl.post : sl.tex, r, filter, pg); }
+            else pr_encode(e, g_rt_t, p, sl.aa ? sl.post : sl.tex, r, filter);   // 变体建不出（已记红）：退回平凡直通，别黑帧
+        } else pr_encode(e, g_rt_t, p, sl.aa ? sl.post : sl.tex, r, filter);
         gal_enc_end();
         g_genc_serial++;
     }
@@ -755,6 +1035,7 @@ int gal_present_shutdown_session(void) {
     }
     [g_pset commit];
     g_req_w = g_req_h = g_vsync = g_filter = g_antialiasing = 0; g_min_interval = 0;
+    atomic_store(&g_hdr_layer_pq_applied, -1);   // PR7：收局簿记归位（下局 set_layer 创建点重新起算）
     g_lqh = 0; g_lq_last = g_lq_miss = 0;
     if (g_cap_f) { fclose(g_cap_f); g_cap_f = NULL; }
     g_diag_luma = -1; g_diag_cap = g_cap_skip = g_cap_n = 0; g_cap_lo = UINT64_MAX; g_cap_hi = g_cap_done = 0;

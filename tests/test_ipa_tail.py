@@ -6,7 +6,7 @@
 ② 着色器目标：gal_pso.applegpu_g18p.ios27.0.bin / .1.bin、gal_pso.applegpu_g17p.ios26.0.bin、gal_dl.* → 「applegpu_g17p.ios26,applegpu_g18p.ios27」；没有归档 → 空
 ③ 包号 = <提交号>-<sha256(包键 + 换行) 前 8 位>（本文件另算）
 ④ 实跑 Info.plist 写入（app_bundle.py update_metadata，同 ipa_tail 用的调用）：包号与着色器目标读回一致、未知布尔键保留；空着色器目标 → 删掉旧键
-⑥ 开发设施开关（S2ADevFacilities）：S2A_PACK_PURPOSE=user → "0"（玩家包关）；没设 / 别的用途 → 空串（删键 = 开发设施开）
+⑥ 开发设施开关（S2ADevFacilities）：只有 S2A_PACK_PURPOSE=dev → "1"；user / 没设 / 别的用途 → "0"（11-17 缺省关）
 ⑤ 签名方式：非 Mac 上 adhoc / dev → 退 1 报红；dev 没给团队 → 退 1
 ⑦ 「打 ipa」失败要带出真正的原因（11-08 反馈：出包 2/5、错误码 package_failed「原因没认出来」）：archive_reason 红行优先、否则日志最后一行
    （python traceback 的末行 = 异常本身），日志缺失给空串——调用方据此把原因写进红行与错误摘要
@@ -174,12 +174,13 @@ class DevFacilities(unittest.TestCase):
             os.environ.pop('S2A_PACK_PURPOSE', None)
             if old is not None: os.environ['S2A_PACK_PURPOSE'] = old
 
-    def test_user_pack_off(self):   # 启动器给玩家出包：写 "0"，宿主 s2a_dev_on 判关
+    def test_everything_but_dev_off(self):   # 11-17 缺省关：玩家包、没设、别的用途一律写 "0"（漏设 S2A_PACK_PURPOSE 的出包路径也不漏开）
         self.assertEqual(self._with('user'), '0')
+        self.assertEqual(self._with(None), '0')
+        self.assertEqual(self._with('exp'), '0')
 
-    def test_dev_packs_keep_on(self):   # 实验 / 普查 / 手测（不设或别的值）：空串 = update_metadata 删键 = 开
-        self.assertEqual(self._with(None), '')
-        self.assertEqual(self._with('exp'), '')
+    def test_dev_pack_on(self):   # 只有显式的开发包写 "1"
+        self.assertEqual(self._with('dev'), '1')
 
 if __name__ == "__main__":
     unittest.main()

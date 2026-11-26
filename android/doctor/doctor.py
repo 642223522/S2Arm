@@ -234,11 +234,12 @@ def requirements(repo):
             raise ValueError('unsupported backend-compare layout: missing ' + needle)
     # 出包后端自动选（package.py，owner 定）：Docker 只留给 Linux 主机。Darwin arm64
     # 一律 host、Darwin 非 arm64 明确报红「未验证」（复审第 6 条，不放行半通状态）、
-    # Linux 必须 docker 健康——形状变了这里要跟着改。
+    # Linux 有 docker 命令就走 docker（daemon 不预检：负载高时 docker info 回得慢会把好的 Docker 判坏，真不可用由 docker 那步报真原因）
+    # ——形状变了这里要跟着改。
     pkg = read('pack/targets/android/package.py')
     if (not re.search(r"if system == 'Darwin':.*?machine != 'arm64'.*?未验证.*?return 'host'", pkg, re.S)
-            or not re.search(r"if system == 'Linux':.*?return 'docker'", pkg, re.S)
-            or "'info'" not in pkg or 'raise ValueError' not in pkg):
+            or not re.search(r"if system == 'Linux':.*?shutil\.which\('docker'.*?return 'docker'", pkg, re.S)
+            or 'raise ValueError' not in pkg):
         raise ValueError('unsupported package backend selection')
     if ('$out' not in cs
             or cache_path(cs, 'DOTNET_ROOT', {'sdk_version': want['cs_sdk']})

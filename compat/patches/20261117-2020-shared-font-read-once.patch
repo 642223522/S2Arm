@@ -1,0 +1,108 @@
+diff --git a/src/Ryujinx.HLE/HOS/Services/Sdb/Pl/SharedFontManager.cs b/src/Ryujinx.HLE/HOS/Services/Sdb/Pl/SharedFontManager.cs
+index 8ae3e21aeaddafe3577163672e8e19456522f16e..cda837201534c611bb0df7dd97d6dfbc72f824ef 100644
+--- a/src/Ryujinx.HLE/HOS/Services/Sdb/Pl/SharedFontManager.cs
++++ b/src/Ryujinx.HLE/HOS/Services/Sdb/Pl/SharedFontManager.cs
+@@ -88,16 +88,7 @@ namespace Ryujinx.HLE.HOS.Services.Sdb.Pl
+ 
+                             FontInfo fileInfo = new((int)fontOffset, fileData.Length);
+ 
+-                            WriteMagicAndSize(fontOffset, fileData.Length);
+-
+-                            fontOffset += 8;
+-
+-                            uint fileStart = fontOffset;
+-
+-                            for (; fontOffset - fileStart < fileData.Length; fontOffset++)
+-                            {
+-                                _storage.GetRef<byte>(fontOffset) = fileData[fontOffset - fileStart];
+-                            }
++                            PutFont(ref fontOffset, fileData);
+ 
+                             return fileInfo;
+                         }
+@@ -123,16 +114,7 @@ namespace Ryujinx.HLE.HOS.Services.Sdb.Pl
+ 
+                             FontInfo info = new((int)fontOffset, data.Length);
+ 
+-                            WriteMagicAndSize(fontOffset, data.Length);
+-
+-                            fontOffset += 8;
+-
+-                            uint start = fontOffset;
+-
+-                            for (; fontOffset - start < data.Length; fontOffset++)
+-                            {
+-                                _storage.GetRef<byte>(fontOffset) = data[fontOffset - start];
+-                            }
++                            PutFont(ref fontOffset, data);
+ 
+                             return info;
+                         }
+@@ -207,27 +189,58 @@ namespace Ryujinx.HLE.HOS.Services.Sdb.Pl
+             return MemoryMarshal.CreateReadOnlySpan(ref _storage.GetRef<byte>(0), (int)_fontEnd);
+         }
+ 
+-        private byte[] DecryptFont(Stream bfttfStream)
++        // S2Arm（11-17 D-FCMF：Switch 2 游戏取内置字体 2010 等了 190 秒、黑屏）：一个字体 = 8 字节头 + 解密后的正文，整块写进字体共享内存。
++        //   上游逐字节 GetRef 写 1700 多万次；写之前先核放得下（上游写完全部字体才核总长，超了已经写出字体区）
++        private void PutFont(ref uint fontOffset, byte[] data)
++        {
++            if ((ulong)fontOffset + 8 + (ulong)data.Length > (ulong)Horizon.FontSize)
++            {
++                throw new InvalidSystemResourceException("The sum of all fonts size exceed the shared memory size. " +
++                                                         $"Please make sure that the fonts don't exceed {Horizon.FontSize} bytes in total. (actual size: {(ulong)fontOffset + 8 + (ulong)data.Length} bytes so far).");
++            }
++
++            WriteMagicAndSize(fontOffset, data.Length);
++
++            fontOffset += 8;
++
++            data.AsSpan().CopyTo(MemoryMarshal.CreateSpan(ref _storage.GetRef<byte>(fontOffset), data.Length));
++
++            fontOffset += (uint)data.Length;
++        }
++
++        // S2Arm（同上）：上游循环条件每圈取一次 bfttfStream.Length——文件流上每次都是一次 fstat（约 17.5 MB 字体 = 440 万次）；游戏库在外接盘 / 网络盘上时
++        //   一次 fstat 慢一个数量级，字体初始化拖到几分钟，游戏一直等字体、黑屏（玩家现场栈正停在 fstat）。改为整份读进来一次、在内存里逐字异或（小端，同上游 BinaryReader / BinaryWriter）
++        private static byte[] DecryptFont(Stream bfttfStream)
+         {
+             static uint KXor(uint data) => data ^ FontKey;
+ 
+-            using BinaryReader reader = new(bfttfStream);
+-            using RecyclableMemoryStream ttfStream = MemoryStreamManager.Shared.GetStream();
+-            using BinaryWriter output = new(ttfStream);
++            long length = bfttfStream.Length;
++
++            if (length < 8)
++            {
++                throw new InvalidDataException("Error: Input file is not in BFTTF format!");
++            }
++
++            byte[] raw = new byte[length];
++
++            bfttfStream.ReadExactly(raw);
+ 
+-            if (KXor(reader.ReadUInt32()) != BFTTFMagic)
++            if (KXor(BinaryPrimitives.ReadUInt32LittleEndian(raw)) != BFTTFMagic)
+             {
+                 throw new InvalidDataException("Error: Input file is not in BFTTF format!");
+             }
+ 
+-            bfttfStream.Position += 4;
++            int words = (int)((length - 8) / 4);
++            byte[] ttf = new byte[words * 4];
++            ReadOnlySpan<uint> src = MemoryMarshal.Cast<byte, uint>(raw.AsSpan(8, words * 4));
++            Span<uint> dst = MemoryMarshal.Cast<byte, uint>(ttf.AsSpan());
+ 
+-            for (int i = 0; i < (bfttfStream.Length - 8) / 4; i++)
++            for (int i = 0; i < words; i++)
+             {
+-                output.Write(KXor(reader.ReadUInt32()));
++                dst[i] = BitConverter.IsLittleEndian ? KXor(src[i]) : BinaryPrimitives.ReverseEndianness(KXor(BinaryPrimitives.ReverseEndianness(src[i])));
+             }
+ 
+-            return ttfStream.ToArray();
++            return ttf;
+         }
+     }
+ }

@@ -55,6 +55,7 @@ final class GameLibrary {
     GameLibrary(Context context, Listener listener, String selectedTitle) {
         GameFingerprint.setStatProvider(AndroidFileStamp::read);
         GameFingerprint.setStatProbe(AndroidFileStamp::probe);
+        GameInstall.setDirectorySync(AndroidDirectorySync::sync);
         this.selectedTitle = selectedTitle;
         this.context = context;
         this.listener = listener;
@@ -67,6 +68,11 @@ final class GameLibrary {
             int swept = GameInstall.sweep(gamesDir);   // 逐款取锁，忙的那款跳过
             if (swept > 0) Log.i("S2Arm", "Removed " + swept + " unfinished game install(s)");
         });
+    }
+
+    /** 库清单只给日志看：不当状态发给界面，不然收尾这行会盖掉刚报的失败原因 / 「已装好」。 */
+    private void logLibrary() {
+        Log.i("S2Arm", describe());
     }
 
     private void status(String text) {
@@ -95,6 +101,7 @@ final class GameLibrary {
                 try {
                     if (!selectedTitle.matches("[0-9A-F]{16}")) throw new IOException("invalid selected titleId");
                     long phase = GameFingerprint.Timing.start(timing);
+                    GameInstall.recoverBeforeOpen(gamesDir, selectedTitle);
                     BootContract.Game boot = BootContract.open(new File(gamesDir, selectedTitle));
                     GameFingerprint.Timing.end(timing, "library_open", phase);
                     if (!selectedTitle.equals(boot.titleId)) throw new IOException("selected game identity differs from the private revision");
@@ -106,8 +113,10 @@ final class GameLibrary {
                     GameSession.InstalledApk apk = installedApk();
                     GameFingerprint.Timing.end(timing, "installed_apk_identity", phase);
                     phase = GameFingerprint.Timing.start(timing);
+                    SaveImport saves = new SaveImport(context.getFilesDir(), Locale.getDefault().toLanguageTag(), NativeBridge::saveTransfer);
                     GameSession session = GameSession.load(spec, context.getFilesDir(), apk,
-                        (context.getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0, DebugGate.open(), timing);
+                        (context.getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0,
+                        DebugGate.open(), timing, saves::recoverIfNeeded);
                     GameFingerprint.Timing.end(timing, "session_load_total", phase);
                     if (timing != null) for (String line : timing.lines()) Log.d("S2ArmBootTiming", line);
                     Log.i("S2Arm", session.resourceValidation);
@@ -135,7 +144,8 @@ final class GameLibrary {
                             try {
                                 BootContract.Current now = BootContract.readCurrent(new File(gamesDir, result.titleId));
                                 Log.i("S2Arm", "Game import receipt: " + result.titleId + " contentRoot=" + now.contentRoot
-                                    + " artifactSha256=" + now.artifactSha256 + " from import/" + source.getName());
+                                    + " artifactSha256=" + now.artifactSha256
+                                    + (result.resourceDelta ? " resourceDelta=1" : "") + " from import/" + source.getName());
                             } catch (BootContract.BadGame | IOException receipt) {
                                 Log.i("S2Arm", "Game import receipt unavailable: " + result.titleId + " from import/" + source.getName());
                             }
@@ -150,7 +160,7 @@ final class GameLibrary {
             } catch (IOException error) {
                 failure("Game import deferred: " + error.getMessage(), R.string.player_err_import, error);
             }
-            status(describe());
+            logLibrary();
         });
     }
 
@@ -175,7 +185,7 @@ final class GameLibrary {
                         + " or its direct subfolders; pick the folder you copied the package into");
             } catch (GamePack.BadPack | IOException | RuntimeException e) {
                 failure("Game in-place registration refused: " + e.getMessage(), R.string.player_err_import, inPlaceAccess(e, true));
-                status(describe());
+                logLibrary();
                 return;
             }
             for (File dir : packages) {
@@ -196,7 +206,7 @@ final class GameLibrary {
                     failure("Game in-place registration of " + dir + " refused: " + e.getMessage(), R.string.player_err_import, inPlaceAccess(e, true));
                 }
             }
-            status(describe());
+            logLibrary();
         });
     }
 
@@ -219,7 +229,7 @@ final class GameLibrary {
 
     /** 读共享存储失败、而本 App 确实没有「所有文件访问」时，把这个真原因放进报错（不预先拦：先做，真失败再说为什么）。 */
     private static Throwable inPlaceAccess(Throwable error, boolean inPlace) {
-        if (!inPlace || android.os.Build.VERSION.SDK_INT < 30 || android.os.Environment.isExternalStorageManager()) return error;
+        if (!inPlace || android.os.Environment.isExternalStorageManager()) return error;
         return new IOException("All files access is off for this app: " + error.getMessage(), error);
     }
 
@@ -268,7 +278,7 @@ final class GameLibrary {
             } catch (GamePack.BadPack | IOException | RuntimeException e) {
                 failure("Game import refused: " + e.getMessage(), R.string.player_err_import, e);
             }
-            status(describe());
+            logLibrary();
         });
     }
 
@@ -302,15 +312,20 @@ final class GameLibrary {
         if (r.artifactRefreshed) return "build artifact updated (same files): " + game + " -> " + r.contentRoot.substring(0, 19);
         return "installed: " + game + " -> " + r.contentRoot.substring(0, 19)
             + String.format(Locale.ROOT, "; stored %.1f MiB, shared %.1f MiB with installed versions", r.storedBytes / 1048576.0, r.sharedBytes / 1048576.0)
-            + (r.linked ? "" : " (hard links refused: files copied, not shared)")
+            + (r.managedObjects ? String.format(Locale.ROOT,
+                " (objects plan_ms=%d place_ms=%d verify_ms=%d publish_ms=%d collect_ms=%d unchanged_read_bytes=%d unchanged_write_bytes=%d)",
+                r.planMs, r.placeMs, r.verifyMs, r.publishMs, r.collectMs, r.unchangedReadBytes, r.unchangedWriteBytes)
+                : r.linked ? "" : " (hard links refused: files copied, not shared)")
             + (r.previousContentRoot == null ? "" : "; previous " + r.previousContentRoot.substring(0, 19) + " kept");
     }
 
     // Progress for the panel, every 64 MiB copied.
     private GameInstall.Progress progress() {
-        long[] last = {0};
+        long[] last = {0, 0};
         return (done, total) -> {
             if (done - last[0] > (64L << 20)) { last[0] = done; listener.onStatus(context.getString(R.string.import_progress, done >> 20, total >> 20)); }
+            // 部署工具（deploy_game）按这一行判导入还在推进：进度在涨就继续等，停住才算超时（大包在机上校验 + 复制可远慢于直传）
+            if (done - last[1] > (512L << 20)) { last[1] = done; Log.i("S2Arm", "Game import progress: " + (done >> 20) + " / " + (total >> 20) + " MiB"); }
         };
     }
 

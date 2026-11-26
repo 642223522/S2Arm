@@ -22,6 +22,8 @@ int s2a_gfx_mode(void) { return S2A_GFX_GENERIC; }
 // Generic Android mode has no direct API interception (plat_android.c).
 uint64_t s2a_direct_lookup(const char *name) { (void)name; return 0; }
 void *s2a_libc_lookup(const char *name) { (void)name; return NULL; }
+// loader.c 只在即时存档模式（s2a_snap_mode，本夹具恒关）下取地址窗口；关着走不到，给空窗口
+void s2a_window_get(uint64_t *base, uint64_t *size) { *base = 0; *size = 0; }
 void *sw_xstack_wrap(const char *name,void *fn) { (void)name;(void)fn; assert(0); return NULL; }
 unsigned s2a_unresolved_count(void);
 const char *s2a_main_build_id(void);

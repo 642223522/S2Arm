@@ -7,6 +7,7 @@
 //   或 0x5A + (reg-128)×2；img 句柄在 0x120 区 → slot = 0x48 + reg×2。
 #include "libpack_vk.h"
 #include "jv.h"   // 跨度式 JSON：_b.json 有长串字段（pos_slice 表 base64），s2a_json 短串上限吃不下
+#include "spirv_workgroup.h"   // s2a_spv_workgroup_bytes：计算出库的设备共享内存上限闸
 #include "../nvn/nvn_vk_program_result.h"   // SUPPORT_DEFAULT_BYTES：计算结果的 supportLayout.requiredSize
 
 #include <errno.h>
@@ -22,20 +23,30 @@ static void s2a_lp_log(const char *fmt, ...) {
     __android_log_vprint(ANDROID_LOG_INFO, "S2Arm", fmt, ap);
     va_end(ap);
 }
+static void s2a_lp_red(const char *fmt, ...) {   // 具名红行：错误级、文本以「【红】」开头（同各模块口径）
+    char line[512]; va_list ap; va_start(ap, fmt); vsnprintf(line, sizeof line, fmt, ap); va_end(ap);
+    __android_log_print(ANDROID_LOG_ERROR, "S2Arm", "【红】%s", line);
+}
 #else
 static void s2a_lp_log(const char *fmt, ...) {
     va_list ap; va_start(ap, fmt); vfprintf(stderr, fmt, ap); va_end(ap); fputc('\n', stderr);
 }
+static void s2a_lp_red(const char *fmt, ...) {
+    va_list ap; va_start(ap, fmt); fputs("【红】", stderr); vfprintf(stderr, fmt, ap); va_end(ap); fputc('\n', stderr);
+}
 #endif
 #define LP_LOG(...) s2a_lp_log(__VA_ARGS__)
+#define LP_RED(...) s2a_lp_red(__VA_ARGS__)
 
 #include "../../../graphics/nvn/lib_pack_core.inc"
 #include "../../../graphics/nvn/gfx/nvn/dmsh_chain.h"
 
-struct s2a_libpack { lp_pack p; };
+struct s2a_libpack { lp_pack p; _Atomic int caps_said, ilk_said; };   // ilk_said：本局已打过「丢掉互锁临界区」那一行红   // caps_said：本局（这次 open）已打过「删 64 位能力声明」那一行
 
-static _Atomic uint64_t g_hits, g_misses, g_rejects;
+static _Atomic uint64_t g_hits, g_misses, g_rejects, g_caps_stripped, g_interlock_dropped;
 uint64_t s2a_libpack_hits(void) { return atomic_load(&g_hits); }
+uint64_t s2a_libpack_caps_stripped(void) { return atomic_load(&g_caps_stripped); }
+uint64_t s2a_libpack_interlock_dropped(void) { return atomic_load(&g_interlock_dropped); }
 uint64_t s2a_libpack_misses(void) { return atomic_load(&g_misses); }
 uint64_t s2a_libpack_rejects(void) { return atomic_load(&g_rejects); }
 
@@ -67,16 +78,16 @@ int s2a_libpack_get(const struct s2a_libpack *lp, const uint8_t key[8], unsigned
     *bytes = NULL; *len = 0;
     const lp_rec *r = lp_find(&lp->p, lp_key8(key), kind);
     if (!r) return S2A_LIBPACK_MISS;
-    if (r->shard >= lp->p.nshard || r->off + r->len > lp->p.ssize[2 * r->shard]) {
+    if (lp_shard(r) >= lp->p.nshard || r->off + r->len > lp->p.ssize[2 * lp_shard(r)]) {
         if (why && why_size) snprintf(why, why_size, "record points outside shard table (%u/%u off=%llu len=%u)",
-                                      r->shard, lp->p.nshard, (unsigned long long)r->off, r->len);
+                                      lp_shard(r), lp->p.nshard, (unsigned long long)r->off, r->len);
         return S2A_LIBPACK_REJECT;
     }
-    char path[1100]; snprintf(path, sizeof path, "%s/lib.%03u.pak", lp->p.dir, r->shard);
+    char path[1100]; snprintf(path, sizeof path, "%s/lib.%03u.pak", lp->p.dir, lp_shard(r));
     int fd = open(path, O_RDONLY); struct stat st;
-    if (fd < 0 || fstat(fd, &st) || (uint64_t)st.st_size != lp->p.ssize[2 * r->shard]) {
+    if (fd < 0 || fstat(fd, &st) || (uint64_t)st.st_size != lp->p.ssize[2 * lp_shard(r)]) {
         if (why && why_size) snprintf(why, why_size, "shard %s is %s (index says %llu bytes)", path,
-                                      fd < 0 ? "missing" : "the wrong size", (unsigned long long)lp->p.ssize[2 * r->shard]);
+                                      fd < 0 ? "missing" : "the wrong size", (unsigned long long)lp->p.ssize[2 * lp_shard(r)]);
         if (fd >= 0) close(fd);
         return S2A_LIBPACK_REJECT;
     }
@@ -113,16 +124,21 @@ static int lp_stage_no(const char *s) {
     if (!strcmp(s, "cs")) return 5;
     return -1;
 }
-// NVN 位 → 库内阶段名（vk 库只出 vs/ps/cs；gs/tcs/tes 给出 NULL → 程序 MISS）
+// NVN 位 → 库内阶段名（vk 库出 vs/ps/gs/cs；tcs/tes 给出 NULL → 程序 MISS）
 static const char *lp_nvn_stage_name(unsigned nvn) {
-    switch (nvn) { case 0: return "vs"; case 1: return "ps"; case 5: return "cs"; default: return NULL; }
+    switch (nvn) { case 0: return "vs"; case 1: return "ps"; case 2: return "gs"; case 5: return "cs"; default: return NULL; }
 }
 static const char *lp_v1_stage_name(const char *lib_stage) {
-    return !strcmp(lib_stage, "ps") ? "fs" : lib_stage;   // v1 用 NVN 阶段名 fs；vs/cs 同名
+    return !strcmp(lib_stage, "ps") ? "fs" : lib_stage;   // v1 用 NVN 阶段名 fs；vs/gs/cs 同名
 }
-// 纹理号 → cb2 句柄表字偏移（v1 texture slot 的约定）：0x20 区 0..31、0x168 区 128+
+// 纹理号 → cb2 句柄表字偏移（v1 texture slot 的约定）：主表 0..31（字 8+2r）、与图像表同址的 32..39
+//   （字 72+2(r−32)，iOS nvn_mtl.m C2_IMG / tex_slot_h 同一区间）、分离贴图表 128..255（字 0x5A+2(r−128)）。
+//   其余号段（40..127、≥256）在 c2 里没有句柄字：返回 0 = 无映射（真实槽号从 8 起，0 不会被当成槽 0 写出）。
 static uint32_t lp_tex_slot_word(uint32_t reg) {
-    return reg < 32 ? 8 + reg * 2 : 0x5A + (reg - 128) * 2;
+    if (reg < 32) return 8 + reg * 2;
+    if (reg < 40) return 72 + (reg - 32) * 2;
+    if (reg >= 128 && reg < 256) return 0x5A + (reg - 128) * 2;
+    return 0;
 }
 static uint32_t lp_img_slot_word(uint32_t reg) {
     return 0x48 + reg * 2;   // IMG_BASE 0x120 / 4
@@ -175,12 +191,19 @@ static int jf_bool(struct s2a_jv o, const char *name, uint32_t *v) {
     if (s2a_jv_bool(f, &b)) return -1;
     *v = (uint32_t)b; return 0;
 }
-static int lp_fail(char *why, size_t why_size, const char *fmt, ...) {
+// 拒收原因码（enum s2a_libpack_why，.h）：每个失败点按「第一处失败」写进线程本地，公开入口（program_v1 / compute_v1）进门清零、
+//   出门读出。取库在提交线程和预热线程并发，所以按线程存；文本（why）只给人看，诊断分类读这个码，改文案不会把原因归错类。
+static _Thread_local int g_lp_why;
+static int lp_fail_code(int code, char *why, size_t why_size, const char *fmt, ...) {
+    if (!g_lp_why) g_lp_why = code;
     if (why && why_size) {
         va_list ap; va_start(ap, fmt); vsnprintf(why, why_size, fmt, ap); va_end(ap);
     }
     return -1;
 }
+// 没有具名原因的拒收一律记「其它」；SPIR-V 反射 / 能力核（lp_fail_reflect）和共享内存超限（lp_fail_code 直接给码）各有自己的码
+#define lp_fail(why, why_size, ...) lp_fail_code(S2A_LIBPACK_WHY_OTHER, why, why_size, __VA_ARGS__)
+#define lp_fail_reflect(why, why_size, ...) lp_fail_code(S2A_LIBPACK_WHY_REFLECT, why, why_size, __VA_ARGS__)
 
 // 句柄放在游戏用户常量缓冲里的绑定（_b.json tex_ubo / tbuf_ubo / samp_ubo，iOS nvn_refl.h NVN_RB_TEXU / TBUFU / SAMPU）：
 //   句柄字 = 用户常量槽 reg 的字节 off 处的 32 位字；sid = 这个字是采样器号（SAMPU，Ryujinx SeparateSamplerId，读出后左移 20）；
@@ -237,21 +260,135 @@ static void lp_uword_emit(struct jw *j, const struct lp_uword *w) {
     jw_str(j, "}");
 }
 // 同一个 bindings[] 里按 msl_name 找成员（tex_ubo 的采样器半边 = <名>Smplr）
-static int lp_find_member(struct s2a_jv arr, const char *name, struct s2a_jv *out) {
+static int lp_find_member(struct s2a_jv arr, const char *name, struct s2a_jv *out, int unique) {
     int n = s2a_jv_arr_count(arr);
+    int found = 0;
     for (int i = 0; i < n; i++) {
-        char msl[72] = "";
-        if (!s2a_jv_arr_item(arr, i, out) && !jf_str(*out, "msl_name", msl, sizeof msl) && !strcmp(msl, name)) return 0;
+        struct s2a_jv member; char msl[72] = "";
+        if (s2a_jv_arr_item(arr, i, &member) || jf_str(member, "msl_name", msl, sizeof msl) || strcmp(msl, name)) continue;
+        if (found) return 1;
+        *out = member;
+        if (!unique) return 0;
+        found = 1;
     }
-    return -1;
+    return found ? 0 : -1;
 }
 
-// 一个键的 _b.json bindings[] → v1 content.bindings[]（追加进 jw；sep 管逗号）
+// Dsh.cs DecodeTex 把类型和 cbuf/字偏移编码在反射名里；kind=samp 本身分不清类型 1 和 2。
+static uint32_t lp_texture_handle(const char *name) {
+    const char *field = strrchr(name, '_');
+    if (!field) return 0;
+    const char *hex = field + 1;
+    size_t digits = strspn(hex, "0123456789ABCDEF");
+    return digits && digits <= 8 && !hex[digits] ? (uint32_t)strtoul(hex, NULL, 16) : 0;
+}
+
+// 与 DirectGpuAccessor.TrySeparateC2 同口径：两个操作数字可以互换，来源必须各落在 c2 的两张表。
+static int lp_separate_c2(const char *name, uint32_t handle, uint32_t tex_word, uint32_t sampler_slot) {
+    if (handle >> 28 != 1 || sampler_slot >= 128) return 0;
+    const char *end = strrchr(name, '_');
+    if (!end) return 0;
+    const char *start = end;
+    while (start > name && start[-1] != '_') start--;
+    if (end - start != 3 || memcmp(start, "tcb", 3)) {
+        if (end - start < 3 || memcmp(start, "cb", 2) || start + 2 + strspn(start + 2, "0123456789") != end) return 0;
+        unsigned long slots = strtoul(start + 2, NULL, 10);
+        if (slots != 2 && slots != ((3u << 16) | 2u)) return 0;
+    }
+    const uint32_t a = handle & 0x3fff, b = (handle >> 14) & 0x3fff;
+    const uint32_t sampler_word = 0x568 / 4 + 2 * sampler_slot;
+    return (a == tex_word && b == sampler_word) || (b == tex_word && a == sampler_word);
+}
+
+// 只查已定位的描述符。类型声明在函数体之前，遇到 OpFunction 即可停。
+static const uint32_t *lp_spv_decl(const uint32_t *w, size_t nw, unsigned opcode, unsigned id_word, uint32_t id) {
+    for (size_t i = 5; i < nw; ) {
+        uint32_t op = w[i] & 0xffff, wc = w[i] >> 16;
+        if (!wc || wc > nw - i || op == 54) break;
+        if (op == opcode && wc > id_word && w[i + id_word] == id) return w + i;
+        i += wc;
+    }
+    return NULL;
+}
+
+static int lp_spv_single_combined(const uint8_t *spv, size_t n, uint32_t binding) {
+    const uint32_t *w = (const uint32_t *)spv;
+    size_t nw = n / 4;
+    uint32_t id = 0;
+    for (size_t i = 5; i < nw; ) {
+        uint32_t op = w[i] & 0xffff, wc = w[i] >> 16;
+        if (!wc || wc > nw - i) return 0;
+        if (op == 54) break;   // OpFunction
+        if (op == 71 && wc == 4 && w[i + 2] == 33 && w[i + 3] == binding) {   // OpDecorate Binding
+            if (id || !w[i + 1]) return 0;
+            id = w[i + 1];
+        }
+        i += wc;
+    }
+    if (!id) return 0;
+    unsigned sets = 0, bindings = 0;
+    for (size_t i = 5; i < nw; ) {
+        uint32_t op = w[i] & 0xffff, wc = w[i] >> 16;
+        if (!wc || wc > nw - i) return 0;
+        if (op == 54) break;
+        if (op == 71 && wc >= 3 && w[i + 1] == id) {
+            if (w[i + 2] == 34) {   // DescriptorSet
+                if (wc != 4 || w[i + 3] != 0 || ++sets != 1) return 0;
+            } else if (w[i + 2] == 33 && (wc != 4 || ++bindings != 1)) return 0;
+        }
+        i += wc;
+    }
+    const uint32_t *var = lp_spv_decl(w, nw, 59, 2, id);   // OpVariable UniformConstant
+    if (sets != 1 || bindings != 1 || !var || (var[0] >> 16) != 4 || var[3] != 0) return 0;
+    const uint32_t *ptr = lp_spv_decl(w, nw, 32, 1, var[1]);   // OpTypePointer UniformConstant
+    if (!ptr || (ptr[0] >> 16) != 4 || ptr[2] != 0) return 0;
+    const uint32_t *sampled = lp_spv_decl(w, nw, 27, 1, ptr[3]);   // 直接指向 OpTypeSampledImage，不是数组
+    if (!sampled || (sampled[0] >> 16) != 3) return 0;
+    const uint32_t *image = lp_spv_decl(w, nw, 25, 1, sampled[2]);   // OpTypeImage：取样的 1D/2D/3D/Cube
+    return image && (image[0] >> 16) >= 9 && image[3] <= 3 && image[7] == 1;
+}
+
+enum { LP_STAGE_BINDINGS = 64 };
+enum lp_binding_owner { LP_BINDING_ABSENT, LP_BINDING_GUEST, LP_BINDING_SUPPORT };
+struct lp_emitted_binding { uint32_t number; enum lp_binding_owner owner; };
+struct lp_emitted_bindings {
+    struct lp_emitted_binding entry[LP_STAGE_BINDINGS];
+    int count, uses_v2;
+};
+struct lp_spv_bindings {
+    uint32_t number[LP_STAGE_BINDINGS];
+    int count, overflow, support, support_is_ubo, uses_nonzero_set;
+};
+struct lp_stage_contract {
+    struct lp_emitted_bindings emitted;
+    struct lp_spv_bindings declared;
+    char key[17], json_name[12], spv_name[12];
+};
+
+#define LP_NVN_STAGES 6   // NVN 阶段号 vs..cs = 0..5；s2a_libpack_program_v1 的 keys[6][8] 与逐阶段合同都按它定长
+_Static_assert(LP_NVN_STAGES == 6, "keys[6][8] in s2a_libpack_program_v1 is indexed by NVN stage count");
+
+static void lp_record_binding(struct lp_emitted_bindings *bindings, uint32_t number, enum lp_binding_owner owner) {
+    if (bindings->count < LP_STAGE_BINDINGS)
+        bindings->entry[bindings->count] = (struct lp_emitted_binding){number, owner};
+    bindings->count++;
+}
+
+static void lp_emit_support(struct jw *binds, int *sep, uint32_t number, int compute) {
+    jw_fmt(binds, "%s{\"kind\":\"support\",\"stage\":\"program\",\"set\":0,\"binding\":%u%s}",
+           *sep ? "," : "", number, compute ? ",\"count\":1" : "");
+    *sep = 1;
+}
+
+static int lp_spv_binding_is_set0_ubo(const uint8_t *spv, size_t n, uint32_t binding);
+
+// 一个键的 _b.json bindings[] → content.bindings[]（追加进 jw；sep 管逗号）。
 // stage_no = 本段 StageNo（绑定号换算用它），v1_stage = v1 阶段名标签
 // compute = 1：计算结果合同（nvn_vk_program_parse_compute）比图形严——每条带 count、storage 带
 //   cbSlot/cbOffset 出处、c0 驱动常量段（drvcb bank 0）挂 slot 0；图形输出逐字节不变。
 static int lp_emit_bindings(struct jw *j, struct s2a_jv top, const char *lib_stage,
-                            int stage_no, const char *v1_stage, int compute, int *sep, char *why, size_t why_size) {
+                            int stage_no, const char *v1_stage, int compute, const uint8_t *spv, size_t spv_size,
+                            int *sep, struct lp_emitted_bindings *emitted, char *why, size_t why_size) {
     struct s2a_jv arr;
     if (s2a_jv_obj_find(top, "bindings", &arr) || !s2a_jv_is_array(arr))
         return lp_fail(why, why_size, "%s: no bindings array", lib_stage);
@@ -264,25 +401,35 @@ static int lp_emit_bindings(struct jw *j, struct s2a_jv top, const char *lib_sta
         uint32_t arg_id = 0;
         if (jf_str(b, "msl_name", msl, sizeof msl) || jf_str(b, "kind", kind, sizeof kind) || jf_u32(b, "arg_id", &arg_id))
             return lp_fail(why, why_size, "%s bindings[%u] missing msl_name/kind/arg_id", lib_stage, i);
+        // 绑定号 = arg_id × 6 + 阶段号，要装进布局项 / 线格式的 16 位（nvn_gpu_layout_ent.binding、S2SB 行、结果解析都按 16 位）。arg_id 是翻译器输出里
+        //   SPIRV-Cross 参数块的 [[id(N)]]，上限由着色器自己的资源数定（没有固定上限），所以超界要具名拒，不能回绕（32 位乘法）、也不能截成 16 位。
+        if (arg_id > (UINT16_MAX - (uint32_t)stage_no) / 6)
+            return lp_fail(why, why_size, "%s bindings[%u] arg_id %u: binding number exceeds 16 bits", lib_stage, i, arg_id);
         uint32_t binding = arg_id * 6 + (uint32_t)stage_no;
         // 采样器半边：组合纹理在 .spv 只留一个合并变量、吃 texture 成员的号（dsh_vk ②）——v1 不出行
         size_t ml = strlen(msl);
         int sampler_half = (ml > 5 && !strcmp(msl + ml - 5, "Smplr"));
         const char *v1kind = NULL; uint32_t slot = 0; int has_slot = 0;
+        uint32_t sampler_slot = 0; int has_sampler_slot = 0;
         char provenance[320] = "";   // storage 三元出处（nvnSlot / uboSlot+uboOffset / uboPtr）；texture 的 uboHandle / sampler
         if (sampler_half) continue;
         if (!strcmp(kind, "tex") || !strcmp(kind, "tbuf") || !strcmp(kind, "tex_pool")) {
             uint32_t reg = 0; int has_reg = !jf_u32(b, "reg", &reg);
             v1kind = "texture";
-            if (has_reg && strcmp(kind, "tex_pool")) { slot = lp_tex_slot_word(reg); has_slot = 1; }
-            // 分离贴图（reg ≥ 128，c2 字 90 + 2k）：v1 只有贴图槽、没有分离采样器字段，消费端按「采样器取同字高位」取（同组合槽，
-            //   也是立即句柄读这张表时的硬件语义）。只有这一条成立时才给槽：采样器半边缺（不采样：取尺寸 / texelFetch）或是
-            //   samp_tex（Dsh.cs Reflect：句柄类型 0，采样器就是同一个字）。半边是 samp（分离采样器槽）/ samp_id / samp_ubo 时
-            //   v1 表达不了，照旧不给槽，消费端如实拒，不按同字高位绑错采样器。
+            if (has_reg && strcmp(kind, "tex_pool")) { slot = lp_tex_slot_word(reg); has_slot = slot != 0; }
+            // 只有经 c2 两张表读到类型 1 的来源才写 v2 samp_slot。仍是一条组合图像描述符，采样器半边不另出行。
             if (has_slot && reg >= 128 && !strcmp(kind, "tex")) {
                 char sn[72]; struct s2a_jv sb; char sk[24] = "";
+                uint32_t handle = lp_texture_handle(msl);
                 snprintf(sn, sizeof sn, "%sSmplr", msl);
-                if (!lp_find_member(arr, sn, &sb) && (jf_str(sb, "kind", sk, sizeof sk) || strcmp(sk, "samp_tex"))) has_slot = 0;
+                int half = lp_find_member(arr, sn, &sb, 1);
+                if (half > 0) return lp_fail(why, why_size, "%s %s: duplicate sampler half", lib_stage, msl);
+                if (!half && !jf_str(sb, "kind", sk, sizeof sk) && !strcmp(sk, "samp") &&
+                    !jf_u32(sb, "reg", &sampler_slot) && lp_separate_c2(msl, handle, slot, sampler_slot)) {
+                    if (arg_id > (UINT32_MAX - (uint32_t)stage_no) / 6 || !lp_spv_single_combined(spv, spv_size, binding))
+                        return lp_fail_reflect(why, why_size, "%s %s: expected a single combined image sampler at set 0 binding %u", lib_stage, msl, binding);
+                    emitted->uses_v2 = has_sampler_slot = 1;
+                } else if (handle >> 28 || (!half && strcmp(sk, "samp_tex"))) has_slot = 0;
             }
         } else if (!strcmp(kind, "tex_ubo") || !strcmp(kind, "tbuf_ubo")) {
             v1kind = "texture";
@@ -297,7 +444,7 @@ static int lp_emit_bindings(struct jw *j, struct s2a_jv top, const char *lib_sta
                 jw_str(&u, ",\"uboHandle\":"); lp_uword_emit(&u, &w);
                 char sn[72]; struct s2a_jv sb;
                 snprintf(sn, sizeof sn, "%sSmplr", msl);
-                if (!strcmp(kind, "tex_ubo") && !lp_find_member(arr, sn, &sb)) {
+                if (!strcmp(kind, "tex_ubo") && !lp_find_member(arr, sn, &sb, 0)) {
                     char sk[24] = ""; uint32_t sreg = 0;
                     if (jf_str(sb, "kind", sk, sizeof sk)) { free(u.b); return lp_fail(why, why_size, "%s bindings[%u] %s: sampler half without kind", lib_stage, i, msl); }
                     if (!strcmp(sk, "samp_ubo")) {
@@ -321,11 +468,12 @@ static int lp_emit_bindings(struct jw *j, struct s2a_jv top, const char *lib_sta
         } else if (!strcmp(kind, "img") || !strcmp(kind, "img_ubo")) {
             uint32_t reg = 0;
             v1kind = "image";
-            if (!strcmp(kind, "img") && !jf_u32(b, "reg", &reg)) { slot = lp_img_slot_word(reg); has_slot = 1; }
+            if (!strcmp(kind, "img") && !jf_u32(b, "reg", &reg) && reg < 8) { slot = lp_img_slot_word(reg); has_slot = 1; }   // NVN 图像槽只有 0..7（c2 图像表字 72..86）
         } else if (!strcmp(kind, "cbuf")) {
             uint32_t reg = 0;
             if (jf_u32(b, "reg", &reg)) return lp_fail(why, why_size, "%s bindings[%u] cbuf without reg", lib_stage, i);
-            v1kind = "uniform"; slot = reg + 3; has_slot = 1;   // v1：驱动槽号，消费端 ubo_slot = slot-3
+            v1kind = "uniform";
+            if (reg < 16) { slot = reg + 3; has_slot = 1; }   // v1：驱动槽号，消费端 ubo_slot = slot-3；reg≥16 出 NVN 槽域
         } else if (!strcmp(kind, "c1")) {
             v1kind = "uniform"; slot = 1; has_slot = 1;   // 着色器自带常量段 c[1]：v1 槽 1（消费端 NVN_RB_C1）
         } else if (!strcmp(kind, "ubolen") || !strcmp(kind, "uvx") || !strcmp(kind, "lb") || !strcmp(kind, "sbsize")) {
@@ -336,9 +484,19 @@ static int lp_emit_bindings(struct jw *j, struct s2a_jv top, const char *lib_sta
             // 计算：bank 是 NVN cbuf 号本身（Dsh.cs Reflect：fp_c<n>，n∉{1,3..16} 记 drvcb+bank）。c0 = 驱动常量段，
             //   v1 槽 0（现编结果同号，消费端 NVN_RB_DRV0）；c2 = 句柄表，槽 2 交给解析器如实拒；其余 bank 不挂槽
             uint32_t bank = 0;
-            if (compute && !jf_u32(b, "bank", &bank) && (bank == 0 || bank == 2)) { slot = bank; has_slot = 1; }
+            int has_bank = !jf_u32(b, "bank", &bank);
+            if (compute && has_bank && (bank == 0 || bank == 2)) { slot = bank; has_slot = 1; }
+            // 图形：只映射 bank 0（c0 = 驱动常量段，消费端 layout_ent 同样 slot 0 → NVN_RB_DRV0，rp_draw 按完整 0xA00 驱动段供数：
+            //   各阶段存储缓冲表 + 0x610 / 0x644 等宿主字）。出处（_b.json drvcb bank 0）之外还要 .spv 证实同一绑定号是 set 0 的
+            //   Uniform Block，对不上就具名拒、不出死绑定；bank 2（句柄表）等其余 bank 照旧无槽、落到下面的「无来源」拒。
+            else if (!compute && has_bank && bank == 0) {
+                if (!lp_spv_binding_is_set0_ubo(spv, spv_size, binding))
+                    return lp_fail_reflect(why, why_size, "%s bindings[%u] %s drvcb bank 0 binding %u is not a set 0 Uniform Block in the SPIR-V",
+                                   lib_stage, i, msl, binding);
+                slot = 0; has_slot = 1;
+            }
         } else if (!strcmp(kind, "geometry") || !strcmp(kind, "sbuf") || !strcmp(kind, "sbuf_ubo")
-                   || !strcmp(kind, "ubo_ptr") || !strcmp(kind, "gmem_map") || !strcmp(kind, "gmem_log")) {
+                   || !strcmp(kind, "ubo_ptr") || !strcmp(kind, "gmem_map") || !strcmp(kind, "gmem_log") || !strcmp(kind, "sbuf_push")) {
             v1kind = "storage";
             uint32_t v = 0;
             // 计算另带 cbSlot/cbOffset（地址字在哪个 cbuf 的哪个字节）：都由 _b.json 的同一事实换出，不另造——
@@ -346,26 +504,23 @@ static int lp_emit_bindings(struct jw *j, struct s2a_jv top, const char *lib_sta
             //   ubo_ptr reg = (off − 0x210)/16 → c0 + 0x210 + reg×16；sbuf_ubo reg = cb_slot − 3、off = cb_offset×4 → c(reg+3) + off
             uint32_t cb_slot = 0, cb_off = 0; int has_cb = 0;
             if (!strcmp(kind, "sbuf")) {
-                if (!jf_u32(b, "reg", &v)) { snprintf(provenance, sizeof provenance, ",\"nvnSlot\":%u", v); cb_off = 0x310 + v * 16; has_cb = 1; }
+                if (!jf_u32(b, "reg", &v) && v < 16) { snprintf(provenance, sizeof provenance, ",\"nvnSlot\":%u", v); cb_off = 0x310 + v * 16; has_cb = 1; }
             } else if (!strcmp(kind, "sbuf_ubo")) {
                 uint32_t off = 0;
-                if (!jf_u32(b, "reg", &v) && !jf_u32(b, "off", &off)) {
+                if (!jf_u32(b, "reg", &v) && !jf_u32(b, "off", &off) && v < 16) {
                     snprintf(provenance, sizeof provenance, ",\"uboSlot\":%u,\"uboOffset\":%u", v, off); cb_slot = v + 3; cb_off = off; has_cb = 1; }
             } else if (!strcmp(kind, "ubo_ptr")) {
-                if (!jf_u32(b, "reg", &v)) { snprintf(provenance, sizeof provenance, ",\"uboPtr\":%u", v); cb_off = 0x210 + v * 16; has_cb = 1; }
+                if (!jf_u32(b, "reg", &v) && v < 16) { snprintf(provenance, sizeof provenance, ",\"uboPtr\":%u", v); cb_off = 0x210 + v * 16; has_cb = 1; }
             }
             if (compute && has_cb) {
                 char pv[sizeof provenance]; memcpy(pv, provenance, sizeof pv);
                 int pn = snprintf(provenance, sizeof provenance, ",\"cbSlot\":%u,\"cbOffset\":%u%s", cb_slot, cb_off, pv);
                 if (pn < 0 || (size_t)pn >= sizeof provenance) return lp_fail(why, why_size, "%s bindings[%u] provenance too long", lib_stage, i);
             }
-            // gmem_map/gmem_log/geometry：宿主哨兵槽，无 guest 映射——storage_kind 留 0，消费端如实报不支持
+            // gmem_map/gmem_log/geometry：宿主哨兵槽，无 guest 映射——storage_kind 留 0，消费端如实报不支持；
+            //   sbuf_push（地址在 NVN2 推常量槽里，iOS SBUFQ）同样不挂来源（v1 没有推常量来源），与它出现前「sbuf 无槽号」的结果相同
         } else if (!strcmp(kind, "support")) {
-            // v1：程序级支撑缓冲。set/binding 仍是本段的 arg_id 换算号；stage 标签 "program"
-            jw_fmt(j, "%s{\"kind\":\"support\",\"stage\":\"program\",\"set\":0,\"binding\":%u%s}", *sep ? "," : "", binding,
-                   compute ? ",\"count\":1" : "");
-            *sep = 1;
-            continue;
+            v1kind = "support";   // 程序级支撑缓冲，绑定号由本阶段换算
         } else {
             return lp_fail(why, why_size, "%s bindings[%u] %s kind '%s' not mappable", lib_stage, i, msl, kind);
         }
@@ -377,15 +532,70 @@ static int lp_emit_bindings(struct jw *j, struct s2a_jv top, const char *lib_sta
             if (!strcmp(kind, "geometry")) { rw = 1; has_rw = 1; }
             else return lp_fail(why, why_size, "%s bindings[%u] %s kind '%s' missing rw", lib_stage, i, msl, kind);
         }
-        jw_fmt(j, "%s{\"kind\":\"%s\",\"stage\":\"%s\",\"set\":0,\"binding\":%u", *sep ? "," : "", v1kind, v1_stage, binding);
+        // 消费端映射不了来源的绑定不出库：没有 guest 槽、又没有消费端认的出处字段时，解析后 slot = -1，
+        //   图形按 binding_kind_*_slot_-1、计算按 guest slot 类如实拒收——拒收挪到出库这一步，语义相同、
+        //   原因写进 why，不把死绑定写进结果。认得的来源：guest 槽；uboHandle 句柄（TEXU/TBUFU）；
+        //   存储出处——图形只接 nvnSlot（layout_ent 只认 storage_kind 1），计算另接 uboPtr / uboSlot+uboOffset
+        //   （compute_storage 三种映射；图形消费端还没接，出的照样是死绑定）。
+        int is_support = !strcmp(v1kind, "support");
+        int mappable = is_support || has_slot || strstr(provenance, "\"uboHandle\"")
+            || strstr(provenance, "\"nvnSlot\"")
+            || (compute && (strstr(provenance, "\"uboPtr\"") || strstr(provenance, "\"uboSlot\"")));
+        if (!mappable)
+            return lp_fail(why, why_size, "%s bindings[%u] %s kind '%s' has no consumable guest source", lib_stage, i, msl, kind);
+        lp_record_binding(emitted, binding, is_support ? LP_BINDING_SUPPORT : LP_BINDING_GUEST);
+        jw_fmt(j, "%s{\"kind\":\"%s\",\"stage\":\"%s\",\"set\":0,\"binding\":%u", *sep ? "," : "", v1kind, is_support ? "program" : v1_stage, binding);
         *sep = 1;
         if (compute) jw_str(j, ",\"count\":1");   // 计算合同必填；.spv 里每个成员是单个描述符（数组形的 tex_c2a 等无槽，解析器另拒）
         if (has_slot) jw_fmt(j, ",\"slot\":%u", slot);
+        if (has_sampler_slot) jw_fmt(j, ",\"samp_slot\":%u", sampler_slot);
         if (provenance[0]) jw_str(j, provenance);
         if (!strcmp(v1kind, "storage")) jw_fmt(j, ",\"rw\":%s", rw ? "true" : "false");
         jw_str(j, "}");
     }
     return 0;
+}
+
+// 变量 id 是 set 0 的 Uniform Block（Uniform 存储类、直接指向 Block 结构体、恰一个 DescriptorSet 0）。
+//   支撑缓冲（Dsh.cs 以原名 support_buffer 标记，v2 要求它是这种变量）与图形 c0 驱动常量段共用这一判据。
+static int lp_spv_var_is_set0_ubo(const uint32_t *w, size_t nw, uint32_t id) {
+    const uint32_t *var = lp_spv_decl(w, nw, 59, 2, id);   // OpVariable，StorageClass Uniform = 2
+    if (!var || (var[0] >> 16) != 4 || var[3] != 2) return 0;
+    const uint32_t *ptr = lp_spv_decl(w, nw, 32, 1, var[1]);   // OpTypePointer Uniform
+    if (!ptr || (ptr[0] >> 16) != 4 || ptr[2] != 2) return 0;
+    const uint32_t *block = lp_spv_decl(w, nw, 30, 1, ptr[3]);   // OpTypeStruct（直接指向块，不是数组）
+    if (!block) return 0;
+    unsigned blocks = 0, sets = 0;
+    for (size_t i = 5; i < nw; ) {
+        uint32_t op = w[i] & 0xffff, wc = w[i] >> 16;
+        if (!wc || wc > nw - i) return 0;
+        if (op == 54) break;   // OpFunction
+        if (op == 71 && wc >= 3) {   // OpDecorate
+            if (w[i + 1] == block[1] && w[i + 2] == 2 && wc == 3) blocks++;   // Block
+            if (w[i + 1] == id && w[i + 2] == 34) {   // DescriptorSet
+                if (wc != 4 || w[i + 3] != 0) return 0;
+                sets++;
+            }
+        }
+        i += wc;
+    }
+    return blocks == 1 && sets == 1;
+}
+
+// 绑定号 binding 在 .spv 里恰有一个变量带 Binding 装饰，且它是 set 0 的 Uniform Block（lp_spv_var_is_set0_ubo）。
+//   0 = 没有 / 不止一个 / 类型不对（StorageBuffer、无 Block、数组、非 set 0 都在内）。
+static int lp_spv_binding_is_set0_ubo(const uint8_t *spv, size_t n, uint32_t binding) {
+    const uint32_t *w = (const uint32_t *)spv; size_t nw = n / 4;
+    uint32_t id = 0; unsigned found = 0;
+    if (nw < 5) return 0;
+    for (size_t i = 5; i < nw; ) {
+        uint32_t op = w[i] & 0xffff, wc = w[i] >> 16;
+        if (!wc || wc > nw - i) return 0;
+        if (op == 54) break;   // OpFunction：装饰都在函数体之前
+        if (op == 71 && wc >= 4 && w[i + 2] == 33 && w[i + 3] == binding) { id = w[i + 1]; found++; }   // OpDecorate <id> Binding
+        i += wc;
+    }
+    return found == 1 && lp_spv_var_is_set0_ubo(w, nw, id);
 }
 
 // 一个阶段：取键的 _b.json + _b.spv → 校验 → 往 jw 写 stage 项与 bindings 项。
@@ -394,60 +604,165 @@ static int lp_emit_bindings(struct jw *j, struct s2a_jv top, const char *lib_sta
 //   支撑缓冲在 Metal 里另有传法、_b.json 常常不列它；而 Vulkan 版 .spv 照样声明（参数号 8 处，绑定 = 8×6 + 阶段号）。
 //   只按 _b.json 出 v1 的话描述符布局里没有它，着色器读到的倍率 / 标志位是未定义值，整屏画黑（11-14 真机：一款大型
 //   开放世界游戏只放行图形预编即黑、只放行计算即正常；该款库里一对 vs / fs 的 .spv 各多一个 support_buffer 绑定 48 / 52）。
-//   返回 0 = 解析成功；*nb 个绑定号写进 out（最多 cap 个），*support = support_buffer 的绑定号（没有 = -1）。
-static int lp_spv_bindings(const uint8_t *spv, size_t n, uint32_t *out, int cap, int *nb, int *support) {
+//   返回 0 = 解析成功。超出收集容量仍记下 overflow，留给整份程序选择 v2 时拒收。
+static int lp_spv_read_bindings(const uint8_t *spv, size_t n, struct lp_spv_bindings *out) {
     const uint32_t *w = (const uint32_t *)spv; size_t nw = n / 4;
-    uint32_t sid = 0; *nb = 0; *support = -1;
+    uint32_t sid = 0;
+    int ambiguous_support = 0;
+    out->support = -1;
     if (nw < 5) return -1;
     for (size_t pass = 0; pass < 2; pass++)   // 第一遍找名字（OpName 在 OpDecorate 之前，但不依赖顺序）
         for (size_t i = 5; i < nw; ) {
             uint32_t op = w[i] & 0xffff, wc = w[i] >> 16;
             if (!wc || i + wc > nw) return -1;
-            if (pass == 0 && op == 5 && wc >= 3 && !strncmp((const char *)&w[i + 2], "support_buffer", (wc - 2) * 4)) sid = w[i + 1];
-            if (pass == 1 && op == 71 && wc >= 4 && w[i + 2] == 33) {   // OpDecorate <id> Binding <n>
-                if (*nb < cap) out[(*nb)++] = w[i + 3];
-                if (sid && w[i + 1] == sid) *support = (int)w[i + 3];
+            if (pass == 0 && op == 5 && wc >= 6 &&
+                !memcmp(&w[i + 2], "support_buffer", sizeof "support_buffer")) {   // OpName
+                if (sid && sid != w[i + 1]) ambiguous_support = 1;
+                sid = w[i + 1];
             }
+            if (pass == 1 && op == 71 && wc >= 4 && w[i + 2] == 33) {   // OpDecorate <id> Binding <n>
+                if (out->count < LP_STAGE_BINDINGS) out->number[out->count++] = w[i + 3];
+                else out->overflow = 1;
+                if (sid && w[i + 1] == sid) out->support = (int)w[i + 3];
+            }
+            if (pass == 1 && op == 71 && wc >= 4 && w[i + 2] == 34 && w[i + 3])   // DescriptorSet
+                out->uses_nonzero_set = 1;
             i += wc;
         }
+    if (out->support >= 0 && !ambiguous_support)
+        out->support_is_ubo = lp_spv_var_is_set0_ubo(w, nw, sid);
     return 0;
 }
 // 片元输出映射（同现编结果 info.fragmentOutputMap：每个颜色目标 4 位，第 c 分量 = 位 4×location + c）：按 .spv 的 Output 变量推。
 //   缺了这一项消费端按全 1（不屏蔽）处理，着色器没写的颜色目标也会被写入未定义值（延迟渲染的 G 缓冲被冲掉，王国之泪整屏发暗）。
 //   0 = 推出；-1 = 读不懂（数组输出、location ≥ 8、没 Location 的非内建输出等），调用方不出这一项
-int s2a_libpack_spv_frag_outputs(const uint8_t *spv, size_t n, uint32_t *map) {
+int s2a_libpack_spv_frag_interface(const uint8_t *spv, size_t n, struct s2a_frag_outputs *out) {
     const uint32_t *w = (const uint32_t *)spv; size_t nw = n / 4;
     if (nw < 5 || !w[3] || w[3] > (1u << 22)) return -1;
     uint32_t bound = w[3];
     // 每个 id：低 8 位 location+1（0 = 没有）、8..15 位 component、位 16 = 内建；类型表：分量数（0 = 不是可用的标量 / 向量）
     uint32_t *dec = calloc(bound, sizeof *dec), *ncomp = calloc(bound, sizeof *ncomp), *ptr_to = calloc(bound, sizeof *ptr_to);
-    int rc = -1; uint32_t m = 0;
+    int rc = -1, has_entry = 0, has_main = 0;
+    struct s2a_frag_outputs outputs = {0};
     if (!dec || !ncomp || !ptr_to) goto out;
     for (size_t i = 5; i < nw; ) {
         uint32_t op = w[i] & 0xffff, wc = w[i] >> 16;
         if (!wc || i + wc > nw) goto out;
-        if (op == 71 && wc >= 3 && w[i + 1] < bound) {                       // OpDecorate
+        if (op == 15) { // OpEntryPoint: only the selected fragment main supplies color outputs.
+            has_entry = 1;
+            if (wc < 4) goto out;
+            const char *name = (const char *)&w[i+3];
+            const char *end = memchr(name, 0, (wc-3)*4);
+            if (!end) goto out;
+            if (w[i+1] == 4 && !strcmp(name, "main")) {
+                if (has_main) goto out;
+                has_main = 1;
+                for (size_t j = 3 + ((size_t)(end-name)+4)/4; j < wc; j++) {
+                    if (w[i+j] >= bound) goto out;
+                    dec[w[i+j]] |= 1u << 17;
+                }
+            }
+        } else if (op == 71 && wc >= 3 && w[i + 1] < bound) {                       // OpDecorate
             uint32_t id = w[i + 1], d = w[i + 2];
             if (d == 30 && wc >= 4) { if (w[i + 3] >= 255) goto out; dec[id] = (dec[id] & ~0xffu) | (w[i + 3] + 1); }   // Location
             else if (d == 31 && wc >= 4) { if (w[i + 3] > 3) goto out; dec[id] = (dec[id] & ~0xff00u) | (w[i + 3] << 8); }   // Component
             else if (d == 11) dec[id] |= 1u << 16;                                // BuiltIn
-        } else if ((op == 21 || op == 22) && wc >= 2 && w[i + 1] < bound) ncomp[w[i + 1]] = 1;   // OpTypeInt / OpTypeFloat
-        else if (op == 23 && wc >= 4 && w[i + 1] < bound && w[i + 2] < bound && ncomp[w[i + 2]] == 1 && w[i + 3] <= 4) ncomp[w[i + 1]] = w[i + 3];   // OpTypeVector
+        } else if ((op == 21 || op == 22) && wc >= (op == 21 ? 4u : 3u) && w[i+1] < bound) {
+            // Low byte: component count. High byte: 0 float, 1 unsigned, 2 signed.
+            ncomp[w[i+1]] = 1 | (op == 21 ? (w[i+3] ? 2u : 1u) << 8 : 0);
+        } else if (op == 23 && wc >= 4 && w[i+1] < bound && w[i+2] < bound &&
+                   (ncomp[w[i+2]] & 255) == 1 && w[i+3] >= 2 && w[i+3] <= 4) {
+            ncomp[w[i+1]] = (ncomp[w[i+2]] & ~255u) | w[i+3];
+        }
         else if (op == 32 && wc >= 4 && w[i + 1] < bound) ptr_to[w[i + 1]] = w[i + 2] == 3 ? w[i + 3] + 1 : 0;   // OpTypePointer Output → 指向类型 +1
         else if (op == 59 && wc >= 4 && w[i + 3] == 3) {                     // OpVariable … Output
             uint32_t ty = w[i + 1], id = w[i + 2];
             if (ty >= bound || id >= bound || !ptr_to[ty]) goto out;
+            if (has_entry && !(dec[id] & (1u << 17))) { i += wc; continue; }
             if (dec[id] >> 16 & 1) { i += wc; continue; }                        // 内建（FragDepth / SampleMask）不占颜色目标
-            uint32_t loc = dec[id] & 0xff, comp = dec[id] >> 8 & 0xff, val = ptr_to[ty] - 1, k = val < bound ? ncomp[val] : 0;
+            uint32_t loc = dec[id] & 0xff, comp = dec[id] >> 8 & 0xff, val = ptr_to[ty] - 1, type = val < bound ? ncomp[val] : 0, k = type & 255;
             if (!loc || loc - 1 >= 8 || !k || comp + k > 4) goto out;
-            m |= ((1u << k) - 1u) << (4 * (loc - 1) + comp);
+            unsigned bit = 1u << (loc-1), kind = type >> 8;
+            if ((outputs.components >> (4*(loc-1)) & 15u) &&
+                (((outputs.uint_locations & bit) != 0) != (kind == 1) ||
+                 ((outputs.sint_locations & bit) != 0) != (kind == 2))) goto out;
+            outputs.components |= ((1u << k) - 1u) << (4 * (loc - 1) + comp);
+            if (kind == 1) outputs.uint_locations |= bit;
+            if (kind == 2) outputs.sint_locations |= bit;
         }
         i += wc;
     }
-    *map = m; rc = 0;
+    if (has_entry && !has_main) goto out;
+    *out = outputs; rc = 0;
 out:
     free(dec); free(ncomp); free(ptr_to);
     return rc;
+}
+int s2a_libpack_spv_frag_outputs(const uint8_t *spv, size_t n, uint32_t *map) {
+    struct s2a_frag_outputs outputs;
+    if (s2a_libpack_spv_frag_interface(spv, n, &outputs)) return -1;
+    *map = outputs.components;
+    return 0;
+}
+// 能力核：离线库的 .spv 是批翻链（translator/dmsh_xlate）按它自己的宿主口径翻的，不是按本机 profile——那边
+//   QueryHostSupportsShaderFloat64 缺省答「有」（Metal 只在模块真用到 double 时重翻），所以几乎每个模块都带 OpCapability Float64。
+//   本后端建设备时从不启用 shaderFloat64 / shaderInt64（direct/vk_device.c enabled_features），模块声明这两项能力就违反
+//   VUID-VkShaderModuleCreateInfo-pCode-08740；Maleoon 920 的转换器直接拒（「SPV01: Unsupported capability (10)」，
+//   vkCreateComputePipelines 回 VK_ERROR_OUT_OF_HOST_MEMORY，11-20 真机 13 个计算程序全是出包预编命中的那 13 个）。
+//   模块里没有对应宽度的类型（OpTypeFloat 64 / OpTypeInt 64）时这条能力声明用不上，原地删掉（只删那一条 OpCapability，
+//   id 上界不变，语义不变）；真用到了就拒收，由调用方退回现编（现编按本机 profile 翻，Float64 关时 double 降成 float）。
+//   Int64Atomics 必带 64 位整型，一律拒收。返回 0 = 可用（*n 可能变小）；-1 = 拒收（why 以具名原因开头：
+//   fp64_type_used / int64_type_used / int64_atomics_used，调用方照常走库拒收计数 s2a_libpack_rejects）。
+//   判据以类型声明为准：OpTypeFloat 64 只被 OpConstant 引用、没有运算也算用到（模块仍按 Float64 校验）。
+//   真删了能力声明的模块按条计数（libpack_caps_stripped，s2a_libpack_caps_stripped）；同一模块再核一遍不再计。
+// 片元像素锁（SPV_EXT_fragment_shader_interlock）：批翻链的翻译器对「宿主支持片元互锁」缺省答「有」，于是几乎每个模块都声明
+//   FragmentShader{Pixel,Sample,ShadingRate}InterlockEXT 能力和扩展，却没有一条 OpBegin/EndInvocationInterlockEXT（Mali-G710 上 94.6% 的库
+//   因此建模块失败、整库退回现编）。本后端建设备时从不启用这个扩展，所以三样声明（OpCapability / OpExtension / 互锁执行模式）一律删掉。
+//   模块里真有互锁临界区（Begin / End 指令）时：照常画、不带互锁（片元顺序可能不保），两条指令删掉，不拒收也不静默——按模块计数
+//   （libpack_interlock_dropped，s2a_libpack_interlock_dropped），调用方每局首次打一条具名红行。这两条指令没有结果 id，删掉不影响别的指令。
+static int lp_is_interlock_ext(const uint32_t *w, uint32_t wc) {   // OpExtension "SPV_EXT_fragment_shader_interlock"
+    static const char name[] = "SPV_EXT_fragment_shader_interlock";
+    const size_t bytes = (size_t)(wc - 1) * 4;
+    return bytes > sizeof name - 1 && !memcmp(&w[1], name, sizeof name);   // 含结尾 0
+}
+int s2a_libpack_spv_admit_caps(uint8_t *spv, size_t *n, char *why, size_t why_size) {
+    uint32_t *w = (uint32_t *)spv; size_t nw = *n / 4;
+    int f64 = 0, i64 = 0, ilk = 0;
+    if (nw < 5 || w[0] != 0x07230203u) { lp_fail_reflect(why, why_size, "not a SPIR-V module"); return -1; }
+    for (size_t i = 5; i < nw; ) {
+        uint32_t op = w[i] & 0xffff, wc = w[i] >> 16;
+        if (!wc || i + wc > nw) { lp_fail_reflect(why, why_size, "truncated instruction at word %zu", i); return -1; }
+        if (op == 22 && wc >= 3 && w[i + 2] == 64) f64 = 1;          // OpTypeFloat 64
+        if (op == 21 && wc >= 4 && w[i + 2] == 64) i64 = 1;          // OpTypeInt 64
+        if ((op == 5364 || op == 5365) && wc == 1) ilk = 1;           // OpBegin / OpEndInvocationInterlockEXT
+        i += wc;
+    }
+    for (size_t i = 5; i < nw; ) {
+        uint32_t op = w[i] & 0xffff, wc = w[i] >> 16;
+        if (op == 17 && wc == 2) {                                    // OpCapability
+            const uint32_t cap = w[i + 1];
+            if (cap == 12 || (cap == 10 && f64) || (cap == 11 && i64)) {
+                lp_fail_reflect(why, why_size, "%s: uses %s, which the Vulkan device does not enable",
+                        cap == 10 ? "fp64_type_used" : cap == 11 ? "int64_type_used" : "int64_atomics_used",
+                        cap == 10 ? "Float64" : cap == 11 ? "Int64" : "Int64Atomics");
+                return -1;
+            }
+            if (cap == 10 || cap == 11 || cap == 5363 || cap == 5372 || cap == 5378) {   // 5363 / 5372 / 5378：Sample / ShadingRate / Pixel 互锁
+                memmove(&w[i], &w[i + 2], (nw - i - 2) * sizeof *w);
+                nw -= 2;
+                continue;
+            }
+        }
+        const int drop = (op == 10 && wc >= 2 && lp_is_interlock_ext(&w[i], wc))                     // OpExtension
+                      || (op == 16 && wc >= 3 && w[i + 2] >= 5366 && w[i + 2] <= 5371)            // OpExecutionMode 互锁顺序 5366..5371
+                      || ((op == 5364 || op == 5365) && wc == 1);                                 // 互锁临界区的两条指令
+        if (drop) { memmove(&w[i], &w[i + wc], (nw - i - wc) * sizeof *w); nw -= wc; continue; }
+        i += wc;
+    }
+    if (ilk) atomic_fetch_add(&g_interlock_dropped, 1);
+    if (nw * 4 != *n) atomic_fetch_add(&g_caps_stripped, 1);
+    *n = nw * 4;
+    return 0;
 }
 // _b.json 里某个参数号的绑定是不是 v1 有意不出行的种类（Metal 专用宿主表 / 采样器半边）
 static int lp_json_has_binding(struct s2a_jv top, int stage_no, uint32_t binding, int *skipped_kind) {
@@ -463,40 +778,131 @@ static int lp_json_has_binding(struct s2a_jv top, int stage_no, uint32_t binding
     }
     return 0;
 }
+
+// 任一段使用 v2 字段时，整个程序的每段都要满足描述符合同。反射里未发出的行不能充当布局条目。
+static int lp_finish_v2_bindings(const struct lp_stage_contract *stage, struct jw *binds, int *sep, int compute,
+                                 char *why, size_t why_size) {
+    const struct lp_emitted_bindings *emitted = &stage->emitted;
+    const struct lp_spv_bindings *declared = &stage->declared;
+    if (emitted->count > LP_STAGE_BINDINGS || declared->overflow)
+        return lp_fail_reflect(why, why_size, "%s %s has too many descriptor bindings", stage->key, stage->spv_name);
+    if (declared->uses_nonzero_set)
+        return lp_fail_reflect(why, why_size, "%s %s declares a descriptor outside set 0", stage->key, stage->spv_name);
+    if (declared->support >= 0 && !declared->support_is_ubo)
+        return lp_fail_reflect(why, why_size, "%s %s support_buffer is not a set 0 uniform block",
+                       stage->key, stage->spv_name);
+    // 仅有 UBO 类型无法证明用途。反射的显式支撑缓冲须匹配 Dsh 命名的 SPIR-V 变量。
+    for (int i = 0; i < emitted->count; i++) {
+        const struct lp_emitted_binding *entry = &emitted->entry[i];
+        if (entry->owner == LP_BINDING_SUPPORT &&
+            (declared->support < 0 || entry->number != (uint32_t)declared->support))
+            return lp_fail_reflect(why, why_size, "%s %s binding %u is not declared as support_buffer",
+                           stage->key, stage->spv_name, entry->number);
+    }
+    int add_support = 0, support_declarations = 0;
+    for (int i = 0; i < declared->count; i++) {
+        uint32_t binding = declared->number[i];
+        enum lp_binding_owner owner = LP_BINDING_ABSENT;
+        for (int j = 0; j < emitted->count; j++) {
+            if (emitted->entry[j].number != binding) continue;
+            if (owner != LP_BINDING_ABSENT)
+                return lp_fail_reflect(why, why_size, "%s %s binding %u has multiple emitted descriptors",
+                               stage->key, stage->spv_name, binding);
+            owner = emitted->entry[j].owner;
+        }
+        if (declared->support >= 0 && binding == (uint32_t)declared->support) {
+            if (++support_declarations > 1)
+                return lp_fail_reflect(why, why_size, "%s %s binding %u has multiple SPIR-V declarations for support_buffer",
+                               stage->key, stage->spv_name, binding);
+            if (owner == LP_BINDING_GUEST)
+                return lp_fail_reflect(why, why_size, "%s %s binding %u is owned by support_buffer",
+                               stage->key, stage->spv_name, binding);
+            add_support = owner == LP_BINDING_ABSENT;
+        } else if (owner == LP_BINDING_ABSENT) {
+            return lp_fail_reflect(why, why_size, "%s %s binding %u has no mappable %s binding",
+                           stage->key, stage->spv_name, binding, stage->json_name);
+        }
+    }
+    if (add_support) lp_emit_support(binds, sep, (uint32_t)declared->support, compute);
+    return 0;
+}
+// 几何程序里任一阶段写视口号 / 视口掩码（OpDecorate / OpMemberDecorate BuiltIn ViewportIndex 10、ViewportMaskNV 5253、
+//   SecondaryViewportMaskNV 5258、ViewportMaskPerViewNV 5262）：回放层没有视口数组，现编（DirectShaderCompiler ValidateSpirv
+//   rejectViewportArray）对带几何的程序整支拒，这里同口径。返回 1 = 有、0 = 没有、-1 = 读不懂
+static int lp_spv_viewport_builtin(const uint8_t *spv, size_t n) {
+    const uint32_t *w = (const uint32_t *)spv; size_t nw = n / 4;
+    if (nw < 5) return -1;
+    for (size_t i = 5; i < nw; ) {
+        uint32_t op = w[i] & 0xffff, wc = w[i] >> 16;
+        if (!wc || i + wc > nw) return -1;
+        uint32_t b = op == 71 && wc >= 4 && w[i + 2] == 11 ? w[i + 3] : op == 72 && wc >= 5 && w[i + 3] == 11 ? w[i + 4] : 0;
+        if (b == 10 || b == 5253 || b == 5258 || b == 5262) return 1;
+        i += wc;
+    }
+    return 0;
+}
 // 支撑缓冲长度：离线库的翻译器回答「宿主有贴图尺寸表」（ABI 2，translator/dmsh_xlate Accessor），程序的支撑块声明到 3776 字节，
 //   偏移 2608 起是 73 项 × 16 字节的尺寸表。安卓宿主不填这张表：按 3776 分配、回放核心整块清零，表项全 0 时着色器走旧路径
 //   （倍率恒 1，与机上现编同口径）。只按 2608 绑的话越界读到的是未定义值（设备没开 robustBufferAccess）
 #define LP_SUPPORT_ABI2_BYTES 3776u
-static int lp_stage_emit(struct s2a_libpack *lp, const uint8_t key[8], unsigned nvn, int compute,
+// gs_topology：几何程序的输入图元（InputTopology 编号，见 lp_input_topology），几何段按它取 _vg<t>；不是几何程序给 -1。
+static int lp_stage_emit(struct s2a_libpack *lp, const uint8_t key[8], unsigned nvn, int compute, int gs_topology,
+                         uint32_t shared_limit,
                          struct jw *stages, struct jw *binds, int *bind_sep, uint32_t *stage_mask,
-                         uint32_t *support_bytes, char *why, size_t why_size) {
+                         uint32_t *support_bytes, int *uses_v2, struct lp_stage_contract *contract,
+                         char *why, size_t why_size) {
     const char *lib_stage = lp_nvn_stage_name(nvn);
-    if (!lib_stage) return 1;   // gs/tcs/tes：vk 库不出此阶段，整个程序按 miss
-    char khex[17];
+    if (!lib_stage) return 1;   // tcs/tes：vk 库不出此阶段，整个程序按 miss
+    int gs = !strcmp(lib_stage, "gs");
+    if (gs && (gs_topology < 0 || gs_topology > 4)) return 1;
+    char *khex = contract->key;
     for (int i = 0; i < 8; i++) snprintf(khex + 2 * i, 3, "%02x", key[i]);
+    // 几何段：每种输入图元一份（DshVk.CompileGeometry），_vg<t>.json 种类 112+t / _vg<t>.spv 种类 120+t
+    const unsigned kjson = gs ? LP_K_VGJSON + (unsigned)gs_topology : LP_K_BJSON, kspv = gs ? LP_K_VGSPV + (unsigned)gs_topology : LP_K_BSPV;
+    const char *jname = contract->json_name, *sname = contract->spv_name;
+    snprintf(contract->json_name, sizeof contract->json_name, gs ? "_vg%d.json" : "_b.json", gs_topology);
+    snprintf(contract->spv_name, sizeof contract->spv_name, gs ? "_vg%d.spv" : "_b.spv", gs_topology);
     uint8_t *jb = NULL, *spv = NULL; size_t jn = 0, sn = 0;
     char gw[192] = "";
-    int rc = s2a_libpack_get(lp, key, LP_K_BJSON, &jb, &jn, gw, sizeof gw);
-    if (rc != S2A_LIBPACK_HIT) { if (why && why_size) snprintf(why, why_size, "%s _b.json: %s", khex, gw[0] ? gw : "absent"); free(jb); return rc; }
-    rc = s2a_libpack_get(lp, key, LP_K_BSPV, &spv, &sn, gw, sizeof gw);
-    if (rc != S2A_LIBPACK_HIT) { if (why && why_size) snprintf(why, why_size, "%s _b.spv: %s", khex, gw[0] ? gw : "absent"); free(jb); free(spv); return rc; }
+    int rc = s2a_libpack_get(lp, key, kjson, &jb, &jn, gw, sizeof gw);
+    if (rc != S2A_LIBPACK_HIT) { if (why && why_size) snprintf(why, why_size, "%s %s: %s", khex, jname, gw[0] ? gw : "absent"); free(jb); return rc; }
+    rc = s2a_libpack_get(lp, key, kspv, &spv, &sn, gw, sizeof gw);
+    if (rc != S2A_LIBPACK_HIT) { if (why && why_size) snprintf(why, why_size, "%s %s: %s", khex, sname, gw[0] ? gw : "absent"); free(jb); free(spv); return rc; }
     struct s2a_jv top = { (const char *)jb, jn };
     int out = -1;
     {   // 全文档语法核 + 顶层必须恰是一个对象（jv 不具现字符串，长串字段只吃跨度）
         const char *jend = NULL;
         if (!s2a_jv_is_object(top) || s2a_jv_scan((const char *)jb, (const char *)jb + jn, &jend)
             || jend != (const char *)jb + jn) {
-            lp_fail(why, why_size, "%s _b.json: not a complete JSON object", khex); goto done;
+            lp_fail(why, why_size, "%s %s: not a complete JSON object", khex, jname); goto done;
         }
     }
     {   // 命中判据：dm_ctl == 键 hex、stage 相符、_b.spv 是合法 SPIR-V
         char ctl[20] = "", st[8] = "";
         if (jf_str(top, "dm_ctl", ctl, sizeof ctl) || strcmp(ctl, khex))
-            { lp_fail(why, why_size, "%s _b.json dm_ctl mismatch", khex); goto done; }
+            { lp_fail(why, why_size, "%s %s dm_ctl mismatch", khex, jname); goto done; }
         if (jf_str(top, "stage", st, sizeof st) || strcmp(st, lib_stage))
-            { lp_fail(why, why_size, "%s _b.json stage is '%s' not '%s'", khex, st, lib_stage); goto done; }
+            { lp_fail(why, why_size, "%s %s stage is '%s' not '%s'", khex, jname, st, lib_stage); goto done; }
+        uint32_t gt = 0;
+        if (gs && (jf_u32(top, "gs_input_topology", &gt) || gt != (uint32_t)gs_topology))
+            { lp_fail(why, why_size, "%s %s gs_input_topology is not %d", khex, jname, gs_topology); goto done; }
         if (sn < 20 || (sn & 3) || *(const uint32_t *)spv != 0x07230203u)
-            { lp_fail(why, why_size, "%s _b.spv is not a SPIR-V module", khex); goto done; }
+            { lp_fail_reflect(why, why_size, "%s %s is not a SPIR-V module", khex, sname); goto done; }
+        {   char cw[128] = ""; const size_t sn0 = sn; const uint64_t il0 = s2a_libpack_interlock_dropped();
+            if (s2a_libpack_spv_admit_caps(spv, &sn, cw, sizeof cw)) { lp_fail_reflect(why, why_size, "%s %s %s", khex, sname, cw); goto done; }
+            if (s2a_libpack_interlock_dropped() != il0 && !atomic_exchange(&lp->ilk_said, 1))   // 每局首次一行具名红，之后只计数
+                LP_RED("libpack_interlock_dropped: program %s %s uses a fragment interlock critical section; the device has no "
+                       "VK_EXT_fragment_shader_interlock, drawing without it (fragment ordering not guaranteed); counted per module, first one this session",
+                       khex, sname);
+            if (sn != sn0 && !atomic_exchange(&lp->caps_said, 1))   // 每局首次一行（信息级），之后只计数
+                LP_LOG("libpack_caps_stripped: program %s %s dropped %zu unused 64-bit capability declaration(s) (Float64/Int64 without a 64-bit type); counted per module, first one this session",
+                       khex, sname, (sn0 - sn) / 8); }
+        // 带几何的程序：每一段都不许写视口号 / 视口掩码（lp_spv_viewport_builtin，同现编具名拒）
+        if (gs_topology >= 0) {
+            int vp = lp_spv_viewport_builtin(spv, sn);
+            if (vp) { lp_fail(why, why_size, vp > 0 ? "%s %s writes a viewport index/mask in a geometry program (not implemented)"
+                                                   : "%s %s instructions unreadable", khex, sname); goto done; }
+        }
         int stage_no = lp_stage_no(st);
         // vertex_inputs[].location → attributeReadMask
         uint32_t mask = 0;
@@ -514,25 +920,45 @@ static int lp_stage_emit(struct s2a_libpack *lp, const uint8_t key[8], unsigned 
             if (!jf_u32(top, "resolution_scale_abi", &abi) && abi == 2) { if (*support_bytes < LP_SUPPORT_ABI2_BYTES) *support_bytes = LP_SUPPORT_ABI2_BYTES; }
             else if (abi && abi != 2) { lp_fail(why, why_size, "%s resolution_scale_abi %u unknown", khex, abi); goto done; }
         }
-        // tex_scales（缩放访问的贴图）不再拒收：ABI 2 下换算在着色器里经支撑缓冲的尺寸表做，表项全 0 走倍率 1 的旧路径，与现编同口径
-        const char *v1_stage = lp_v1_stage_name(st);
-        if (lp_emit_bindings(binds, top, st, stage_no, v1_stage, compute, bind_sep, why, why_size)) goto done;
-        {   // 以 .spv 声明的绑定为准：support_buffer 补出（_b.json 没列时），其余每个绑定号都得在 _b.json 里有出处，否则整个程序拒收退回现编
-            uint32_t sb[64]; int nb = 0, sup = -1;
-            if (lp_spv_bindings(spv, sn, sb, 64, &nb, &sup)) { lp_fail(why, why_size, "%s _b.spv decorations unreadable", khex); goto done; }
-            for (int i = 0; i < nb; i++) {
-                int skipped = 0;
-                if ((int)sb[i] == sup) {
-                    if (!compute && !lp_json_has_binding(top, stage_no, sb[i], &skipped)) {   // _b.json 有 support 行时 lp_emit_bindings 已经出过；计算程序的支撑缓冲走 supportLayout，不另出行
-                        jw_fmt(binds, "%s{\"kind\":\"support\",\"stage\":\"program\",\"set\":0,\"binding\":%u}", *bind_sep ? "," : "", sb[i]);
-                        *bind_sep = 1;
-                    }
-                    continue;
-                }
-                if (!lp_json_has_binding(top, stage_no, sb[i], &skipped)) {
-                    lp_fail(why, why_size, "%s _b.spv binding %u has no %s_b.json binding", khex, sb[i], skipped ? "mappable " : "");
+        {   // 计算共享内存闸：_b.json 的 spill 是批翻链按 32K 阈值在 MSL 侧做的溢出标记（Dsh.cs SPILL_SLOT），
+            //   本库 _b.spv 里 Workgroup 声明原样保留——装不装得下一律按本设备 maxComputeSharedMemorySize 真值判，
+            //   装不下的结果建不出计算管线（vkCreateComputePipelines 必败），出库前如实拒、退回现编
+            //   （现编路径 DirectSharedSpill.Rewrite 会把溢出数组改写进宿主绑定的设备缓冲）。
+            struct s2a_jv spf;
+            if (compute && !s2a_jv_obj_find(top, "spill", &spf)) {
+                uint32_t sps = 0; uint64_t wg = 0;
+                if (jf_u32(top, "spill", &sps) || !sps) { lp_fail(why, why_size, "%s %s spill field invalid", khex, jname); goto done; }
+                const char *werr = s2a_spv_workgroup_bytes(spv, sn, &wg);
+                if (werr) { lp_fail_reflect(why, why_size, "%s %s: %s", khex, sname, werr); goto done; }
+                if (wg > shared_limit) {
+                    lp_fail_code(S2A_LIBPACK_WHY_SHARED_LIMIT, why, why_size, "%s %s compute shared memory %llu exceeds device limit %u",
+                                 khex, sname, (unsigned long long)wg, shared_limit);
                     goto done;
                 }
+            }
+        }
+        // tex_scales（缩放访问的贴图）不再拒收：ABI 2 下换算在着色器里经支撑缓冲的尺寸表做，表项全 0 走倍率 1 的旧路径，与现编同口径
+        const char *v1_stage = lp_v1_stage_name(st);
+        struct lp_emitted_bindings *emitted = &contract->emitted;
+        struct lp_spv_bindings *declared = &contract->declared;
+        if (lp_emit_bindings(binds, top, st, stage_no, v1_stage, compute, spv, sn, bind_sep, emitted, why, why_size)) goto done;
+        if (lp_spv_read_bindings(spv, sn, declared)) {
+            lp_fail_reflect(why, why_size, "%s %s decorations unreadable", khex, sname);
+            goto done;
+        }
+        if (!emitted->uses_v2) {
+            // v1 沿用按反射核对和补写。若另一段选了 v2，整份合成时会重新核对实际发出记录。
+            for (int i = 0; i < declared->count; i++) {
+                uint32_t binding = declared->number[i];
+                int skipped = 0;
+                if (lp_json_has_binding(top, stage_no, binding, &skipped)) continue;
+                if ((int)binding == declared->support) {
+                    lp_emit_support(binds, bind_sep, binding, compute);
+                    lp_record_binding(emitted, binding, LP_BINDING_SUPPORT);
+                    continue;
+                }
+                lp_fail_reflect(why, why_size, "%s %s binding %u has no %s%s binding", khex, sname, binding, skipped ? "mappable " : "", jname);
+                goto done;
             }
         }
         jw_fmt(stages, "%s{\"stage\":\"%s\",\"spirv\":\"", *stage_mask ? "," : "", v1_stage);
@@ -543,6 +969,7 @@ static int lp_stage_emit(struct s2a_libpack *lp, const uint8_t key[8], unsigned 
         if (!strcmp(v1_stage, "fs") && !s2a_libpack_spv_frag_outputs(spv, sn, &fom)) jw_fmt(stages, ",\"info\":{\"fragmentOutputMap\":%u}", fom);
         jw_str(stages, "}");
         *stage_mask |= 1u << nvn;
+        *uses_v2 |= emitted->uses_v2;
         out = 0;
     }
 done:
@@ -550,26 +977,146 @@ done:
     return out;
 }
 
+// 绘制图元名（现编请求 graphicsState.topology 同名：nvn_vk_compile_facts.c nvk_input_topology）→ InputTopology 编号；
+//   离线库只出点 / 线 / 三角三种（DshVk.GeometryTopologies），邻接与没有来源给 -1（几何程序按 miss）
+static int lp_input_topology(const char *t) {
+    if (!t) return -1;
+    if (!strcmp(t, "Points")) return 0;
+    if (!strcmp(t, "Lines")) return 1;
+    if (!strcmp(t, "Triangles")) return 3;
+    return -1;
+}
+// 本局 effective profile 的 capabilities.supportsGeometryShader（现编 profile.Caps.SupportsGeometryShader 同一字段）：1 开 / 0 没开或读不出
+int s2a_libpack_profile_geometry_shader(const char *profile_json, size_t profile_bytes) {
+    if (!profile_json || !profile_bytes) return 0;
+    struct s2a_jv top = { profile_json, profile_bytes }, caps, f;
+    int b = 0;
+    if (!s2a_jv_is_object(top) || s2a_jv_obj_find(top, "capabilities", &caps) || !s2a_jv_is_object(caps) ||
+        s2a_jv_obj_find(caps, "supportsGeometryShader", &f) || s2a_jv_bool(f, &b)) return 0;
+    return b != 0;
+}
+
+// _b.json 绑定的 kind → 存储类别：1 = sbuf（槽号 reg 的 NVN 存储缓冲）；0 = 已知的非存储种类（lp_emit_bindings 里逐个认得的那些）；
+//   -1 = 其余（geometry / sbuf_ubo / ubo_ptr / gmem_* / sbuf_push 等别的存储种类，以及这里不认得的种类）。
+//   不认得的种类按「可能是存储」处理：库以后加了新的存储类绑定，也不会被悄悄当成「没用存储缓冲」。
+static int lp_kind_storage_class(const char *kind) {
+    static const char *const non_storage[] = { "tex", "tbuf", "tex_pool", "tex_ubo", "tbuf_ubo", "tex_c2a", "samp", "samp_id", "samp_ubo",
+        "samp_c2a", "samp_pool", "samp_tex", "img", "img_ubo", "cbuf", "c1", "ubolen", "uvx", "lb", "sbsize", "drvcb", "support" };
+    if (!strcmp(kind, "sbuf")) return 1;
+    for (size_t i = 0; i < sizeof non_storage / sizeof non_storage[0]; i++) if (!strcmp(kind, non_storage[i])) return 0;
+    return -1;
+}
+
+// SPIR-V 模块里有没有声明某个 OpCapability：1 有 / 0 没有 / -1 读不懂（调用方按「说不准」处理）。
+//   整份模块按指令字数走一遍，不假定能力声明都排在最前面。
+static int lp_spv_has_capability(const uint8_t *spv, size_t n, uint32_t cap) {
+    if (!spv || n < 20 || (n & 3) || *(const uint32_t *)spv != SpvMagicNumber) return -1;
+    const uint32_t *w = (const uint32_t *)spv; const size_t nw = n / 4;
+    for (size_t i = 5; i < nw; ) {
+        const uint32_t op = w[i] & 0xffff, wc = w[i] >> 16;
+        if (!wc || wc > nw - i) return -1;
+        if (op == SpvOpCapability && wc >= 2 && w[i + 1] == cap) return 1;
+        i += wc;
+    }
+    return 0;
+}
+
+int s2a_libpack_stage_sbuf_slots(const struct s2a_libpack *lp_c, const uint8_t key[8], unsigned nvn, const char *topology, uint32_t *slots) {
+    struct s2a_libpack *lp = (struct s2a_libpack *)lp_c;
+    if (slots) *slots = 0;
+    if (!lp || !lp->p.idx || !key || !slots) return 1;
+    const char *lib_stage = lp_nvn_stage_name(nvn);
+    if (!lib_stage || !strcmp(lib_stage, "cs")) return 1;   // 图形三段（vs / ps / gs）；计算不走这里
+    const int gs = !strcmp(lib_stage, "gs");
+    int gt = -1;
+    if (gs && (gt = lp_input_topology(topology)) < 0) return 1;   // 邻接 / 没有来源：库里没有那一份
+    char khex[17];
+    for (int i = 0; i < 8; i++) snprintf(khex + 2 * i, 3, "%02x", key[i]);
+    uint8_t *jb = NULL; size_t jn = 0; char gw[64] = "";
+    if (s2a_libpack_get(lp, key, gs ? LP_K_VGJSON + (unsigned)gt : LP_K_BJSON, &jb, &jn, gw, sizeof gw) != S2A_LIBPACK_HIT) { free(jb); return 1; }
+    struct s2a_jv top = { (const char *)jb, jn }, arr;
+    uint32_t mask = 0;
+    int out = 1;
+    {   // 与 lp_stage_emit 同一套命中判据：整份语法完整、顶层是对象、dm_ctl == 键 hex、stage 是本段阶段
+        const char *jend = NULL;
+        char ctl[20] = "", st[8] = "";
+        if (!s2a_jv_is_object(top) || s2a_jv_scan((const char *)jb, (const char *)jb + jn, &jend) || jend != (const char *)jb + jn) goto done;
+        if (jf_str(top, "dm_ctl", ctl, sizeof ctl) || strcmp(ctl, khex)) goto done;
+        if (jf_str(top, "stage", st, sizeof st) || strcmp(st, lib_stage)) goto done;
+        uint32_t git = 0;
+        if (gs && (jf_u32(top, "gs_input_topology", &git) || git != (uint32_t)gt)) goto done;
+        if (s2a_jv_obj_find(top, "bindings", &arr) || !s2a_jv_is_array(arr)) goto done;
+        int n = s2a_jv_arr_count(arr);
+        if (n < 0) goto done;
+        for (int i = 0; i < n; i++) {
+            struct s2a_jv b; char kind[24] = ""; uint32_t reg = 0;
+            if (s2a_jv_arr_item(arr, i, &b) || jf_str(b, "kind", kind, sizeof kind)) goto done;
+            const int cls = lp_kind_storage_class(kind);
+            if (cls < 0) goto done;
+            if (cls == 0) continue;
+            if (jf_u32(b, "reg", &reg) || reg >= 16) goto done;
+            mask |= 1u << reg;
+        }
+        // 不经描述符的内存访问：这一段的 SPIR-V 声明了 PhysicalStorageBufferAddresses = 着色器可以按 64 位地址直接读写内存，
+        //   那条路不走 rp_S.ssbo 的槽，_b.json 的绑定表就不是它碰得到的全部存储 → 说不准（返回 2，与别的「说不准」分开计数）。
+        //   .spv 取不到 / 读不懂同样说不准（返回 1）：没有 .spv 的键本来也合成不出库程序。
+        uint8_t *spv = NULL; size_t sn = 0; char sw[64] = "";
+        const int got = s2a_libpack_get(lp, key, gs ? LP_K_VGSPV + (unsigned)gt : LP_K_BSPV, &spv, &sn, sw, sizeof sw);
+        const int psb = got == S2A_LIBPACK_HIT ? lp_spv_has_capability(spv, sn, SpvCapabilityPhysicalStorageBufferAddresses) : -1;
+        free(spv);
+        if (psb < 0) goto done;
+        if (psb) { out = 2; goto done; }
+        *slots = mask;
+        out = 0;
+    }
+done:
+    free(jb);
+    return out;
+}
+
 int s2a_libpack_program_v1(const struct s2a_libpack *lp_c, const uint8_t keys[6][8], uint32_t stages,
+                           const struct s2a_libpack_gfx *gfx,
                            uint32_t direct_abi, const char *profile_hash, const char *translator_closure,
                            uint8_t **json, size_t *json_len, char *why, size_t why_size) {
     struct s2a_libpack *lp = (struct s2a_libpack *)lp_c;
+    g_lp_why = S2A_LIBPACK_WHY_NONE;
     if (!lp || !lp->p.idx || !keys || !json || !json_len || !stages) return S2A_LIBPACK_INVALID;
     *json = NULL; *json_len = 0;
-    // v1 图形接受口径就是 vs+fs 两阶段（nvn_vk_program_parse_graphics 判据）：
-    //   别的形状（单阶段 / 带 gs|tcs|tes / cs 走 compute 线）本函数产不出可采纳结果，按 miss 如实回。
-    if (stages != 0x3) {
-        if (why && why_size) snprintf(why, why_size, "stages=0x%x is not a vs+fs program", stages);
+    // 图形接受口径同现编（DirectProgram.Parse）：vs+fs，或 vs+gs+fs（几何走原生几何阶段），或只有 vs（只写深度的绘制：
+    //   深度预通道、阴影图；解析侧 allow_vs_only、后端 C76 管线都已支持，不造 fs）；别的形状（只有 fs / 带 tcs|tes / cs 走
+    //   compute 线）本函数产不出可采纳结果，按 miss 如实回。
+    if (stages != 0x1 && stages != 0x3 && stages != 0x7) {
+        if (why && why_size) snprintf(why, why_size, "stages=0x%x is not a vs, vs+fs or vs+gs+fs program", stages);
         atomic_fetch_add(&g_misses, 1);
         return S2A_LIBPACK_MISS;
     }
+    // 几何程序：设备没开 geometryShader 照旧 miss（现编同判据：profile 的 supportsGeometryShader）；
+    //   输入图元挑同号那份 _vg<t>，邻接 / 没有来源 miss（现编也还没接邻接）
+    int gs_topology = -1;
+    if (stages == 0x7) {
+        if (!gfx || !s2a_libpack_profile_geometry_shader(gfx->profile_json, gfx->profile_bytes)) {
+            if (why && why_size) snprintf(why, why_size, "geometryShader is not enabled in the profile");
+            atomic_fetch_add(&g_misses, 1);
+            return S2A_LIBPACK_MISS;
+        }
+        gs_topology = lp_input_topology(gfx->topology);
+        if (gs_topology < 0) {
+            if (why && why_size) snprintf(why, why_size, "geometry input topology %s has no library variant", gfx->topology ? gfx->topology : "(none)");
+            atomic_fetch_add(&g_misses, 1);
+            return S2A_LIBPACK_MISS;
+        }
+    }
     int worst = S2A_LIBPACK_HIT;
     struct jw st = {0}, bd = {0};
-    int sep = 0; uint32_t got = 0, support = 0;
-    for (unsigned nvn = 0, idx = 0; nvn < 6 && idx < 6; nvn++) {
+    int sep = 0, uses_v2 = 0; uint32_t got = 0, support = 0;
+    // 按 NVN 阶段号（vs=0 fs=1 gs=2 tcs=3 tes=4 cs=5）定长取下标：keys[] 与 contracts[] 同为全部阶段号一份，
+    //   循环上界取自数组本身，阶段号永远在界内（原 contracts[3] 遇 tcs/tes 位会传出越界指针）
+    struct lp_stage_contract contracts[LP_NVN_STAGES] = {0};
+    for (unsigned nvn = 0, idx = 0; nvn < sizeof contracts / sizeof contracts[0] && idx < LP_NVN_STAGES; nvn++) {
         if (!(stages & (1u << nvn))) continue;
         char sw[192] = "";
-        int rc = lp_stage_emit(lp, keys[idx], nvn, 0, &st, &bd, &sep, &got, &support, sw, sizeof sw);
+        int rc = lp_stage_emit(lp, keys[idx], nvn, 0, gs_topology, 0, &st, &bd, &sep, &got, &support, &uses_v2,
+                               &contracts[nvn], sw, sizeof sw);
         idx++;
         if (rc == 0) continue;
         // 半程序不命中：任一所需阶段拿不到，整个程序按该段的 miss/reject 计
@@ -577,21 +1124,31 @@ int s2a_libpack_program_v1(const struct s2a_libpack *lp_c, const uint8_t keys[6]
         if (why && why_size) snprintf(why, why_size, "%s", sw);
         if (rc < 0 || worst == S2A_LIBPACK_HIT) worst = rc;
     }
+    if (uses_v2) {
+        for (unsigned nvn = 0; nvn < sizeof contracts / sizeof contracts[0]; nvn++) {
+            if (!(got & (1u << nvn))) continue;
+            if (lp_finish_v2_bindings(&contracts[nvn], &bd, &sep, 0, why, why_size)) {
+                worst = S2A_LIBPACK_REJECT;
+                goto out;
+            }
+        }
+    }
     if (worst != S2A_LIBPACK_HIT || got != stages) {
         if (worst == S2A_LIBPACK_HIT) worst = S2A_LIBPACK_MISS;   // 阶段位图对不上 = 库没有，miss
         goto out;
     }
     {
         struct jw j = {0};
-        jw_fmt(&j, "{\"schema\":\"s2a-direct-program-v1\",\"content\":{\"contract\":\"s2a-direct-program-content-v1\",\"identity\":{\"directABI\":%u,\"translatorClosure\":\"%s\",\"profileHash\":\"%s\"},\"kind\":\"graphics\",\"stages\":[",
-               direct_abi, translator_closure ? translator_closure : "", profile_hash ? profile_hash : "");
+        int version = uses_v2 ? 2 : 1;
+        jw_fmt(&j, "{\"schema\":\"s2a-direct-program-v%d\",\"content\":{\"contract\":\"s2a-direct-program-content-v%d\",\"identity\":{\"directABI\":%u,\"translatorClosure\":\"%s\",\"profileHash\":\"%s\"},\"kind\":\"graphics\",\"stages\":[",
+               version, version, direct_abi, translator_closure ? translator_closure : "", profile_hash ? profile_hash : "");
         jw_put(&j, st.b ? (char *)st.b : "", st.n);
         jw_str(&j, "],\"bindings\":[");
         jw_put(&j, bd.b ? (char *)bd.b : "", bd.n);
         jw_str(&j, "]");
         if (support) jw_fmt(&j, ",\"supportLayout\":{\"requiredSize\":%u}", support);
         jw_str(&j, "}}");
-        if (j.oom) { free(j.b); lp_fail(why, why_size, "v1 synthesis out of memory"); worst = S2A_LIBPACK_REJECT; goto out; }
+        if (st.oom || bd.oom || j.oom) { free(j.b); lp_fail(why, why_size, "program synthesis out of memory"); worst = S2A_LIBPACK_REJECT; goto out; }
         *json = j.b; *json_len = j.n;
         worst = S2A_LIBPACK_HIT;
     }
@@ -603,7 +1160,7 @@ out:
     return worst;
 }
 
-// 计算程序：单键（rp_S.skey[5]）的 _b.json（stage "cs"）+ _b.spv → kind "compute" 的 v1 结果，
+// 计算程序：单键（rp_S.skey[5]）的 _b.json（stage "cs"）+ _b.spv → kind "compute" 的 v1/v2 结果，
 //   接受口径 = nvn_vk_program_parse_compute（与现编结果同一个 build_compute）。计算合同多出的四个顶层事实：
 //   hasUnalignedStorageBuffer：false——dsh 批翻链的翻译器（translator/dmsh_xlate）不覆写
 //     IGpuAccessor.QueryHasUnalignedStorageBuffer，接口缺省 false，这份 .spv 就是按 false 翻的（照实）；
@@ -615,25 +1172,31 @@ out:
 //   绑定号 = arg_id×6 + 5。计数口径同 program_v1（hit / miss / reject 三个计数器共用）。
 int s2a_libpack_compute_v1(const struct s2a_libpack *lp_c, const uint8_t key[8],
                            uint32_t direct_abi, const char *profile_hash, const char *translator_closure,
-                           uint8_t **json, size_t *json_len, char *why, size_t why_size) {
+                           uint32_t shared_limit,
+                           uint8_t **json, size_t *json_len, char *why, size_t why_size, int *reason) {
     struct s2a_libpack *lp = (struct s2a_libpack *)lp_c;
-    if (!lp || !lp->p.idx || !key || !json || !json_len) return S2A_LIBPACK_INVALID;
+    g_lp_why = S2A_LIBPACK_WHY_NONE;
+    if (reason) *reason = S2A_LIBPACK_WHY_NONE;
+    if (!lp || !lp->p.idx || !key || !json || !json_len) { if (reason) *reason = S2A_LIBPACK_WHY_OTHER; return S2A_LIBPACK_INVALID; }
     *json = NULL; *json_len = 0;
     struct jw st = {0}, bd = {0};
-    int sep = 0; uint32_t got = 0;
+    int sep = 0, uses_v2 = 0; uint32_t got = 0;
     uint32_t csupport = 0;
-    int rc = lp_stage_emit(lp, key, 5, 1, &st, &bd, &sep, &got, &csupport, why, why_size);
+    struct lp_stage_contract contract = {0};
+    int rc = lp_stage_emit(lp, key, 5, 1, -1, shared_limit, &st, &bd, &sep, &got, &csupport, &uses_v2, &contract, why, why_size);
     if (rc == 0 && got != (1u << 5)) rc = S2A_LIBPACK_MISS;
+    if (rc == 0 && uses_v2) rc = lp_finish_v2_bindings(&contract, &bd, &sep, 1, why, why_size);
     if (rc == 0) {
         struct jw j = {0};
-        jw_fmt(&j, "{\"schema\":\"s2a-direct-program-v1\",\"content\":{\"contract\":\"s2a-direct-program-content-v1\",\"identity\":{\"directABI\":%u,\"translatorClosure\":\"%s\",\"profileHash\":\"%s\"},\"kind\":\"compute\","
+        int version = uses_v2 ? 2 : 1;
+        jw_fmt(&j, "{\"schema\":\"s2a-direct-program-v%d\",\"content\":{\"contract\":\"s2a-direct-program-content-v%d\",\"identity\":{\"directABI\":%u,\"translatorClosure\":\"%s\",\"profileHash\":\"%s\"},\"kind\":\"compute\","
                    "\"hasUnalignedStorageBuffer\":false,\"c0Reads\":null,\"supportReads\":null,\"stages\":[",
-               direct_abi, translator_closure ? translator_closure : "", profile_hash ? profile_hash : "");
+               version, version, direct_abi, translator_closure ? translator_closure : "", profile_hash ? profile_hash : "");
         jw_put(&j, st.b ? (char *)st.b : "", st.n);
         jw_str(&j, "],\"bindings\":[");
         jw_put(&j, bd.b ? (char *)bd.b : "", bd.n);
         jw_fmt(&j, "],\"supportLayout\":{\"requiredSize\":%u}}}", csupport > SUPPORT_DEFAULT_BYTES ? csupport : SUPPORT_DEFAULT_BYTES);
-        if (j.oom) { free(j.b); lp_fail(why, why_size, "v1 synthesis out of memory"); rc = S2A_LIBPACK_REJECT; }
+        if (st.oom || bd.oom || j.oom) { free(j.b); lp_fail(why, why_size, "program synthesis out of memory"); rc = S2A_LIBPACK_REJECT; }
         else { *json = j.b; *json_len = j.n; }
     } else if (rc > 0) rc = S2A_LIBPACK_MISS;
     else rc = S2A_LIBPACK_REJECT;
@@ -641,5 +1204,6 @@ int s2a_libpack_compute_v1(const struct s2a_libpack *lp_c, const uint8_t key[8],
     if (rc == S2A_LIBPACK_HIT) atomic_fetch_add(&g_hits, 1);
     else if (rc == S2A_LIBPACK_MISS) atomic_fetch_add(&g_misses, 1);
     else atomic_fetch_add(&g_rejects, 1);
+    if (reason && rc == S2A_LIBPACK_REJECT) *reason = g_lp_why ? g_lp_why : S2A_LIBPACK_WHY_OTHER;
     return rc;
 }

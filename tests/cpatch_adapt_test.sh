@@ -17,6 +17,7 @@
 #   ⑤ movz / movk 拼单精度的一族（11-13 荒野大镖客式；目录名用撇号 21'9、段名写 21:9）：0x110 movz w10,#lo / 0x114 movk w10,#hi 拼 A；
 #      宽 21'9 / 32'9 / 43'18 三种、窄只有 16'10 一种（借宽侧认出的式 a，16:10 的值 1.6 也落在 a 上才收）。0x110 / 0x114 原是我方宽屏候选 asp 点，产物根没有我方宽屏表 → 让给补丁：
 #      两份都是 p 110 5291c72a → ldr w10,[x16,#1016×8] = 0xB9400000 | 2032<<10 | 16<<5 | 10 = b95fc20a「@k」、p 114 72a7fc6a → nop d503201f；数据写入 k1016::@a4
+#   ㉓ 只写了宽、高留在程序里：去程序里配上高（#2193）；㉔ 自适应模板取写死最少的一份、同侧别家定画幅不进包（#2193），期望见各项注释
 #   ⑥ 同 ⑤ 但产物根有我方整套放宽表 widen_full.handheld.tsv → 两份照收、出表与 ⑤ 相同（11-13 补丁优先：社区宽屏类不让我方宽屏候选点，运行时我方满屏让位）
 #   ⑧ 宽屏补丁写死的渲染尺寸（PC 模拟器用的 3440×1440）按手机口径缩成高 1080、宽等比；不超过 1080 的不动
 #   ⑦ 定画幅变体（11-13 起单份参数化）：2:1、5:2 两份只改 main+0x100（fmov 立即数）与数据 0x5100，再加一份同 2:1 的别家（数据 1.75，不在画幅式上）：
@@ -175,6 +176,23 @@ os.remove(cd10 + '/AABBCCDD00112233.txt'); cpatch.plan(r10, '', []); left10 = [f
 del os.environ['S2A_CHEATS_DIRS']
 ck(f'⑩ 金手指原文随包：版本对的那份照原文进产物根、对不上的不带、重跑先清（实得 {sh10}、原文一致 {bool(same10)}、重跑后剩 {left10}）',
    sh10 == ['cheat-src.AABBCCDD00112233.txt'] and same10 and left10 == [])
+# ⑩b 没写构建号的金手指（#1321）：文件名不是 16 位构建号、首行也没 BID= → 不随包、不编；计划日志单独一行「不收 cheat:<文件名> … 没写构建号」（结果页逐份列出），
+#    不再混在「版本不对」里被当成库里别的版本静默略过。期望按构造手写
+r10b = T + '/root10b'; shutil.copytree(root, r10b, ignore=shutil.ignore_patterns('cpatch*', 'cheat-src*')); cd10b = T + '/cheats10b'; os.makedirs(cd10b)
+open(cd10b + '/mine.txt', 'wb').write(good)
+os.environ['S2A_CHEATS_DIRS'] = cd10b; cpatch.plan(r10b, '', []); del os.environ['S2A_CHEATS_DIRS']
+log10b = [l for l in open(r10b + '/cpatch_plan.log', encoding='utf-8').read().splitlines() if 'mine.txt' in l]
+sh10b = [f for f in os.listdir(r10b) if f.startswith('cheat-src.')]
+ck(f'⑩b 没写构建号的金手指：不随包、日志单列「没写构建号」（实得 {log10b}、随包 {sh10b}）',
+   len(log10b) == 1 and log10b[0].startswith('不收\tcheat:mine.txt\tmain\tmine.txt\t没写构建号') and sh10b == [])
+# ⑩c 读不了的金手指文件（原先 except OSError: continue，静默少一份）：金手指目录里一个叫 AABBCCDD00112233.txt 的目录（打开即抛 OSError，各平台都读不了）
+#    → 不随包、计划日志单独一行「不收 cheat:<文件名> … 读不了：」（结果页逐份列出，同 ⑩b）。期望按构造手写
+r10c = T + '/root10c'; shutil.copytree(root, r10c, ignore=shutil.ignore_patterns('cpatch*', 'cheat-src*')); cd10c = T + '/cheats10c'; os.makedirs(cd10c + '/AABBCCDD00112233.txt')
+os.environ['S2A_CHEATS_DIRS'] = cd10c; cpatch.plan(r10c, '', []); del os.environ['S2A_CHEATS_DIRS']
+log10c = [l for l in open(r10c + '/cpatch_plan.log', encoding='utf-8').read().splitlines() if 'AABBCCDD00112233.txt' in l]
+sh10c = [f for f in os.listdir(r10c) if f.startswith('cheat-src.')]
+ck(f'⑩c 读不了的金手指文件：不随包、日志单列「读不了」（实得 {log10c}、随包 {sh10c}）',
+   len(log10c) == 1 and log10c[0].startswith('不收\tcheat:AABBCCDD00112233.txt\tmain\tAABBCCDD00112233.txt\t读不了：') and sh10c == [])
 # ⑪ 跨版本移植（11-13，只做画幅）：主程序构建号 AABB…，补丁库里只有别的版本（1111…）的一份 21:9：0x100 fmov s0,#2.375（= 0x1E207000，imm8 0x03）、数据 0x5100 = 2.3333。
 #    新版程序里那条挪到 0x140、原值 fmov s0,#1.75（16:9 那档，imm8 0x7C → 0x1E2F9000）；数据挪到 0x5180、原值 1.7778。
 #    期望（手算）：移植成 0x140 / 0x5180（log「移植」），再单份参数化（宽侧 21:9，窄侧外推）→ p 140 1e2f9000 → ldr s0,[x16,#1016×8] = bd5fc200「@k」，数据 5180:<1.7778 原字节>:@a4 k1016::@a4
@@ -215,12 +233,13 @@ sus13 = sum(l.startswith('可疑不收') for l in open(r13 + '/cpatch_plan.log',
 ck(f'⑬ 画幅值自相矛盾的补丁不收（实得 进包 {n13}、可疑 {sus13}）', n13 == 0 and sus13 == 1)
 # ⑭ 金手指偏移寄存器（11-13 实测漏收）：同一份里 [A] 04070000 00000100 52800120（R=7 写主程序代码）、[B] 040F0000 00000104 D503201F（R=F）、
 #    [C] 580F0000 00005000 / 780F0000 00000010 / 640F0000 00000000 00000001（指针链，写 RF）。期望：R7 没有任何指令写 → A 编进包（0x100 写 20 01 80 52）；
-#    RF 被 C 的 58 / 78 写 → B 交运行时（writes None）；C 本身有别的类型 → None。再加一条 [D] 30070000 00000002 / 31070000（循环用 R7）后 A 也交运行时
+#    C 本身有别的类型 → None。11-21 D-99H5 起按「主代码 + 本条自己」判（同我们运行时每条一套寄存器、起始 0）：RF 只被别的条目 C 写 → B 照样编进包（0x104 写 1F 20 03 D5）；
+#    再加一条 [D] 30070000 00000002 / 31070000（循环用 R7）后 A 仍编进包；主代码写了 R7 才交运行时（见 tests/cpatch_test.sh ①d）
 t14 = '[A]\n04070000 00000100 52800120\n\n[B]\n040F0000 00000104 D503201F\n\n[C]\n580F0000 00005000\n780F0000 00000010\n640F0000 00000000 00000001\n'
 e14 = {e['name']: e['writes'] for e in cpatch.parse_cheats(t14)[1]}
 e14b = {e['name']: e['writes'] for e in cpatch.parse_cheats(t14 + '\n[D]\n30070000 00000002\n31070000\n')[1]}
-ck(f'⑭ 金手指偏移寄存器：文件里没人写的 R 当 0 编进包、有人写的交运行时（实得 {e14}；加循环后 A = {e14b.get("A")}）',
-   e14 == {'A': [(0x100, bytes.fromhex('20018052'))], 'B': None, 'C': None} and e14b.get('A') is None)
+ck(f'⑭ 金手指偏移寄存器：主代码和本条都不写的 R 当 0 编进包（实得 {e14}；加循环后 A = {e14b.get("A")}）',
+   e14 == {'A': [(0x100, bytes.fromhex('20018052'))], 'B': [(0x104, bytes.fromhex('1f2003d5'))], 'C': None} and e14b.get('A') == [(0x100, bytes.fromhex('20018052'))])
 # ⑮ 金手指同文件同处代码的几档（11-13 实测「x3」被当成与「x2」冲突落选）：合成 main 0x100 原字 mov w9,#0 = 52800009；
 #    AABBCCDD00112233.txt：[x2] 写 0x100 = mov w9,#2（52800049），[x3] 写 0x100 = mov w9,#3（52800069）。期望（手算）：两条都进 cpatch.tsv、位各自不同（x2 位 0、x3 位 1，按条目顺序分位）；
 #    cpatch_rows.tsv 同点各一行 p、后面的条目在前（几档同开时后写的生效，跳板先测到的生效）。另一份文件（文件名排后）[x5] 写 528000A9 也并存（位 2，行最前）；
@@ -312,8 +331,56 @@ open(idx21 + '/INDEX.tsv', 'w').write('game\ttitle_id\tpath\ttype\tsource\tlicen
 cpatch.plan(r21, '', [idx21])
 rows21 = [c for c in (l.split('\t') for l in open(r21 + '/cpatch.tsv', encoding='utf-8').read().splitlines()[1:]) if c[0].startswith('fps:')]
 grp21 = [c[12] if len(c) > 12 else '' for c in rows21]
-ck(f'㉑ 组号走 plan()：同包两份同组、另一上游另组（实得 {[(c[0], c[12] if len(c) > 12 else "") for c in rows21]}）',
-   len(rows21) == 3 and len(set(grp21)) == 2 and all(len(x) == 8 for x in grp21) and sorted(grp21.count(x) for x in set(grp21)) == [1, 2])
+g21 = {c[6]: (c[12] if len(c) > 12 else '') for c in rows21}   # 第 7 列来源（本机缓存路径 f/<n>/…）→ 第 13 列组：按来源认是哪两份（审计 P2-453：原先只数个数，看不出哪两份同组）
+ck(f'㉑ 组号走 plan()：同包两份（f/0、f/1）同组、另一上游（f/2）另组、8 位（实得 {g21}）',
+   len(rows21) == 3 and g21.get('f/0/60fps.pchtxt') == g21.get('f/1/60fps.pchtxt') != g21.get('f/2/60fps.pchtxt') and all(len(x) == 8 for x in g21.values()))
+# ㉒ IPS 也按上游原路径分组（审计 P1-193 余项：IPS 那一支单元不带 origin，退回缓存路径 f/<n>/…，同包的 IPS 与 pchtxt 拆成两组）。
+#   同一个压缩包 exefs 下一份 IPS（文件名 = 主程序构建号）、一份 pchtxt，本机缓存分在 f/3、f/4。期望手写：两份第 13 列相同
+r22 = T + '/root22'; shutil.copytree(r5, r22, ignore=shutil.ignore_patterns('cpatch*'))
+idx22 = T + '/e22/fps'; os.makedirs(f'{idx22}/f/3'); os.makedirs(f'{idx22}/f/4')
+open(f'{idx22}/f/3/{BID}.ips', 'wb').write(b'PATCH' + (0x120).to_bytes(3, 'big') + (4).to_bytes(2, 'big') + bytes.fromhex('1F2003D5') + b'EOF')
+open(f'{idx22}/f/4/60fps.pchtxt', 'w').write(f'@nsobid-{BID}\n@flag offset_shift 0x100\n// 60 FPS\n@enabled\n00000124 1F2003D5\n@stop\n')
+open(idx22 + '/INDEX.tsv', 'w').write('game\ttitle_id\tpath\ttype\tsource\tlicense\tin_pack\tsha256\ttarget_fps\torigin\n'
+    + f'\t0100A3501946E000\tf/3/{BID}.ips\tips\to/r\tMIT\tyes\t\t60\tt/r/Game/60FPS-pack.zip/exefs/{BID}.ips\n'
+    + '\t0100A3501946E000\tf/4/60fps.pchtxt\tpchtxt\to/r\tMIT\tyes\t\t60\tt/r/Game/60FPS-pack.zip/exefs/60fps.pchtxt\n')
+cpatch.plan(r22, '', [idx22])
+g22 = {c[6].split('/')[1]: (c[12] if len(c) > 12 else '') for c in (l.split('\t') for l in open(r22 + '/cpatch.tsv', encoding='utf-8').read().splitlines()[1:]) if c[0].startswith('fps:')}
+ck(f'㉒ IPS 与同包 pchtxt 同组（实得 {g22}）', set(g22) == {'3', '4'} and g22['3'] == g22['4'] and len(g22['3']) == 8)
+def prog(dst, words):   # root 的一份拷贝，代码段按 {偏移: 字} 改（未压缩 NSO：文件偏移 = 0x100 + 段内偏移）
+    shutil.copytree(root, dst, ignore=shutil.ignore_patterns('cpatch*')); b = bytearray(open(dst + '/exefs/main', 'rb').read())
+    for o, x in words.items(): struct.pack_into('<I', b, 0x100 + o, x)
+    open(dst + '/exefs/main', 'wb').write(bytes(b))
+def one_idx(idx, items):   # [(补丁正文, 画幅, 上游路径)] → 索引目录
+    os.makedirs(idx); rows = ['game\ttitle_id\tpath\ttype\tsource\tlicense\tin_pack\tsha256\taspect\torigin']
+    for i, (body, asp, org) in enumerate(items):
+        os.makedirs(f'{idx}/f/{i}'); open(f'{idx}/f/{i}/1.0.pchtxt', 'w').write(body)
+        rows.append(f'\t0100A3501946E000\tf/{i}/1.0.pchtxt\tpchtxt\to/r\tMIT\tyes\t\t{asp}\t{org}')
+    open(idx + '/INDEX.tsv', 'w').write('\n'.join(rows) + '\n')
+# ㉓ 只写了宽、高留在程序里（#2193 一款网球游戏）：程序 0x180 movz w9,#1920（0x5280F009）、0x184 movz w10,#1080（0x5280870A）；
+#    补丁只把 0x180 改成 movz w9,#2580（0x52814289，= 1080 × 43/18）。期望手算：0x180 改读值槽 ldr w9,[x16,#1016×8] = 0xB9400000 | 2032<<10 | 16<<5 | 9 = b95fc209，
+#    值槽 1016 按渲染宽算（k1016::@x4）；旧实现认不出（渲染尺寸要宽高两条都在补丁里）→ 照原样当定画幅变体（第 11 列画幅 2.333）
+r23 = T + '/root23'; prog(r23, {0x180: 0x5280F009, 0x184: 0x5280870A})
+one_idx(T + '/e23/widescreen', [(f'@nsobid-{BID}\n@flag offset_shift 0x100\n// 21:9 Ultrawide\n@enabled\n00000180 {(0x52814289).to_bytes(4, "little").hex().upper()}\n@stop\n',
+                                 '21:9', 'o/r/G [mods].zip/[21.9 Ultrawide v3.1.0]/exefs/1.0.pchtxt')])
+cpatch.plan(r23, '', [T + '/e23/widescreen'])
+t23 = sorted((c[0].split(':')[0], c[7], c[10]) for c in (l.split('\t') for l in open(r23 + '/cpatch.tsv', encoding='utf-8').read().splitlines()[1:]))
+p23 = sorted((c[2], c[4]) for c in (l.split('\t# ')[0].split('\t') for l in open(r23 + '/cpatch_rows.tsv').read().splitlines()) if c[0] == 'p' and c[2] == '180')
+ck(f'㉓ 只写了宽：去程序里配上高、宽读值槽按画幅算（实得 表 {t23}、p 180 {p23}）',
+   ('wsauto', 'k1016::@x4', '') in t23 and not any(c[0] == 'widescreen' for c in t23) and p23 and all(x[1] == 'b95fc209' for x in p23))
+# ㉔ 挑模板与同侧不进包（#2193 一款平台游戏）：同为 2:1 的两份、改不同位置——P1（排前）改 0x100 fmov s0,#2.0 外加 0x104 / 0x108 两处写死（nop），
+#    P2 只改 0x120 fmov s1,#2.0（程序原是 nop）。期望：模板取写死最少的 P2（0 字 < P1 的 2 字）→ p 120 改读值槽 ldr s1 = 0xBD400000 | 2032<<10 | 16<<5 | 1 = bd5fc201；
+#    P1 改的位置与 P2 不重叠，但同在宽侧 → 「已覆盖 … 同侧有」不进包；表里只剩 wsauto 两份（宽 / 窄外推），没有定画幅行。旧实现取排前的 P1、P2 照样当定画幅进包
+r24 = T + '/root24'; prog(r24, {0x120: 0xD503201F})
+f20 = lambda rt: (0x1E201000 | rt).to_bytes(4, 'little').hex().upper()
+one_idx(T + '/e24/widescreen', [
+    (f'@nsobid-{BID}\n@flag offset_shift 0x100\n// 2:1 HUD\n@enabled\n00000100 {f20(0)}\n00000104 1F2003D5\n00000108 1F2003D5\n@stop\n', '2:1', 'a/b/[2:1 HUD]/exefs/1.0.pchtxt'),
+    (f'@nsobid-{BID}\n@flag offset_shift 0x100\n// 2:1 plain\n@enabled\n00000120 {f20(1)}\n@stop\n', '2:1', 'c/d/[2:1 plain]/exefs/1.0.pchtxt')])
+cpatch.plan(r24, '', [T + '/e24/widescreen'])
+t24 = sorted(c[0].split(':')[0] for c in (l.split('\t') for l in open(r24 + '/cpatch.tsv', encoding='utf-8').read().splitlines()[1:]))
+p24 = sorted({c[4] for c in (l.split('\t# ')[0].split('\t') for l in open(r24 + '/cpatch_rows.tsv').read().splitlines()) if c[0] == 'p' and c[2] == '120'})
+lg24 = open(r24 + '/cpatch_plan.log', encoding='utf-8').read()
+ck(f'㉔ 模板取写死最少的、同侧别家不进包（实得 表 {t24}、p 120 {p24}、选模板 2:1 plain {"选模板" in lg24 and "2:1 plain" in lg24.split("选模板")[1][:200]}、同侧不进包 {lg24.count("同侧有")}）',
+   t24 == ['wsauto', 'wsauto'] and p24 == ['bd5fc201'] and lg24.count('同侧有') == 1)
 sys.exit(bad)
 EOF
 rc=$?; [ $rc = 0 ] && echo "✅ cpatch_adapt_test 全过" || { echo "🔴 cpatch_adapt_test 有不通项"; exit 1; }

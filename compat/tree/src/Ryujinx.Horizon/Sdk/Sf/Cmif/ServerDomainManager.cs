@@ -51,6 +51,21 @@ namespace Ryujinx.Horizon.Sdk.Sf.Cmif
                 }
             }
 
+            // S2Arm instant snapshot replay: the entry with this id if it is free (S2AHorizonHooks.SnapForceDomainIds), else null
+            public Entry S2AAllocateEntry(int id)
+            {
+                lock (_freeList)
+                {
+                    Entry entry = GetEntry(id);
+                    if (entry == null || entry.Owner != null || !_freeList.Remove(entry))
+                    {
+                        return null;
+                    }
+
+                    return entry;
+                }
+            }
+
             public void FreeEntry(Entry entry)
             {
                 lock (_freeList)
@@ -147,7 +162,14 @@ namespace Ryujinx.Horizon.Sdk.Sf.Cmif
             {
                 for (int i = 0; i < outIds.Length; i++)
                 {
-                    EntryManager.Entry entry = _manager._entryManager.AllocateEntry();
+                    EntryManager.Entry entry = null;
+                    var forced = S2AHorizonHooks.SnapForceDomainIds;
+                    if (forced != null && forced.Count > 0 && (entry = _manager._entryManager.S2AAllocateEntry(forced.Dequeue())) == null)
+                    {
+                        S2AHorizonHooks.SnapForceDomainIdMiss++;
+                    }
+
+                    entry ??= _manager._entryManager.AllocateEntry();
                     if (entry == null)
                     {
                         return SfResult.OutOfDomainEntries;
@@ -156,6 +178,7 @@ namespace Ryujinx.Horizon.Sdk.Sf.Cmif
                     DebugUtil.Assert(entry.Owner == null);
 
                     outIds[i] = entry.Id;
+                    S2AHorizonHooks.SnapOutIds?.Add(entry.Id);
                 }
 
                 return Result.Success;

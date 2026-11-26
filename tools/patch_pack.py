@@ -50,7 +50,8 @@ def item(row, data):
                 bids=row['bids'], gids=row['gids'], target_fps=row['target_fps'], aspect=row['aspect'],
                 source=dict(repo=row['repo'], commit=row['commit'], path=row['path'], member=row.get('member', '')),
                 license=row['license'], author=row.get('author', ''), sha256=row['sha256'], data=base64.b64encode(data).decode(),
-                **({'dir': row['dir']} if row.get('dir') else {}))   # 画面类方向（load / quality，patch_index.gfx_dir；认不出不写，旧包同样没有）
+                **({'dir': row['dir']} if row.get('dir') else {}),   # 画面类方向（load / quality，patch_index.gfx_dir；认不出不写，旧包同样没有）
+                **({'adjusted': row['adjusted']} if row.get('adjusted') else {}))   # 发布前改过渲染分辨率（patch_index.res_fix）：原尺寸 / 新尺寸 / 上游原文 sha256，追溯用；客户端不读
 
 
 def gz(obj):
@@ -59,6 +60,14 @@ def gz(obj):
     with gzip.GzipFile(fileobj=buf, mode='wb', mtime=0, compresslevel=9) as f:
         f.write(raw)
     return buf.getvalue()
+
+
+def seed_source(data):
+    """种子文件首行「# source: repo=<库> commit=<提交> license=<许可> author=<作者> path=<上游路径>」→ 字典；没有这行 → {}（我方种子）"""
+    first = data.split(b'\n', 1)[0].decode('utf-8', 'replace').strip()
+    if not first.startswith('# source:'):
+        return {}
+    return dict(kv.split('=', 1) for kv in first[len('# source:'):].split() if '=' in kv)
 
 
 def seed_rows(seeds):
@@ -71,8 +80,10 @@ def seed_rows(seeds):
         for f in sorted(os.listdir(d)):
             if f.endswith('.tsv') and os.path.isfile(os.path.join(d, f)):
                 data = open(os.path.join(d, f), 'rb').read()
-                rows.append(dict(_data=data, sha256=hashlib.sha256(data).hexdigest(), kind='pso', cat='pso', path=f'{g.upper()}/{f}', bids=[], gids=[g.upper()],
-                                 target_fps='', aspect='', repo='S2Arm/pso-seeds', commit='', license='', author='S2Arm'))
+                src = seed_source(data)   # 外部公开清单（tools/ext_pso_collect.py 写的 ext_*.tsv）首行带来源：致谢与追溯用；我方真跑 / 众包种子没有这行
+                rows.append(dict(_data=data, sha256=hashlib.sha256(data).hexdigest(), kind='pso', cat='pso', path=src.get('path') or f'{g.upper()}/{f}', bids=[], gids=[g.upper()],
+                                 target_fps='', aspect='', repo=src.get('repo', 'S2Arm/pso-seeds'), commit=src.get('commit', ''), license=src.get('license', ''),
+                                 author=src.get('author', 'S2Arm')))
     return rows
 
 
@@ -80,7 +91,7 @@ def build(mirror, out, seeds=None):
     rows = patch_index.dedupe(patch_index.scan(mirror, keep_local=True, cheat_libs=True)) + seed_rows(seeds)
     groups, upstreams, bad = {}, {}, 0
     for r in rows:
-        if r['kind'] != 'pso':   # 我方种子不算上游
+        if r['kind'] != 'pso' or r['repo'] != 'S2Arm/pso-seeds':   # 我方种子不算上游；外部公开清单（ext_*.tsv）算，清单里列它的库与提交
             upstreams[r['repo']] = r['commit']
         try:
             data = content(mirror, r)

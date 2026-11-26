@@ -375,11 +375,12 @@ struct CopyReportButton: View {
     let gameID: String?
     let operations: [String]?
     let fallback: String
+    var size: LauncherTheme.ButtonSize = .regular
     @State private var showing = false
 
     var body: some View {
         Button(loc.t("s2arm.diagUpload.button")) { showing = true }
-            .controllerButtonStyle(LauncherSecondaryButtonStyle()).accessibilityIdentifier("diag.upload")
+            .controllerButtonStyle(LauncherSecondaryButtonStyle(size: size)).accessibilityIdentifier("diag.upload")
             .sheet(isPresented: $showing) {
                 UploadDiagnosticsSheet(model: model, gameID: gameID, operations: operations, fallback: fallback) { showing = false }
                     .environmentObject(loc)
@@ -412,7 +413,7 @@ struct UploadDiagnosticsSheet: View {
                 VStack(alignment: .leading, spacing: 6) {
                     Text(loc.t("s2arm.diagUpload.noteLabel")).font(LauncherTheme.TypeStyle.section)
                     TextField("", text: $note, prompt: Text(loc.t("s2arm.diagUpload.notePlaceholder")).foregroundColor(LauncherTheme.Colors.secondary), axis: .vertical)
-                        .lineLimit(3...6).textFieldStyle(LauncherTextFieldStyle()).font(LauncherTheme.TypeStyle.detail)
+                        .lineLimit(3...6).textFieldStyle(LauncherTextFieldStyle(topInset: LauncherTheme.Space.small)).font(LauncherTheme.TypeStyle.detail)
                         .accessibilityLabel(loc.t("s2arm.diagUpload.noteLabel"))
                         .accessibilityIdentifier("diag.upload.note")
                 }
@@ -420,6 +421,7 @@ struct UploadDiagnosticsSheet: View {
                     Spacer()
                     Button(loc.t("s2arm.diagUpload.cancel")) { close() }.controllerButtonStyle(LauncherSecondaryButtonStyle()).keyboardShortcut(.cancelAction).controllerShortcut(.back)
                     Button(loc.t("s2arm.diagUpload.send")) { send() }.controllerButtonStyle(LauncherPrimaryButtonStyle()).keyboardShortcut(.defaultAction).controllerShortcut(.rightTrigger)
+                        .disabled(!noteWritten)   // 故障描述必填（11-19 维护者定：写清哪款游戏、做了什么、看到了什么，才能快速定位）
                         .accessibilityIdentifier("diag.upload.send")
                 }
             case .uploading:
@@ -461,7 +463,7 @@ struct UploadDiagnosticsSheet: View {
             guard let command else { return }
             model.diagUploadCommand = nil
             switch (command.action, phase) {
-            case ("send", .confirm): send()
+            case ("send", .confirm): if noteWritten { send() }
             case ("copy", .done(let receipt)): copy(receipt.code)
             case ("cancel", .uploading): cancelUpload()
             case ("close", _): close()
@@ -469,6 +471,8 @@ struct UploadDiagnosticsSheet: View {
             }
         }
     }
+
+    private var noteWritten: Bool { !note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
 
     private func copy(_ code: String) { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(code, forType: .string); copied = true }
 

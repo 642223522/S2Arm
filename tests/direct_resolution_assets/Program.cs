@@ -167,7 +167,7 @@ static class Program
             if (stage == ShaderStage.Compute) reflection["threadgroup_size"] = new[] { 1, 1, 1 };
             foreach (var field in scale) reflection[field.Key] = field.Value;
             File.WriteAllText(stem + ".res.json", res.ToJsonString(options));
-            File.WriteAllText(stem + ".metal", stage == ShaderStage.Fragment ? DshCompiler.FsAlphaMs(msl) : msl);   // as production (Dsh.cs): the library's fragment main0 carries the optional S2A_AT / S2A_MSOFF constants (gap families 34 / 37); reflection reads the source without them
+            File.WriteAllText(stem + ".metal", stage == ShaderStage.Fragment ? DshCompiler.FsFout(DshCompiler.FsAlphaMs(msl)) : msl);   // as production (Dsh.cs): the library's fragment main0 carries the optional S2A_AT / S2A_MSOFF constants (gap families 34 / 37); reflection reads the source without them
             File.WriteAllText(stem + ".json", JsonSerializer.Serialize(reflection, options));
             Run("xcrun", "-sdk", "macosx", "metal", "-c", "-fpreserve-invariance", stem + ".metal", "-o", stem + ".air");
             Run("xcrun", "-sdk", "macosx", "metallib", stem + ".air", "-o", stem + ".metallib"); File.Delete(stem + ".air");

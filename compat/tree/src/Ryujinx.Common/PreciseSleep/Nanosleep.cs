@@ -44,7 +44,7 @@ namespace Ryujinx.Common.PreciseSleep
         /// <returns>Bias in nanoseconds</returns>
         public static long GetBias(long timeoutNs)
         {
-            if (OperatingSystem.IsMacOS() || OperatingSystem.IsIOS())
+            if (OperatingSystem.IsMacOS() || (OperatingSystem.IsIOS() || OperatingSystem.IsTvOS()))   // 平台例外：tvOS 与 iOS 走同一分支
             {
                 long biasNs = Math.Min(timeoutNs, MacosBiasMaxNanoseconds);
                 return MacosBaseNanosleepBias + biasNs * MacosBiasPerMillisecond / 1_000_000;
@@ -72,7 +72,7 @@ namespace Ryujinx.Common.PreciseSleep
         /// <returns>Strict bias in nanoseconds</returns>
         public static long GetStrictBias(long timeoutNs)
         {
-            if (OperatingSystem.IsMacOS() || OperatingSystem.IsIOS())
+            if (OperatingSystem.IsMacOS() || (OperatingSystem.IsIOS() || OperatingSystem.IsTvOS()))   // 平台例外：tvOS 与 iOS 走同一分支
             {
                 return GetBias(timeoutNs) + MacosStrictBiasOffset;
             }
@@ -126,7 +126,7 @@ namespace Ryujinx.Common.PreciseSleep
 
         private static MachTimebaseInfo GetTimebase()
         {
-            if (!OperatingSystem.IsMacOS() && !OperatingSystem.IsIOS())
+            if (!OperatingSystem.IsMacOS() && !(OperatingSystem.IsIOS() || OperatingSystem.IsTvOS()))   // 平台例外：tvOS 与 iOS 走同一分支
             {
                 return default;
             }

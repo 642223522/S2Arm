@@ -25,6 +25,7 @@ direct_library.py 的同一套校验与容器格式（不新增库格式，也�
 报告必须是库外的新文件；报告发布失败会保留已经完整发布的库与描述文件，并在错误中
 列明路径，不删除它们或声称已回滚。这三个路径不是跨文件的崩溃原子事务。
 """
+import os as _pw_os, sys as _pw_sys; _pw_sys.path.append(_pw_os.path.join(_pw_os.path.dirname(_pw_os.path.abspath(__file__)), '..', '..', 'tools')); from pool_workers import cores  # noqa: E402  核数 / 进程池路数唯一来源（tools/pool_workers.py，#1332）
 import argparse
 import json
 import os
@@ -371,7 +372,7 @@ def main(argv=None):
     build_parser.add_argument('--identity', required=True, help='compiler identity JSON (cli identity)')
     build_parser.add_argument('--cli', default=str(DEFAULT_CLI),
                               help='compiler CLI project or dll (default: the repo one)')
-    build_parser.add_argument('--jobs', type=int, default=os.cpu_count() or 1)
+    build_parser.add_argument('--jobs', type=int, default=cores())
     build_parser.add_argument('--index', help='index.tsv of the pack that will carry the library')
     build_parser.add_argument('--game-content-root', help='sha256-<64> of the game content (checked against --index)')
     build_parser.add_argument('--module-set-digest', help='sha256-<64> of the module set (checked against --index)')

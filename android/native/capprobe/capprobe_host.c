@@ -44,7 +44,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#if defined(__ANDROID__)
+#if (defined(__ANDROID__) || defined(__OHOS__))
 #include <android/log.h>
 #define S2A_DIAG_WARN(...) \
     __android_log_print(ANDROID_LOG_WARN, "S2Arm", __VA_ARGS__)
@@ -365,6 +365,7 @@ const char *s2a_capprobe_gs_occ_state(void) {
     json_field(buf, "\"source\":\"", src, sizeof src);
     json_field(buf, "\"gs_occlusion\":\"", verdict, sizeof verdict);
     if (!verdict[0]) return "malformed";
+    if (!strcmp(src, "runtime-lost")) return "legacy-runtime-lost:inconclusive";
     snprintf(state, sizeof state, "%s:%s", src[0] ? src : "unknown", verdict);
     return state;
 }

@@ -12,3 +12,17 @@ int s2a_motion_pick(int input_source, int ns2_known, int gc_known, int phone_kno
     if (input_source == 1) return ns2 ? ns2 : gc ? gc : phone;
     return gc ? gc : ns2 ? ns2 : phone;
 }
+
+int s2a_motion_fresh(int ever, uint64_t sample_us, uint64_t now_us) {
+    if (!ever) return 0;
+    return sample_us >= now_us || now_us - sample_us <= (uint64_t)S2A_MOTION_STALE_MS * 1000;
+}
+
+int s2a_motion_pad_silent(int capable, uint64_t last_ok_us, uint64_t now_us) {
+    return capable == 1 && now_us > last_ok_us && now_us - last_ok_us > (uint64_t)S2A_MOTION_SILENT_MS * 1000;
+}
+
+int s2a_motion_blank(const float accel[3], const float gyro[3]) {
+    for (int i = 0; i < 3; i++) if (accel[i] != 0.0f || gyro[i] != 0.0f) return 0;
+    return 1;
+}

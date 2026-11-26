@@ -316,6 +316,19 @@ public final class BootContractTest {
             "modules/main.fixups.tsv", "modules/approved.gates.tsv"));
         expectBad(wrongGates, "gates differs from the image module name");
 
+        // RomFS 镜像形态（出包缺省）：artifact 写 romfs.std，游戏目录里是这一个文件、没有 romfs/
+        String revRel = "revisions/sha256-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef/";
+        String imageArtifact = artifact(BootContract.REWRITE_ABI, "modules/main.patched.bin", "modules/main.fixups.tsv")
+            .replace("\"romfs\": \"romfs\"", "\"romfs\": \"romfs.std\"");
+        File imageRoot = valid();
+        replaceArtifact(imageRoot, imageArtifact);
+        new File(imageRoot, revRel + "romfs/readme.txt").delete(); new File(imageRoot, revRel + "romfs").delete();
+        write(imageRoot, revRel + "romfs.std", new byte[64]);
+        check(BootContract.open(imageRoot).modules.size() == 1, "romfs.std image layout is accepted");
+        File imageMissing = valid();
+        replaceArtifact(imageMissing, imageArtifact);
+        expectBad(imageMissing, "artifact names romfs.std but the revision has only romfs/");
+
         File extended = valid();
         String extension = "\"extensions\": {\"org.example.build\": {\"note\": \"optional\"}}, \"requiredFeatures\": [], ";
         replaceArtifact(extended, artifact(BootContract.REWRITE_ABI, "modules/main.patched.bin", "modules/main.fixups.tsv")

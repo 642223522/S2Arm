@@ -22,6 +22,8 @@ case " $* " in
   *" metal-header "*) : > "$out"; exit 0;;
   *" metallib "*) printf lib > "$out"; exit 0;;
 esac
+# 开编前试编（Build.cs Metal.Probe，s2a_probe.metal）不算逐支编译：本单测只数着色器逐支编几次（11-17：试编那 1 次被计进来，期望 20 / 12 实得 21 / 13）
+case " $* " in *"s2a_probe.metal"*) printf air > "$out"; exit 0;; esac
 echo compile >> "$FAKE_LOG"
 case " $* " in *" -include-pch "*) [ "$PCH_BREAKS" = 1 ] && { echo "error: PCH was compiled with module cache path 'A', but the path is currently 'B'" >&2; exit 1; };; esac
 printf air > "$out"; exit 0

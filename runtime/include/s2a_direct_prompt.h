@@ -14,18 +14,23 @@ extern "C" {
 #define S2A_DPROMPT_SAVE_ATOMIC_MAC_EN "This disk can't save safely: move the game library to this Mac's disk. Force-quitting while saving may leave a half-written save."
 #define S2A_DPROMPT_SAVE_ATOMIC_IOS   "当前存储不能安全保存：保存过程中强退，可能留下写了一半的存档。请等游戏存完再退出。"
 #define S2A_DPROMPT_SAVE_ATOMIC_IOS_EN "This storage can't save safely: force-quitting while saving may leave a half-written save. Wait for the game to finish saving before you quit."
-// 触屏提示（ios/vpad.m，11-04 维护者：脑锻炼标题页只认触屏；11-09 维护者 删掉屏幕上方的「键 / 触」切换钮，切换在齿轮菜单「按键布局」）：首次提示条带「切到触屏」一点就切
+// 键位映射读不懂（11-17 维护者：校验不过不再拒启）：这局用默认键位照常开始，提示条点名原因（%s = runtime/src/input_config.c 的英文原因）
+#define S2A_DPROMPT_INPUT_BAD_TITLE    "键位设置没读懂"
+#define S2A_DPROMPT_INPUT_BAD_TITLE_EN "Couldn't read the button settings"
+#define S2A_DPROMPT_INPUT_BAD_MAC      "这局先用默认键位照常开始（%s）。回到 S2Arm 的按键设置里重新保存一次就能恢复。"
+#define S2A_DPROMPT_INPUT_BAD_MAC_EN   "This game starts with the default buttons (%s). Save your button settings again in S2Arm to restore them."
+// 触屏提示（ios/vpad.m，11-04 维护者：脑锻炼标题页只认触屏；11-09 维护者 删掉屏幕上方的「键 / 触」切换钮）：首次提示条带「切到触屏」一点就切，只这一局；回按键在齿轮菜单第一项「显示按键」
 #define S2A_DPROMPT_VPAD_TOUCH_TITLE   "这款游戏能用触屏"
 #define S2A_DPROMPT_VPAD_TOUCH_TITLE_EN "This game supports touch"
-#define S2A_DPROMPT_VPAD_TOUCH_BODY    "要点游戏自己的菜单，就切到触屏。左上角齿轮 → 按键布局，随时可以切回按键。"
-#define S2A_DPROMPT_VPAD_TOUCH_BODY_EN "To tap the game's own menus, switch to touch. You can switch back to buttons anytime from the gear in the top-left corner → Button layout."
+#define S2A_DPROMPT_VPAD_TOUCH_BODY    "要点游戏自己的菜单，就切到触屏，只这一局有效；想一直用触屏去设置里改。左上角齿轮 → 显示按键，随时可以切回按键。"
+#define S2A_DPROMPT_VPAD_TOUCH_BODY_EN "To tap the game's own menus, switch to touch. This lasts for this session only; to always use touch, change it in Settings. You can switch back to buttons anytime from the gear in the top-left corner → Show Buttons."
 #define S2A_DPROMPT_VPAD_TOUCH_ACCEPT  "切到触屏"
 #define S2A_DPROMPT_VPAD_TOUCH_ACCEPT_EN "Switch to touch"
 #define S2A_DPROMPT_VPAD_TOUCH_DECLINE "先不用"
 #define S2A_DPROMPT_VPAD_TOUCH_DECLINE_EN "Not now"
-// 游戏声明触屏配置时自动切到仅触屏（ios/touch_config.m，只改本次运行）：提示一条，指齿轮菜单「按键布局」
-#define S2A_DPROMPT_VPAD_TOUCH_AUTO    "已切到触屏操作：这款游戏用触屏点菜单。左上角齿轮 → 按键布局，可以切回按键。"
-#define S2A_DPROMPT_VPAD_TOUCH_AUTO_EN "Switched to touch controls: this game uses touch for its menus. You can switch back to buttons from the gear in the top-left corner → Button layout."
+// 游戏声明触屏配置时自动切到仅触屏（ios/touch_config.m，只改本次运行）：提示一条，指齿轮菜单「显示按键」
+#define S2A_DPROMPT_VPAD_TOUCH_AUTO    "已切到触屏操作：这款游戏用触屏点菜单。左上角齿轮 → 显示按键，可以切回按键。"
+#define S2A_DPROMPT_VPAD_TOUCH_AUTO_EN "Switched to touch controls: this game uses touch for its menus. You can switch back to buttons from the gear in the top-left corner → Show Buttons."
 // 切换游戏（一个进程只跑一款）：iOS 多款容器在局内设置页 / 齿轮菜单点它，确认后照退出流程存档收尾、结束进程，再点开 App 是游戏库（ios/app.m）；
 //   Mac 宿主菜单栏点它（不二次确认，同菜单栏「退出」），收尾后启动器回到游戏库（macos/front_mac.m → pack/jobs/build.py launch → 启动器）。取消按钮用 S2A_DPROMPT_HOME_QUIT_DECLINE
 #define S2A_DPROMPT_SWITCH_GAME_TITLE  "切换游戏"
@@ -38,6 +43,24 @@ extern "C" {
 #define S2A_DPROMPT_SWITCH_GAME_BODY_EN "Save in the game first. When you confirm, this game ends and S2Arm closes; open S2Arm again to return to the game library and pick another game. Quitting waits for the game to finish writing its save; progress you haven't saved in the game will be lost."
 #define S2A_DPROMPT_SWITCH_GAME_ACCEPT "已存档，切换"
 #define S2A_DPROMPT_SWITCH_GAME_ACCEPT_EN "Saved, switch"
+// 档位梯子压回 30 帧（#1688，macos/front_mac.m s2a_ios_fps_capped；iOS 用 ios/l10n 的 app.fpsCap.*）：说清这一局为什么回原帧率，给「再试 60 帧」
+#define S2A_DPROMPT_FPS_CAP_TITLE   "60 帧"
+#define S2A_DPROMPT_FPS_CAP_TITLE_EN "60 FPS"
+#define S2A_DPROMPT_FPS_CAP_BODY    "这一局跑不稳 60 帧，已先回到原生帧率；下次开游戏会重新从 60 帧开始。"
+#define S2A_DPROMPT_FPS_CAP_BODY_EN "This session can't hold 60 FPS steadily, so the game is back at its native frame rate for now. It starts at 60 FPS again the next time you open the game."
+#define S2A_DPROMPT_FPS_CAP_RETRY   "改回 60 帧，本局不再自动降"
+#define S2A_DPROMPT_FPS_CAP_RETRY_EN "Back to 60 FPS, no auto-drop this session"
+#define S2A_DPROMPT_FPS_CAP_FAST    "这款游戏开 60 帧会加速，已保持 30 帧。"
+#define S2A_DPROMPT_FPS_CAP_FAST_EN "This game runs too fast at 60 FPS, so it stays at 30 FPS."
+#define S2A_DPROMPT_FPS_CAP_BACK    "60 帧已恢复。"
+#define S2A_DPROMPT_FPS_CAP_BACK_EN "60 FPS is back."
+// 麦克风不可用（#2151，macos/front_mac.m s2a_mic_notice；iOS 用 ios/l10n 的 app.mic.*）：游戏要用麦克风（如吹奏 / 哼唱识别），收不到声音时说清原因与去处
+#define S2A_DPROMPT_MIC_TITLE       "麦克风"
+#define S2A_DPROMPT_MIC_TITLE_EN    "Microphone"
+#define S2A_DPROMPT_MIC_DENIED      "游戏想用麦克风，但 S2Arm 没有麦克风权限，游戏只会收到静音。可到「系统设置 › 隐私与安全性 › 麦克风」打开 S2Arm，重开游戏后生效。"
+#define S2A_DPROMPT_MIC_DENIED_EN   "The game wants the microphone, but S2Arm has no microphone permission, so the game only hears silence. Turn on S2Arm in System Settings › Privacy & Security › Microphone, then reopen the game."
+#define S2A_DPROMPT_MIC_FAILED      "游戏想用麦克风，但这台电脑上没有能用的收音设备，游戏只会收到静音。"
+#define S2A_DPROMPT_MIC_FAILED_EN   "The game wants the microphone, but no usable input device was found on this computer, so the game only hears silence."
 // 实体手柄退出游戏（#276，macos/front_mac.m；按住 Home 2 秒或「+」「-」同按 2 秒弹出，按 A 退出、按 B 回到游戏）
 #define S2A_DPROMPT_HOME_QUIT_TITLE   "退出游戏？"
 #define S2A_DPROMPT_HOME_QUIT_TITLE_EN "Quit game?"

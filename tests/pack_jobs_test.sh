@@ -4,6 +4,8 @@
 #   名单线 lists/save-zero 改 pack/jobs/saves.py 判 tool 档、test_saves.py 没进门禁）：bash tests/pack_jobs_test.sh
 # 选测：GATE_CHANGED（门禁给的改动清单）里只有 pack/jobs/<模块>.py → 只跑 import / 点名了这些模块的 pack/jobs/tests/test_*.py；
 #   改到 pack/jobs/tests/ 下的文件（含 jobcase.py）、或没给 GATE_CHANGED → 全跑（235 个约 55 秒）
+# 本机自测排在门禁后面：不在门禁里跑（没有 GATE2_PAR）就把自己降到 nice 15，子进程继承；门禁步的优先级由门禁自己定
+[ -n "${GATE2_PAR:-}" ] || renice 15 -p $$ > /dev/null 2>&1 || true
 set -u; cd "$(dirname "$0")/.." || exit 1
 mods=(); all=; [ -n "${GATE_CHANGED:-}" ] || all=1
 for f in ${GATE_CHANGED:-}; do case $f in

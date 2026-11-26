@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 S2Arm contributors
 """launchers/shared/pil_prune.py：随包 Pillow 瘦身。假 site-packages，期望手写：
-  ① 删 _avif / _imagingft / _imagingtk 三个扩展（.so / .pyd 都认），其余扩展与 .py 不动；
+  ① 删 _avif / _imagingtk 两个扩展（.so / .pyd 都认），其余扩展与 .py 不动；画字 _imagingft 留着（#1570：下游做包工具用 ImageFont）；
   ② 给了依赖函数：.dylibs 里没人引用的库删掉，且是传递的（只被删掉的库引用的库也删）；被留下的扩展引用的库保留；
   ③ 没给依赖函数（Windows）：不碰 .dylibs；没有 PIL 目录 → 空。"""
 import sys, tempfile, unittest
@@ -35,8 +35,8 @@ class Prune(unittest.TestCase):
         libs = ["libavif.dylib", "libfreetype.dylib", "libharfbuzz.dylib", "libbrotlidec.dylib", "libbrotlicommon.dylib", "libpng16.dylib", "libjpeg.dylib", "libz.dylib", "libwebp.dylib"]
         d = self.site(mods, libs)
         pil_prune.prune(d, lambda p: DEPS.get(p.name, []))
-        self.assertEqual(sorted(p.name for p in (d / "PIL").iterdir() if p.is_file()), ["Image.py", "_imaging.cpython-312-darwin.so", "_webp.cpython-312-darwin.so"])
-        self.assertEqual(sorted(p.name for p in (d / "PIL/.dylibs").iterdir()), ["libjpeg.dylib", "libwebp.dylib", "libz.dylib"])
+        self.assertEqual(sorted(p.name for p in (d / "PIL").iterdir() if p.is_file()), ["Image.py", "_imaging.cpython-312-darwin.so", "_imagingft.cpython-312-darwin.so", "_webp.cpython-312-darwin.so"])
+        self.assertEqual(sorted(p.name for p in (d / "PIL/.dylibs").iterdir()), ["libbrotlicommon.dylib", "libbrotlidec.dylib", "libfreetype.dylib", "libharfbuzz.dylib", "libjpeg.dylib", "libpng16.dylib", "libwebp.dylib", "libz.dylib"])
 
     def test_windows_no_deps(self):
         d = self.site(["_avif.cp312-win_amd64.pyd", "_imagingtk.cp312-win_amd64.pyd", "_imaging.cp312-win_amd64.pyd"], ["keep.dll"])

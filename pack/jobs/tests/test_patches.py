@@ -12,7 +12,7 @@ SDK = "A226048605D3597F90CB1067D141CD36647B90CD"
 
 
 class Ctx:
-    def __init__(self, root): self.private = root / "priv"; self.library = root / "lib"   # 游戏库：玩家导入的 mod 在 <库>/<款>/mods（fetch 带上 mod 代码补丁）
+    def __init__(self, root): self.private = root / "priv"; self.library = root / "lib"; self.work_root = root / "work"   # 游戏库：玩家导入的 mod 在 <库>/<款>/mods（fetch 带上 mod 代码补丁）
 
 
 def nso(path, bid_hex):
@@ -55,6 +55,17 @@ class PatchesTests(unittest.TestCase):
         if self._base_was is None: os.environ.pop("S2A_PATCH_BASE", None)
         else: os.environ["S2A_PATCH_BASE"] = self._base_was
         shutil.rmtree(self.t, ignore_errors=True)
+
+    def test_index_dirs_without_job_context(self):
+        # 期望手写：维护方出包机道（pack/orch/oneclick_win.py --patches）只给缓存根、不带作业层（没有游戏库 / 资源目录），收到的类与作业层 fetch 相同（fps / gfx / widescreen；
+        #   gfx 那条内容与条目不符不收，类目录仍按收下的条目建）；fps 索引里就是按主程序构建号要来的那份
+        import types
+        bare = types.SimpleNamespace(private=str(self.t / "lane"), r={})
+        dirs = patches.index_dirs(bare, dict(id=GID), str(self.exefs))
+        self.assertEqual(sorted(Path(d).name for d in dirs), sorted(Path(d).name for d in patches.fetch(self.c, dict(id=GID), str(self.exefs))))
+        fps = next(Path(d) for d in dirs if Path(d).name == "fps")
+        self.assertIn(hashlib.sha256(self.fps).hexdigest(), (fps / "INDEX.tsv").read_text(encoding="utf-8"))
+        self.assertTrue(str(fps).startswith(str(self.t / "lane")))
 
     def test_ios_package_leaves_out_graphics_patches(self):
         # 期望手写：同一份统一包，Mac 收 fps / widescreen / gfx 三类，iPhone（target="ios"）不收没写方向的 gfx（11-13「画面补丁 iOS 不进包」，旧包条目都没有 dir）
@@ -115,6 +126,27 @@ class PatchesTests(unittest.TestCase):
         patches.prepare(self.c, dict(id=GID), self.t, env)
         self.assertNotIn("S2A_PSO_SOURCES_EXTRA", env)
         self.assertFalse(d.exists())
+
+    def test_pso_sources_include_iphone_seen_first(self):
+        # 期望手写（11-20）：这款 games/<程序号>/seen/ 里有 iPhone 拉回的见过表（.tsv）→ S2A_PSO_SOURCES_EXTRA = seen 目录、云端种子目录，按这个先后；
+        #   seen 只有别的文件 / 没有 seen → 同原来只交云端目录；云端也没有、只有 seen → 只交 seen
+        import layout
+        seed = b"R\t" + b"00" * 432 + b"\n"
+        self.bundles[f"g/{GID}"].append(it(seed, "pso", "pso", "a.tsv", [GID], [], repo="S2Arm/pso-seeds"))
+        self.publish()
+        import cheats
+        real = cheats.main_build; cheats.main_build = lambda c, g: "FF1D1C05670DB602"; self.addCleanup(setattr, cheats, "main_build", real)
+        self.c.library = self.t / "lib"; self.c.engine = self.t / "engine"
+        seen = layout.path(self.c, GID, "seen"); seen.mkdir(parents=True, exist_ok=True); (seen / "notes.txt").write_text("x")
+        env = {}; patches.prepare(self.c, dict(id=GID), self.t, env)
+        cloud = env["S2A_PSO_SOURCES_EXTRA"]
+        self.assertNotIn(os.pathsep, cloud)                                   # seen 里没有 .tsv：只交云端
+        (seen / "phone1.tsv").write_text("S\t1111222233334444_b\t0\n")
+        env = {}; patches.prepare(self.c, dict(id=GID), self.t, env)
+        self.assertEqual(env["S2A_PSO_SOURCES_EXTRA"].split(os.pathsep), [str(seen), cloud])
+        self.bundles[f"g/{GID}"].pop(); self.publish()
+        env = {}; patches.prepare(self.c, dict(id=GID), self.t, env)
+        self.assertEqual(env["S2A_PSO_SOURCES_EXTRA"], str(seen))             # 云端撤了种子、本机见过表还在：只交 seen
 
     def test_cheat_rows(self):
         self.assertEqual(patches.cheat_rows(self.c, GID, {"FF1D1C05670DB602"}),

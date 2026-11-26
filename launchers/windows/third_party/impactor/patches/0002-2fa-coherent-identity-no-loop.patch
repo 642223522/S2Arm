@@ -1,0 +1,353 @@
+diff --git a/crates/plume_core/src/auth/account/login.rs b/crates/plume_core/src/auth/account/login.rs
+index c5bdc38..2687fd5 100644
+--- a/crates/plume_core/src/auth/account/login.rs
++++ b/crates/plume_core/src/auth/account/login.rs
+@@ -79,80 +79,8 @@ impl Account {
+             Error::AuthSrpWithMessage(0, format!("Failed to get Apple ID credentials: {}", e))
+         })?;
+ 
+-        let mut response = _self.login_email_pass(&username, &password).await?;
+-        // Cached so the caller can be offered an SMS fallback even when a trusted
+-        // device handled the push. Fetched lazily the first time 2FA is needed.
+-        let mut trusted_phone_numbers: Vec<TrustedPhoneNumber> = Vec::new();
+-
+-        loop {
+-            match response {
+-                LoginState::NeedsDevice2FA => {
+-                    response = _self.send_2fa_to_devices().await?;
+-                    if trusted_phone_numbers.is_empty() {
+-                        if let Ok(extras) = _self.get_auth_extras().await {
+-                            trusted_phone_numbers = extras.trusted_phone_numbers;
+-                        }
+-                    }
+-                }
+-                LoginState::Needs2FAVerification => {
+-                    if trusted_phone_numbers.is_empty() {
+-                        if let Ok(extras) = _self.get_auth_extras().await {
+-                            trusted_phone_numbers = extras.trusted_phone_numbers;
+-                        }
+-                    }
+-                    let request = TwoFactorRequest {
+-                        method: TwoFactorMethod::Device,
+-                        trusted_phone_numbers: trusted_phone_numbers.clone(),
+-                    };
+-                    match tfa_closure(request).map_err(|e| {
+-                        Error::AuthSrpWithMessage(0, format!("Failed to get 2FA code: {}", e))
+-                    })? {
+-                        TwoFactorAction::SubmitCode(code) => {
+-                            response = _self.verify_2fa(code).await?
+-                        }
+-                        TwoFactorAction::SendSms(id) => {
+-                            response = _self.send_sms_2fa_to_devices(id).await?
+-                        }
+-                    }
+-                }
+-                LoginState::NeedsSMS2FA => {
+-                    if trusted_phone_numbers.is_empty() {
+-                        if let Ok(extras) = _self.get_auth_extras().await {
+-                            trusted_phone_numbers = extras.trusted_phone_numbers;
+-                        }
+-                    }
+-                    let id = trusted_phone_numbers.first().map(|p| p.id).unwrap_or(1);
+-                    response = _self.send_sms_2fa_to_devices(id).await?;
+-                }
+-                LoginState::NeedsSMS2FAVerification(body) => {
+-                    let request = TwoFactorRequest {
+-                        method: TwoFactorMethod::Sms,
+-                        trusted_phone_numbers: trusted_phone_numbers.clone(),
+-                    };
+-                    match tfa_closure(request).map_err(|e| {
+-                        Error::AuthSrpWithMessage(0, format!("Failed to get SMS 2FA code: {}", e))
+-                    })? {
+-                        TwoFactorAction::SubmitCode(code) => {
+-                            response = _self.verify_sms_2fa(code, body).await?
+-                        }
+-                        TwoFactorAction::SendSms(id) => {
+-                            response = _self.send_sms_2fa_to_devices(id).await?
+-                        }
+-                    }
+-                }
+-                LoginState::NeedsLogin => {
+-                    response = _self.login_email_pass(&username, &password).await?
+-                }
+-                LoginState::LoggedIn => return Ok(_self),
+-                LoginState::NeedsExtraStep(step) => {
+-                    if _self.get_pet().is_some() {
+-                        return Ok(_self);
+-                    } else {
+-                        return Err(Error::ExtraStep(step));
+-                    }
+-                }
+-            }
+-        }
++        drive_login(&mut _self, &username, &password, &tfa_closure).await?;
++        Ok(_self)
+     }
+ 
+     pub async fn login_email_pass(
+@@ -175,7 +103,7 @@ impl Account {
+         gsa_headers.insert("Accept", HeaderValue::from_str("*/*").unwrap());
+         gsa_headers.insert(
+             "User-Agent",
+-            HeaderValue::from_str("akd/1.0 CFNetwork/978.0.7 Darwin/18.7.0").unwrap(),
++            HeaderValue::from_str(crate::auth::anisette_data::apple_user_agent()).unwrap(),
+         );
+         gsa_headers.insert(
+             "X-MMe-Client-Info",
+@@ -337,3 +265,125 @@ where
+         r => r,
+     }
+ }
++
++
++/// S2Arm: the steps of one Apple ID login, so the state machine below can be checked with a fake (patches/check/).
++#[allow(async_fn_in_trait)]
++pub trait LoginSteps {
++    async fn login_email_pass(&mut self, username: &str, password: &str) -> Result<LoginState, Error>;
++    async fn send_2fa_to_devices(&self) -> Result<LoginState, Error>;
++    async fn trusted_phone_numbers(&self) -> Vec<TrustedPhoneNumber>;
++    async fn verify_2fa(&self, code: String) -> Result<LoginState, Error>;
++    async fn send_sms_2fa_to_devices(&self, phone_id: u32) -> Result<LoginState, Error>;
++    async fn verify_sms_2fa(&self, code: String, body: crate::auth::VerifyBody) -> Result<LoginState, Error>;
++    fn has_pet(&self) -> bool;
++}
++
++impl LoginSteps for Account {
++    async fn login_email_pass(&mut self, username: &str, password: &str) -> Result<LoginState, Error> {
++        Account::login_email_pass(self, username, password).await
++    }
++    async fn send_2fa_to_devices(&self) -> Result<LoginState, Error> {
++        Account::send_2fa_to_devices(self).await
++    }
++    async fn trusted_phone_numbers(&self) -> Vec<TrustedPhoneNumber> {
++        self.get_auth_extras().await.map(|e| e.trusted_phone_numbers).unwrap_or_default()
++    }
++    async fn verify_2fa(&self, code: String) -> Result<LoginState, Error> {
++        Account::verify_2fa(self, code).await
++    }
++    async fn send_sms_2fa_to_devices(&self, phone_id: u32) -> Result<LoginState, Error> {
++        Account::send_sms_2fa_to_devices(self, phone_id).await
++    }
++    async fn verify_sms_2fa(&self, code: String, body: crate::auth::VerifyBody) -> Result<LoginState, Error> {
++        Account::verify_sms_2fa(self, code, body).await
++    }
++    fn has_pet(&self) -> bool {
++        self.get_pet().is_some()
++    }
++}
++
++/// Marker in the error text when Apple accepted a code and then asked for 2FA again (the launcher maps it to a player message).
++pub const REPEAT_2FA_MARKER: &str = "S2A_2FA_REPEAT";
++
++/// The login state machine. S2Arm change: after Apple accepts a 2FA code (device or SMS), log in again at most once to pick up
++/// the trusted session; if that login asks for 2FA again, stop with REPEAT_2FA_MARKER instead of asking the player for codes
++/// forever (upstream looped: verify → NeedsLogin → secondaryAuth → new SMS → …).
++pub async fn drive_login<S: LoginSteps, G: Fn(TwoFactorRequest) -> Result<TwoFactorAction, String>>(
++    s: &mut S,
++    username: &str,
++    password: &str,
++    tfa_closure: &G,
++) -> Result<(), Error> {
++    let mut response = s.login_email_pass(username, password).await?;
++    // Cached so the caller can be offered an SMS fallback even when a trusted
++    // device handled the push. Fetched lazily the first time 2FA is needed.
++    let mut trusted_phone_numbers: Vec<TrustedPhoneNumber> = Vec::new();
++    let mut code_accepted = false;
++    let repeat = || {
++        Error::AuthSrpWithMessage(
++            -2,
++            format!("{REPEAT_2FA_MARKER}: Apple accepted the verification code but asked for another one on the next sign-in"),
++        )
++    };
++
++    loop {
++        match response {
++            LoginState::NeedsDevice2FA | LoginState::Needs2FAVerification | LoginState::NeedsSMS2FA if code_accepted => {
++                return Err(repeat());
++            }
++            LoginState::NeedsDevice2FA => {
++                response = s.send_2fa_to_devices().await?;
++                if trusted_phone_numbers.is_empty() {
++                    trusted_phone_numbers = s.trusted_phone_numbers().await;
++                }
++            }
++            LoginState::Needs2FAVerification => {
++                if trusted_phone_numbers.is_empty() {
++                    trusted_phone_numbers = s.trusted_phone_numbers().await;
++                }
++                let request = TwoFactorRequest {
++                    method: TwoFactorMethod::Device,
++                    trusted_phone_numbers: trusted_phone_numbers.clone(),
++                };
++                match tfa_closure(request).map_err(|e| {
++                    Error::AuthSrpWithMessage(0, format!("Failed to get 2FA code: {}", e))
++                })? {
++                    TwoFactorAction::SubmitCode(code) => response = s.verify_2fa(code).await?,
++                    TwoFactorAction::SendSms(id) => response = s.send_sms_2fa_to_devices(id).await?,
++                }
++            }
++            LoginState::NeedsSMS2FA => {
++                if trusted_phone_numbers.is_empty() {
++                    trusted_phone_numbers = s.trusted_phone_numbers().await;
++                }
++                let id = trusted_phone_numbers.first().map(|p| p.id).unwrap_or(1);
++                response = s.send_sms_2fa_to_devices(id).await?;
++            }
++            LoginState::NeedsSMS2FAVerification(body) => {
++                let request = TwoFactorRequest {
++                    method: TwoFactorMethod::Sms,
++                    trusted_phone_numbers: trusted_phone_numbers.clone(),
++                };
++                match tfa_closure(request).map_err(|e| {
++                    Error::AuthSrpWithMessage(0, format!("Failed to get SMS 2FA code: {}", e))
++                })? {
++                    TwoFactorAction::SubmitCode(code) => response = s.verify_sms_2fa(code, body).await?,
++                    TwoFactorAction::SendSms(id) => response = s.send_sms_2fa_to_devices(id).await?,
++                }
++            }
++            LoginState::NeedsLogin => {
++                // only verify_2fa / verify_sms_2fa return NeedsLogin: a code was just accepted
++                if code_accepted {
++                    return Err(repeat());
++                }
++                code_accepted = true;
++                response = s.login_email_pass(username, password).await?
++            }
++            LoginState::LoggedIn => return Ok(()),
++            LoginState::NeedsExtraStep(step) => {
++                return if s.has_pet() { Ok(()) } else { Err(Error::ExtraStep(step)) };
++            }
++        }
++    }
++}
+diff --git a/crates/plume_core/src/auth/account/mod.rs b/crates/plume_core/src/auth/account/mod.rs
+index f77a8ec..6c54e42 100644
+--- a/crates/plume_core/src/auth/account/mod.rs
++++ b/crates/plume_core/src/auth/account/mod.rs
+@@ -1,5 +1,6 @@
+ mod login;
+-pub use login::login_with_anisette_fallback;   // S2Arm: anisette v3 fallback on SRP -23782
++pub use login::login_with_anisette_fallback;
++pub use login::{LoginSteps, drive_login, REPEAT_2FA_MARKER};   // S2Arm: 2FA accepted → re-login at most once   // S2Arm: anisette v3 fallback on SRP -23782
+ mod token;
+ mod two_factor_auth;
+ 
+diff --git a/crates/plume_core/src/auth/account/token.rs b/crates/plume_core/src/auth/account/token.rs
+index cb5d22e..b4e8b99 100644
+--- a/crates/plume_core/src/auth/account/token.rs
++++ b/crates/plume_core/src/auth/account/token.rs
+@@ -35,7 +35,7 @@ impl Account {
+         gsa_headers.insert("Accept", HeaderValue::from_str("*/*").unwrap());
+         gsa_headers.insert(
+             "User-Agent",
+-            HeaderValue::from_str("akd/1.0 CFNetwork/978.0.7 Darwin/18.7.0").unwrap(),
++            HeaderValue::from_str(crate::auth::anisette_data::apple_user_agent()).unwrap(),
+         );
+         gsa_headers.insert(
+             "X-MMe-Client-Info",
+diff --git a/crates/plume_core/src/auth/anisette_data.rs b/crates/plume_core/src/auth/anisette_data.rs
+index a7d54a5..f4070cc 100644
+--- a/crates/plume_core/src/auth/anisette_data.rs
++++ b/crates/plume_core/src/auth/anisette_data.rs
+@@ -51,21 +51,15 @@ impl AnisetteData {
+         let mut headers = self.base_headers.clone();
+         let old_client_info = headers.remove("X-Mme-Client-Info");
+ 
++        // S2Arm: Apple only trusts a machine whose model / OS / build hang together; anisette servers report a stale
++        // "<MacBookPro13,3> <Mac OS X;10.12.6;16G29>" (or macOS 13.1), and with it Apple accepts a 2FA code and then asks
++        // for another one on the next sign-in, forever. Every header sent to Apple uses apple_client_info() instead
++        // (the provisioning with the anisette server keeps the server's own value, so signed-in sessions stay valid).
+         if client_info {
+-            let client_info = match old_client_info {
+-                Some(v) => {
+-                    let temp = v.as_str();
+-
+-                    temp.replace(
+-                        temp.split('<').nth(3).unwrap().split('>').nth(0).unwrap(),
+-                        "com.apple.AuthKit/1 (com.apple.akd/1.0)",
+-                    )
+-                }
+-                None => {
+-                    return headers;
+-                }
+-            };
+-            headers.insert("X-Mme-Client-Info".to_owned(), client_info.to_owned());
++            if old_client_info.is_none() {
++                return headers;
++            }
++            headers.insert("X-Mme-Client-Info".to_owned(), apple_client_info().to_owned());
+         }
+ 
+         if app_info {
+@@ -105,3 +99,53 @@ impl AnisetteData {
+             .ok_or(Error::DeveloperSessionRequestFailed)
+     }
+ }
++
++
++/// S2Arm: the machine identity sent to Apple (model, OS, build), one coherent triple for the whole login.
++/// macOS: this Mac's own model and OS (what Apple's own AuthKit sends); elsewhere a fixed real Mac.
++pub fn apple_client_info() -> &'static str {
++    &machine().0
++}
++
++/// S2Arm: akd's User-Agent for the same machine (its CFNetwork and Darwin versions).
++pub fn apple_user_agent() -> &'static str {
++    &machine().1
++}
++
++// One real Mac, all values read together off it on 11-20; used off macOS or when this Mac's values can't be read.
++const PINNED: [&str; 5] = ["Mac17,6", "27.2.1", "26B131", "3896.200.61", "27.2.0"];
++
++fn machine() -> &'static (String, String) {
++    static V: std::sync::OnceLock<(String, String)> = std::sync::OnceLock::new();
++    V.get_or_init(|| {
++        let [model, os, build, cfnetwork, darwin] = read_this_mac().unwrap_or(PINNED.map(String::from));
++        (
++            format!("<{model}> <Mac OS X;{os};{build}> <com.apple.AuthKit/1 (com.apple.akd/1.0)>"),
++            format!("akd/1.0 CFNetwork/{cfnetwork} Darwin/{darwin}"),
++        )
++    })
++}
++
++#[cfg(target_os = "macos")]
++fn read_this_mac() -> Option<[String; 5]> {
++    let run = |cmd: &str, args: &[&str]| -> Option<String> {
++        let o = std::process::Command::new(cmd).args(args).output().ok()?;
++        let v = String::from_utf8(o.stdout).ok()?.trim().to_string();
++        (o.status.success() && !v.is_empty() && !v.contains(['<', '>', ';', '\n', ' '])).then_some(v)
++    };
++    let cf: plist::Dictionary =
++        plist::from_file("/System/Library/Frameworks/CFNetwork.framework/Resources/Info.plist").ok()?;
++    let cfnetwork = cf.get("CFBundleVersion")?.as_string()?.to_string();
++    Some([
++        run("/usr/sbin/sysctl", &["-n", "hw.model"])?,
++        run("/usr/bin/sw_vers", &["-productVersion"])?,
++        run("/usr/bin/sw_vers", &["-buildVersion"])?,
++        cfnetwork,
++        run("/usr/bin/uname", &["-r"])?,
++    ])
++}
++
++#[cfg(not(target_os = "macos"))]
++fn read_this_mac() -> Option<[String; 5]> {
++    None
++}
+diff --git a/crates/plume_core/src/auth/mod.rs b/crates/plume_core/src/auth/mod.rs
+index 8b5b711..9ce3a71 100644
+--- a/crates/plume_core/src/auth/mod.rs
++++ b/crates/plume_core/src/auth/mod.rs
+@@ -137,6 +137,13 @@ pub struct VerifyBody {
+     security_code: Option<VerifyCode>,
+ }
+ 
++impl VerifyBody {
++    /// S2Arm: the body for "send an SMS to this trusted phone number" (also lets patches/check/ build the state)
++    pub fn sms(phone_id: u32) -> Self {
++        VerifyBody { phone_number: PhoneNumber { id: phone_id }, mode: "sms".to_string(), security_code: None }
++    }
++}
++
+ #[repr(C)]
+ #[derive(Deserialize, Clone, Debug)]
+ #[serde(rename_all = "camelCase")]

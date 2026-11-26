@@ -35,12 +35,25 @@ static void one(NVNdevice *dev, int flags, int none, const char *what) {
     API(nvnBufferFinalize)(&buf); API(nvnMemoryPoolFinalize)(&pool); free(mem);
     printf("✓ %s\n", what);
 }
+// 空池（D-B3PR）：游戏拿空池调取值入口，宿主不解引用、回 0 / NULL；空池建缓冲回失败。期望按「宿主不能先崩」手写
+static void null_pool(NVNdevice *dev) {
+    CHECK(API(nvnMemoryPoolGetFlags)(NULL) == 0, "空池 GetFlags 应回 0");
+    CHECK(API(nvnMemoryPoolGetSize)(NULL) == 0, "空池 GetSize 应回 0");
+    CHECK(API(nvnMemoryPoolGetBufferAddress)(NULL) == 0, "空池 GetBufferAddress 应回 0");
+    CHECK(API(nvnMemoryPoolMap)(NULL) == NULL, "空池 Map 应回 NULL");
+    NVNbuffer buf; NVNbufferBuilder bb; memset(&buf, 0, sizeof buf); memset(&bb, 0, sizeof bb);
+    API(nvnBufferBuilderSetDefaults)(&bb); API(nvnBufferBuilderSetDevice)(&bb, dev); API(nvnBufferBuilderSetStorage)(&bb, NULL, 0, 0x170);
+    CHECK(!API(nvnBufferInitialize)(&buf, &bb), "空池建缓冲应回失败");
+    CHECK(API(nvnBufferGetAddress)(&buf) == 0 && API(nvnBufferMap)(&buf) == NULL, "没建成的缓冲取地址 / 映射回空");
+    printf("✓ 空池：取值入口回 0 / NULL，宿主不崩\n");
+}
 int main(void) {
     NVNdevice dev; NVNdeviceBuilder db; memset(&dev, 0, sizeof dev); memset(&db, 0, sizeof db);
     API(nvnDeviceBuilderSetDefaults)(&db); if (!API(nvnDeviceInitialize)(&dev, &db)) { fprintf(stderr, "FAIL 设备初始化\n"); return 1; }
     one(&dev, NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS | NVN_MEMORY_POOL_FLAGS_GPU_CACHED, 1, "CPU 不可访问（0x21，同建池缺省）：两个 Map 都是 NULL");
     one(&dev, NVN_MEMORY_POOL_FLAGS_CPU_CACHED | NVN_MEMORY_POOL_FLAGS_GPU_CACHED, 0, "CPU 带缓存（0x24）：池 Map = 存储、缓冲 Map = 存储 + 偏移");
     one(&dev, NVN_MEMORY_POOL_FLAGS_CPU_UNCACHED | NVN_MEMORY_POOL_FLAGS_GPU_CACHED, 0, "CPU 不经缓存（0x22）：同上");
+    null_pool(&dev);
     // 池没有存储（建池时没给 Storage）→ BufferInitialize 回 0；游戏不看返回值照样 Map / 取地址（11-14 D-MDVK）。期望：Map 回 NULL、地址回 0、宿主不崩。
     //   反证：去掉 hle_nvn.c 的 buf_dead → 这里解引用空池，进程段错误
     {
@@ -66,6 +79,29 @@ int main(void) {
         API(nvnTextureFinalize)(&tex); API(nvnTextureFinalize)(&tex);
         API(nvnBufferFinalize)(&buf);
         checks++; printf("✓ 没初始化过的缓冲刷新 / 作废、池刷新、池收尾两次、纹理收尾两次：不崩\n");
+    }
+    // 11-16 D-XDQS：缓冲 Finalize 之后游戏仍取地址（真驱动 Finalize 不清对象里存的地址，照样回原值）。期望按真驱动语义：池还活着时 Finalize 后
+    //   GetAddress = 原地址、Map = 原映射；池也 Finalize 了 → 回 0 / NULL（不解引用）；Finalize 两次不崩。反证：原先 Finalize 把魔数写 0 → 这里回 0，游戏把 0 + 偏移当地址
+    {
+        void *mem = NULL; CHECK(posix_memalign(&mem, 65536, POOL) == 0, "分配存储"); memset(mem, 0, POOL);
+        NVNmemoryPool pool; NVNmemoryPoolBuilder pb; memset(&pool, 0, sizeof pool); memset(&pb, 0, sizeof pb);
+        API(nvnMemoryPoolBuilderSetDefaults)(&pb); API(nvnMemoryPoolBuilderSetDevice)(&pb, &dev);
+        API(nvnMemoryPoolBuilderSetStorage)(&pb, mem, POOL); API(nvnMemoryPoolBuilderSetFlags)(&pb, NVN_MEMORY_POOL_FLAGS_CPU_CACHED | NVN_MEMORY_POOL_FLAGS_GPU_CACHED);
+        CHECK(API(nvnMemoryPoolInitialize)(&pool, &pb), "池初始化");
+        NVNbuffer buf; NVNbufferBuilder bb; memset(&buf, 0, sizeof buf); memset(&bb, 0, sizeof bb);
+        API(nvnBufferBuilderSetDefaults)(&bb); API(nvnBufferBuilderSetDevice)(&bb, &dev); API(nvnBufferBuilderSetStorage)(&bb, &pool, OFF, LEN);
+        CHECK(API(nvnBufferInitialize)(&buf, &bb), "缓冲初始化");
+        NVNbufferAddress ba0 = API(nvnBufferGetAddress)(&buf); void *bm0 = API(nvnBufferMap)(&buf);
+        API(nvnBufferFinalize)(&buf);
+        NVNbufferAddress ba1 = API(nvnBufferGetAddress)(&buf); void *bm1 = API(nvnBufferMap)(&buf);
+        CHECK(ba0 && ba1 == ba0 && bm1 == bm0, "Finalize 后池还活着：地址应 %#llx（得 %#llx）、Map 应 %p（得 %p）", (unsigned long long)ba0, (unsigned long long)ba1, bm0, bm1);
+        API(nvnBufferFinalize)(&buf);
+        API(nvnMemoryPoolFinalize)(&pool);
+        NVNbufferAddress ba2 = API(nvnBufferGetAddress)(&buf); void *bm2 = API(nvnBufferMap)(&buf);
+        CHECK(ba2 == 0 && bm2 == NULL, "池也 Finalize 后：地址应 0（得 %#llx）、Map 应 NULL（得 %p）", (unsigned long long)ba2, bm2);
+        NVNbuffer zero; memset(&zero, 0, sizeof zero);
+        CHECK(API(nvnBufferGetAddress)(&zero) == 0, "从没初始化过（全零）的缓冲：地址应 0");
+        free(mem); printf("✓ 缓冲 Finalize 后池还活着取地址 / Map 回原值；池也收尾后回空；全零对象回空\n");
     }
     printf("✓ t_nvn_map_noaccess：%u 项全过\n", checks);
     return 0;

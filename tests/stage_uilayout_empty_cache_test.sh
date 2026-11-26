@@ -11,6 +11,7 @@ trap 'rm -rf "$T"' EXIT
 mkdir -p "$T/repo/pack" "$T/repo/graphics/widen/scan" "$T/current/exefs" "$T/current/romfs" "$T/source/romfs/Layout"
 cp "${STAGE:-$H/pack/stage_uilayout.sh}" "$T/repo/pack/stage_uilayout.sh"
 mkdir -p "$T/repo/graphics/nvn/tools" && cp "$H/graphics/nvn/tools/romfs_list.py" "$T/repo/graphics/nvn/tools/"   # 覆盖包目录名带原版盘点身份（审计 #1534 P1-54）
+mkdir -p "$T/repo/tools"; cp "$H/tools/pool_workers.py" "$T/repo/tools/"   # romfs_list / pak_crypto 经它取核数（#1332：核数唯一来源）
 cat > "$T/repo/pack/roots.sh" <<'SH'
 root_cur() { printf '%s\n' "$TEST_CURRENT"; }
 # Overlay application is covered separately by stage_uilayout_test.sh.

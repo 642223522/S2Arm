@@ -44,7 +44,7 @@ same = nz = fail = 0; miss, extra, bad = [], [], []
 for f in frags:
     b = open(f, 'rb').read(); out = ctypes.c_void_p(); err = ctypes.create_string_buffer(512)
     if xc(b, len(b), 0, ctypes.byref(out), err, 512): fail += 1; bad.append((f, err.value.decode()[:80])); continue
-    src = ctypes.cast(out, ctypes.c_char_p).value.decode(); fr(out)
+    src = ctypes.cast(out.value, ctypes.c_char_p).value.decode(); fr(out)
     a, c = spv_mask.get(f, -1), msl_mask(src)
     if a == c: same += 1; nz += a != 0
     elif c & ~a: extra.append((f, f'甲 {a:#x}', f'乙 {c:#x}'))

@@ -1,0 +1,96 @@
+{
+ "W1 没出包、Impactor 没随包、没连手机": [
+  {
+   "id": "package",
+   "ok": false,
+   "waiting": false,
+   "who": "app",
+   "action": "openExport",
+   "url": null
+  },
+  {
+   "id": "impactor",
+   "ok": false,
+   "waiting": false,
+   "who": "human",
+   "action": null,
+   "url": "https://github.com/claration/impactor/releases/tag/v2.7.3"
+  },
+  {
+   "id": "connected",
+   "ok": false,
+   "waiting": false,
+   "who": "human",
+   "action": null,
+   "url": null
+  }
+ ],
+ "W2 随包 Impactor 没登录": [
+  {
+   "id": "package",
+   "ok": true,
+   "waiting": false,
+   "who": "human",
+   "action": null,
+   "url": null
+  },
+  {
+   "id": "impactor",
+   "ok": true,
+   "waiting": false,
+   "who": "human",
+   "action": null,
+   "url": null
+  },
+  {
+   "id": "impactor_login",
+   "ok": false,
+   "waiting": false,
+   "who": "human",
+   "action": "openImpactor",
+   "url": null
+  },
+  {
+   "id": "connected",
+   "ok": true,
+   "waiting": false,
+   "who": "human",
+   "action": null,
+   "url": null
+  }
+ ],
+ "W3 证书模式：证书有问题、设备不在描述文件里": [
+  {
+   "id": "package",
+   "ok": true,
+   "waiting": false,
+   "who": "human",
+   "action": null,
+   "url": null
+  },
+  {
+   "id": "connected",
+   "ok": true,
+   "waiting": false,
+   "who": "human",
+   "action": null,
+   "url": null
+  },
+  {
+   "id": "devcert",
+   "ok": false,
+   "waiting": false,
+   "who": "human",
+   "action": "devCertSettings",
+   "url": null
+  },
+  {
+   "id": "devcertDevice",
+   "ok": false,
+   "waiting": false,
+   "who": "human",
+   "action": null,
+   "url": "https://developer.apple.com/account/resources/devices/list"
+  }
+ ]
+}

@@ -8,7 +8,10 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+// 深度 / 模板格式（含纯模板 S8_UINT）：决定用法（深度模板附件）与走深度模板路径。图像有哪些面看下面两个（#1581 O）。
 int nvn_vk_format_is_depth(VkFormat f);
+// 有深度面（S8_UINT 没有）。
+int nvn_vk_format_has_depth(VkFormat f);
 // 压缩块格式（BC/ASTC/ETC2）：视图格式覆盖不适用于它们。
 int nvn_vk_format_is_compressed(VkFormat f);
 // 压缩块格式的图像总字节数：按该格式自己的块宽高向上取整（ASTC 4x4…12x12、BC 4x4）。

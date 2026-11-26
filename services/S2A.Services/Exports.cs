@@ -228,8 +228,14 @@ namespace S2A.Services
         // remain observable. The legacy unmanaged Apple entry above retains its ABI.
         public static void Initialize(HostConfiguration configuration = null) => InitializeCore(configuration, session: false);
 
+        private static int _unhandledHooked;
         private static void InitializeCore(HostConfiguration configuration, bool session, Action<Exception> sessionFailure = null)
         {
+            // 未接住的托管异常完整落一行（11-21 D-B2Q6：哈迪斯托管堆顶满后崩，运行时只写出「Unhandled exception.」半行，异常类型和栈被并发的心跳日志冲掉）：
+            //   运行时自己写 stderr 前先经 Red 一次写出整段（类型、消息、栈），进诊断。只挂一次
+            if (Interlocked.Exchange(ref _unhandledHooked, 1) == 0)
+                AppDomain.CurrentDomain.UnhandledException += (_, e) =>
+                    Red.Report("服务层未接住的托管异常", (e.ExceptionObject as Exception)?.ToString() ?? e.ExceptionObject?.ToString() ?? "（无异常对象）", allowFailFast: false);
             if (!Native.Ready)
             {
                 if (configuration != null) throw new InvalidOperationException("Native provider must be bound before service initialization");
@@ -244,7 +250,9 @@ namespace S2A.Services
                 if (!System.IO.File.Exists(System.IO.Path.Combine(configuration.GameDirectory, "exefs", "main.npdm")) ||
                     !System.IO.File.Exists(System.IO.Path.Combine(configuration.GameDirectory, "ctl", "control.nacp")) ||
                     !(System.IO.Directory.Exists(System.IO.Path.Combine(configuration.GameDirectory, "romfs")) ||
-                      System.IO.File.Exists(System.IO.Path.Combine(configuration.GameDirectory, RomFsIndex.ImageName))))
+                      System.IO.File.Exists(System.IO.Path.Combine(configuration.GameDirectory, RomFsIndex.ImageName)) ||
+                      // 标准 RomFS 镜像 romfs.std（出包缺省不落散文件，8fe66d7fe；安卓包整份带它，Application.cs 起局按 StdOf 读）
+                      RomFsIndex.StdOf(System.IO.Path.Combine(configuration.GameDirectory, "romfs")) != null))
                     throw new InvalidOperationException("Validated game data requires NPDM, complete NACP and RomFS");
                 // Revision files may be content-pool symlinks. Validate the opened
                 // content, not FileInfo.Length (the symlink text length on Unix).
@@ -285,6 +293,17 @@ namespace S2A.Services
 
             string baseDir = configuration?.StateDirectory ?? Environment.GetEnvironmentVariable("S2A_RYU_DATA")
                 ?? System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Personal), "S2A", "ryujinx");
+            if (SnapSwitch.Any)   // 即时存档开着：服务层起来之前把开关转给音频两处（它们在 Ryujinx 里，不读环境变量、不另判）
+            {
+                SnapLog.DataRoot = baseDir;
+                Ryujinx.Horizon.Audio.AudioManagers.S2ASnapOn = true;
+                Ryujinx.Audio.Renderer.Server.AudioRenderSystem.S2ASnapOn = true;
+            }   // 即时存档：存档树的根以服务层实际用的为准（关着不碰 SnapLog，不触发它的静态初始化）
+
+            if (!OperatingSystem.IsWindows())   // 音频内存池挂着期间常驻物理内存（见 GuestMemory.AudioPoolResident）
+            {
+                Ryujinx.Audio.Renderer.Server.S2AAudioPoolResident.Hook = &GuestMemory.AudioPoolResident;
+            }
 
             var audio = new AudioPeakDriver(CreateAudioDriver());
             try
@@ -632,7 +651,8 @@ namespace S2A.Services
 
         internal static IHardwareDeviceDriver CreateAudioDriver()
         {
-            if (AudioFactory != null) return AudioFactory();
+            // 平台驱动包一层 AudioFallbackDriver：起不来 / 中途没了改无声输出、打一条红行，不结束游戏（AudioFallback.cs）
+            if (AudioFactory != null) return AudioFallbackDriver.Create(() => AudioFactory());
             Red.Report("声音输出工厂没有登记，使用哑设备", allowFailFast: false);
             return new DummyHardwareDeviceDriver();
         }

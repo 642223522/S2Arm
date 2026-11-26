@@ -406,8 +406,8 @@ static void *c_reader(void *arg) {
     }
     return NULL;
 }
-static int wait_acks(int req) {
-    for (int t = 0; t < 5000; t++) {
+static int wait_acks(int req) {   // 等全部读线程回执，兜底 30 秒（原 5 秒：负载高时读线程轮不上核就假红）；等不到返回 0，调用处判红
+    for (int t = 0; t < 30000; t++) {
         int all = 1; for (int i = 0; i < C_READERS; i++) if (atomic_load(&c_acked[i]) != req) all = 0;
         if (all) return 1;
         usleep(1000);

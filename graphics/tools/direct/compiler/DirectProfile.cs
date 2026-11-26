@@ -59,12 +59,15 @@ namespace S2A.DirectCompiler
         public readonly string RuntimeCompilerAbi;
         public readonly uint DirectAbi;
         public readonly Capabilities Caps;
+        // Translation may describe the guest's 48 KiB shared-memory contract;
+        // the physical limit remains separately in Caps for the spill decision.
+        public readonly Capabilities TranslationCaps;
         public readonly SupportLayout Support = SupportLayout.Compile();
 
-        private DirectProfile(string hash, string closure, string compilerAbi, uint directAbi, Capabilities caps)
+        private DirectProfile(string hash, string closure, string compilerAbi, uint directAbi, Capabilities caps, Capabilities translationCaps)
         {
             ProfileHash = hash; TranslatorClosure = closure; RuntimeCompilerAbi = compilerAbi;
-            DirectAbi = directAbi; Caps = caps;
+            DirectAbi = directAbi; Caps = caps; TranslationCaps = translationCaps;
         }
 
         public static DirectProfile Parse(JsonElement e, string where)
@@ -122,7 +125,12 @@ namespace S2A.DirectCompiler
                 "maximumUniformBuffersPerStage", "maximumStorageBuffersPerStage",
                 "maximumTexturesPerStage", "maximumImagesPerStage",
                 "maximumComputeSharedMemorySize", "maximumSupportedAnisotropy", "shaderSubgroupSize",
-                "storageBufferOffsetAlignment", "textureBufferOffsetAlignment", "gatherBiasPrecision", "maximumGpuMemory");
+                "storageBufferOffsetAlignment", "textureBufferOffsetAlignment", "gatherBiasPrecision", "maximumGpuMemory",
+                "maximumVertexOutputComponents", "maximumFragmentInputComponents");
+            int vertexOutput = caps.TryGetProperty("maximumVertexOutputComponents", out _)
+                ? JsonStrict.Int(caps, "maximumVertexOutputComponents", cw, 0, int.MaxValue) : 0;
+            int fragmentInput = caps.TryGetProperty("maximumFragmentInputComponents", out _)
+                ? JsonStrict.Int(caps, "maximumFragmentInputComponents", cw, 0, int.MaxValue) : 0;
             string memory = JsonStrict.String(caps, "memoryType", cw, 31);
             SystemMemoryType memoryType = memory switch
             {
@@ -132,7 +140,7 @@ namespace S2A.DirectCompiler
                 "backend" => SystemMemoryType.BackendManaged,
                 _ => throw new DirectCompileException("UNSUPPORTED_PROFILE", cw + ".memoryType is unknown"),
             };
-            var parsed = new Capabilities(
+            Capabilities BuildCaps(int sharedLimit) => new Capabilities(
                 api: TargetApi.Vulkan,
                 vendorName: JsonStrict.String(caps, "vendorName", cw, 127),
                 memoryType: memoryType,
@@ -189,7 +197,7 @@ namespace S2A.DirectCompiler
                 maximumStorageBuffersPerStage: JsonStrict.UInt32(caps, "maximumStorageBuffersPerStage", cw, 0, 4096),
                 maximumTexturesPerStage: JsonStrict.UInt32(caps, "maximumTexturesPerStage", cw, 0, 65536),
                 maximumImagesPerStage: JsonStrict.UInt32(caps, "maximumImagesPerStage", cw, 0, 65536),
-                maximumComputeSharedMemorySize: JsonStrict.Int(caps, "maximumComputeSharedMemorySize", cw, 1, 1 << 20),
+                maximumComputeSharedMemorySize: sharedLimit,
                 maximumSupportedAnisotropy: JsonStrict.Float(caps, "maximumSupportedAnisotropy", cw),
                 shaderSubgroupSize: JsonStrict.Int(caps, "shaderSubgroupSize", cw, 1, 128),
                 storageBufferOffsetAlignment: JsonStrict.Int(caps, "storageBufferOffsetAlignment", cw, 1, 65536),
@@ -198,8 +206,11 @@ namespace S2A.DirectCompiler
                 maximumGpuMemory: JsonStrict.UInt64(caps, "maximumGpuMemory", cw, 0, ulong.MaxValue),
                 s2aVertexPull: JsonStrict.Bool(caps, "s2aVertexPull", cw),
                 requiresLinkedVaryingInterface: false,
-                maximumVertexOutputComponents: 0,
-                maximumFragmentInputComponents: 0);
+                maximumVertexOutputComponents: vertexOutput,
+                maximumFragmentInputComponents: fragmentInput);
+            int physicalShared = JsonStrict.Int(caps, "maximumComputeSharedMemorySize", cw, 1, 1 << 20);
+            var parsed = BuildCaps(physicalShared);
+            var translation = physicalShared < 48 * 1024 ? BuildCaps(48 * 1024) : parsed;
             if (parsed.UniformBufferSetIndex != 0 || parsed.StorageBufferSetIndex != 1 ||
                 parsed.TextureSetIndex != 2 || parsed.ImageSetIndex != 3)
                 throw new DirectCompileException("UNSUPPORTED_PROFILE", cw + " set indices must be 0/1/2/3");
@@ -209,7 +220,7 @@ namespace S2A.DirectCompiler
                 parsed.S2AVertexPull || parsed.RequiresLinkedVaryingInterface)
                 throw new DirectCompileException("UNSUPPORTED_PROFILE",
                     cw + " enables a stage/feature the first direct backend does not implement");
-            return new DirectProfile(hash, closure, compilerAbi, directAbi, parsed);
+            return new DirectProfile(hash, closure, compilerAbi, directAbi, parsed, translation);
         }
     }
 }

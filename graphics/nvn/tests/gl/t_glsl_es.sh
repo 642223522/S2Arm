@@ -79,4 +79,43 @@ ck "㉓ 3.20 的 sample 限定符不动" rewrite frag
 # ㉔ 3.10 开了 GL_OES_shader_multisample_interpolation：sample 是限定符，不动
 printf '#version 310 es\n#extension GL_OES_shader_multisample_interpolation : require\nprecision highp float;\nsample in vec4 v;\nout vec4 o;\nvoid main() { o = v; }\n' > "$T/in"; cp "$T/in" "$T/want"
 ck "㉔ 开了多重采样插值扩展：不动" rewrite frag
+# ㉕ D-45CD：「#version 320」（补成 320 es）里 sample 当名字 → 照样改 s2a_sample（原先 3.20 不改名，报 Reserved word）
+printf '#version 320 es\nprecision highp float;\nout vec4 o;\nvoid main() { float sample = 2.0; o = vec4(sample); }\n' > "$T/in"
+printf '#version 320 es\nprecision highp float;\nout vec4 o;\nvoid main() { float s2a_sample = 2.0; o = vec4(s2a_sample); }\n' > "$T/want"
+ck "㉕ 3.20 里 sample 当名字 → s2a_sample" rewrite frag
+# ㉖ 开了扩展、sample 当名字 → 改名
+printf '#version 310 es\n#extension GL_OES_shader_multisample_interpolation : require\nprecision highp float;\nout vec4 o;\nvoid main() { vec4 sample = vec4(1.0); o = sample; }\n' > "$T/in"
+printf '#version 310 es\n#extension GL_OES_shader_multisample_interpolation : require\nprecision highp float;\nout vec4 o;\nvoid main() { vec4 s2a_sample = vec4(1.0); o = s2a_sample; }\n' > "$T/want"
+ck "㉖ 开了扩展、sample 当名字 → 改名" rewrite frag
+# ㉗ 3.20 同一支里既有限定符又有名字：只改名字那处
+printf '#version 320 es\nprecision highp float;\nsample in vec4 v;\nout vec4 o;\nvoid main() { float sample = 0.5; o = v * sample; }\n' > "$T/in"
+printf '#version 320 es\nprecision highp float;\nsample in vec4 v;\nout vec4 o;\nvoid main() { float s2a_sample = 0.5; o = v * s2a_sample; }\n' > "$T/want"
+ck "㉗ 限定符留、名字改" rewrite frag
+# ㉕–㉘ D-45J6（#852）：桌面 GLSL 110 / 120 / 130 —— glslang 出 SPIR-V 拒收 140 以下的桌面版本（「Desktop shaders for Vulkan SPIR-V require version 140 or higher」）。
+#   第一条版本行的版本号换成 100，按 ES 1.00 预处理、再走 ES 1.00 → 3.10 的改写（attribute / varying / gl_FragColor / texture2D）；行里别的（行首空白、注释、\r）原样
+printf '#version 120\nvoid main() {}\n' > "$T/in"; printf '#version 100\nvoid main() {}\n' > "$T/want"; ck "㉕ 桌面 120 → 100" prefix
+printf ' # version 110 // engine\r\nvoid main() {}\n' > "$T/in"; printf ' # version 100 // engine\r\nvoid main() {}\n' > "$T/want"; ck "㉖ 桌面 110 带注释、\\r 原样" prefix
+printf '#version 130\n#version 120\n' > "$T/in"; printf '#version 100\n#version 120\n' > "$T/want"; ck "㉗ 桌面 130 → 100，只改第一条" prefix
+printf '#version 140\n#version 1200\n' > "$T/in"; cp "$T/in" "$T/want"; ck "㉘a 140 不动（glslang 收）" prefix
+printf '#version 1200\n' > "$T/in"; cp "$T/in" "$T/want"; ck "㉘b 1200 不动" prefix
+# ㉙–㉛ D-TTP7：ES 3.x 片元用到 sampler3D / sampler2DShadow 却没写缺省精度（glslang 报 type requires declaration of default precision qualifier，NVIDIA 放过）
+#   ㉙ 300 es 带 #extension：「precision highp <类型>;」补在开头预处理行（版本 + 扩展）之后，按类型表顺序（sampler3D 在 sampler2DShadow 前），只补用到的
+printf '#version 300 es\n#extension GL_EXT_shadow_samplers : enable\nuniform sampler3D lut;\nuniform sampler2DShadow sm;\nvoid main() {}\n' > "$T/in"
+printf '#version 310 es\n#extension GL_EXT_shadow_samplers : enable\nprecision highp sampler3D;\nprecision highp sampler2DShadow;\nuniform sampler3D lut;\nuniform sampler2DShadow sm;\nvoid main() {}\n' > "$T/want"
+ck "㉙ 补用到的采样器缺省精度、在 #extension 之后" rewrite frag
+#   ㉚ 已写 precision mediump sampler3D：不重复补；「sampler3DX」不是那个类型、不算用到
+printf '#version 310 es\nprecision mediump sampler3D;\nuniform sampler3D lut;\nfloat sampler3DX;\nvoid main() {}\n' > "$T/in"; cp "$T/in" "$T/want"
+ck "㉚ 已声明的不重复、相似名字不算" rewrite frag
+#   ㉛ ES 1.00 顶点用 sampler3D（升版路）：补在版本行后、float / int 精度之前
+printf 'attribute vec4 a;\nuniform sampler3D t;\nvoid main() { gl_Position = a; }\n' > "$T/in"
+printf '#version 310 es\nprecision highp sampler3D;\nprecision highp float;\nprecision highp int;\nin vec4 a;\nuniform sampler3D t;\nvoid main() { gl_Position = a; }\n' > "$T/want"
+ck "㉛ ES 1.00 升版路同样补" rewrite vert
+#   ㉜ D-4ZBS：ES 1.00 片元拿 3.x 内建名当名字（「uniform sampler2D texture;」、函数 round、变量 flat）→ 升版前整词改 s2a_<名>；
+#       texture2D 照旧改成内建 texture；「texture2D」「textures」「mytexture」不算这个词、不动
+printf '#version 100\nprecision mediump float;\nvarying vec2 v;\nuniform sampler2D texture;\nfloat round(float x) { return floor(x + 0.5); }\nvoid main() { float flat = round(v.x); float textures = 1.0; float mytexture = 2.0; gl_FragColor = texture2D(texture, v) * flat * textures * mytexture; }\n' > "$T/in"
+printf '#version 310 es\nprecision highp float;\nprecision highp int;\nlayout(location = 0) out vec4 s2a_FragColor;\nprecision mediump float;\nin vec2 v;\nuniform sampler2D s2a_texture;\nfloat s2a_round(float x) { return floor(x + 0.5); }\nvoid main() { float s2a_flat = s2a_round(v.x); float textures = 1.0; float mytexture = 2.0; s2a_FragColor = texture(s2a_texture, v) * s2a_flat * textures * mytexture; }\n' > "$T/want"
+ck "㉜ ES 1.00 拿 3.x 内建名当名字：升版前改名" rewrite frag
+#   ㉝ 反证：3.10 原文里的 texture 是内建调用，不改名
+printf '#version 310 es\nprecision highp float;\nuniform sampler2D t;\nin vec2 v;\nout vec4 o;\nvoid main() { o = texture(t, v); }\n' > "$T/in"; cp "$T/in" "$T/want"
+ck "㉝ 3.10 原文的 texture 是内建、不动" rewrite frag
 [ $bad = 0 ] && echo "✓ t_glsl_es：$n 项全过" || { echo "✗ t_glsl_es：$n 项，失败 $bad"; exit 1; }

@@ -43,8 +43,8 @@ struct s2a_fl_rec {
     uint32_t fence_n;       /* 同期 fence 等待次数（封顶 UINT32_MAX） */
     uint32_t acquire_us;     /* 本帧 AcquireNextImage CPU 墙钟 us */
     uint32_t present_us;     /* 本帧 QueuePresent CPU 墙钟 us */
-    uint32_t gpu_us;         /* 最新结算帧 GPU TOP→BOTTOM 忙时 us（同一结算帧只报一次） */
-    uint32_t gpu_seq;        /* 该读数对应的结算帧序号（gpu_read_frame 的 frame_seq） */
+    uint32_t gpu_us;         /* 最新结算帧 GPU 忙时 us（旧层：TOP→BOTTOM；新回放层：本帧各段时间戳跨度之和，要 nvk_gputime；同一结算帧只报一次） */
+    uint32_t gpu_seq;        /* 该读数对应的结算帧序号（旧层：gpu_read_frame 的 frame_seq；新回放层：第几次上屏段完成，见 nvn_vk_frame_log_gpu_frame_end） */
     uint32_t disp_us;        /* 最新确认上屏间隔 us（actualPresentTime 相邻帧差，同一对只报一次） */
     uint32_t disp_seq;       /* 该间隔所属的较新帧号（nvn_vk_dt_last_gap 的 frame） */
 };
@@ -57,6 +57,7 @@ struct s2a_frame_log {
     uint32_t w;                 /* 下一次写入的槽位（独立游标，不依赖 seq % CAP） */
     uint32_t kept;              /* 环内现存帧数 ≤ S2A_FL_CAP */
     _Atomic int snapshot_lock;
+    int sealed;                 /* snapshot_lock 保护。封存后 present / fence 不再写环 */
     _Atomic uint64_t fence_ns_acc;  /* 距上一条 present 累计的 fence 等待 ns */
     _Atomic uint64_t fence_n_acc;   /* 距上一条 present 累计的 fence 等待次数 */
 };
@@ -97,7 +98,14 @@ void s2a_fl_dump(const struct s2a_frame_log *fl, void (*emit)(void *ctx, const c
 int nvn_vk_frame_log_on(void);
 void nvn_vk_frame_log_present(void);
 void nvn_vk_frame_log_dump(void);
+// 前端仍可能有在途调用的保留停局路径：封存当时的环，只转储一次，不复位到可写态。
+void nvn_vk_frame_log_dump_retained(void);
 void nvn_vk_frame_log_fence_wait(uint64_t wait_ns);
+// 新回放层的 GPU 读数（backend_vulkan.c 弱引用调；nvk_gputime 开着才有段时间戳）：
+//   每段完成报一次该段 GPU 时间戳跨度 ns；上屏段完成时结一帧（帧号 = 第几次上屏段完成），
+//   之后的 present 记录把它写进 gpu_us / gpu_seq（同一帧只报一次）。线程：后端工作线程。
+void nvn_vk_frame_log_gpu_segment(uint64_t gpu_ns);
+void nvn_vk_frame_log_gpu_frame_end(void);
 
 // 托管层入口（generic AndroidWindow.Present / AndroidGameRuntime.Cleanup 经
 // DllImport("s2a_native") 直调）：与 direct 同一个环形缓冲、同一份转储格式。

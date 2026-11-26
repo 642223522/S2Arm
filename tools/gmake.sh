@@ -3,6 +3,12 @@
 #   用法：source tools/gmake.sh; MK=$(s2a_gmake) || exit 1   —— 先认 S2A_GMAKE，再找 PATH 里的 gmake；版本 < 4 或找不到打红、返回 1
 s2a_gmake() {
   local mk=${S2A_GMAKE:-$(command -v gmake || true)}
+  if [ -z "$mk" ]; then
+    # prepare_build.py 在本树从钉版源码编好的那份：没有 Homebrew 也能出预编壳
+    local built
+    built="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." 2>/dev/null && pwd)/build/macos/gmake/bin/make"
+    [ -x "$built" ] && mk=$built
+  fi
   if [ -n "$mk" ] && "$mk" --version 2>/dev/null | head -1 | /usr/bin/grep -qE 'GNU Make ([4-9]|[1-9][0-9])\.'; then echo "$mk"; return 0; fi
-  echo "【红】要 GNU Make 4 以上（gmake）：brew install make；或 S2A_GMAKE 指到它（系统 make 3.81 的 -j 会卡死）" >&2; return 1
+  echo "【红】要 GNU Make 4 以上（gmake）：brew install make；或跑 python3 launchers/macos/prepare_build.py 编本树那份；或 S2A_GMAKE 指到它（系统 make 3.81 的 -j 会卡死）" >&2; return 1
 }

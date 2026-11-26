@@ -7,6 +7,9 @@
 //   ② 先剪裁 (16,16,32,32) 画、再剪裁 (0,2000,64,64) 画：第二笔出了 48x48 区域 → 结束重开，区域 64x2064；两个框都画上、框外仍是 64
 //   ③ 64x64 小目标：不用区域（g_rp_aw = 0），画法照旧
 // 反证：去掉开遍那段区域设置 → ① ② 的区域检查红；去掉 draw() 里「出了区域就结束」那行 → ② 第二个框读回 64（被区域裁掉）
+// up 模式（S2A_RES_SCALE=2，#1548：区域按游戏剪裁框去比放大后的存储，2 倍时只开到四分之一）：目标存储按游戏坐标 × 2，
+//   目标取 4096x2048（方形多通道目标放大时不放大），区域与读回都按存储像素：④ 剪裁 (16,16,32,32) → 区域 96x96；框内 (32,32)(95,95) = 128，框外 (31,31)(96,96)(4095,2047) = 64
+//   ⑤ 再剪裁 (0,900,64,64)：出了区域 → 重开 128x1928；(0,1800)(127,1927) = 128，(128,1800)(0,1799) = 64。反证：区域用游戏剪裁框（修前）→ ④ 区域 48x48、(60,60) 读回 64
 #include "../gfx/nvn/nvn_mtl.m"
 
 static unsigned checks, failures;
@@ -51,9 +54,32 @@ static void run(tex_t *t, int n, const p_scissor *sc, int nsc) {
     memset(buf.contents,0xA5,(size_t)n*n*4); xfer(t,n,0);
 }
 static int px(int n, int x, int y) { return ((const uint8_t *)buf.contents)[((size_t)y*n+x)*4]; }
+// up 模式：目标 t（游戏 4096x2048，存储放大）整张填 64 → 逐笔回放 → 读回存储左上 4096x2048 存储像素（px 的行宽同 4096）
+static pool_t *upool; static NSUInteger sw_seen, sh_seen;
+static void xfer_rect(id<MTLTexture> mt, int w, int h, int up) {
+    id<MTLCommandQueue> q=[g_dev newCommandQueue]; id<MTLCommandBuffer> cb=[q commandBuffer]; id<MTLBlitCommandEncoder> e=[cb blitCommandEncoder];
+    if (up) [e copyFromBuffer:buf sourceOffset:0 sourceBytesPerRow:w*4 sourceBytesPerImage:(NSUInteger)w*h*4 sourceSize:MTLSizeMake(w,h,1) toTexture:mt destinationSlice:0 destinationLevel:0 destinationOrigin:MTLOriginMake(0,0,0)];
+    else [e copyFromTexture:mt sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0,0,0) sourceSize:MTLSizeMake(w,h,1) toBuffer:buf destinationOffset:0 destinationBytesPerRow:w*4 destinationBytesPerImage:(NSUInteger)w*h*4];
+    [e endEncoding]; [cb commit]; [cb waitUntilCompleted]; REQUIRE(cb.status==MTLCommandBufferStatusCompleted);
+}
+static void run_up(tex_t *t, const p_scissor *sc, int nsc) {
+    memset(buf.contents,64,(size_t)BIG*BIG*4); xfer_rect(tex_mtl(t),BIG,BIG/2,1);   // 游戏尺寸的原存储（第一次当目标前还没放大）
+    const p_draw d={.prim=NVN_DRAW_PRIMITIVE_TRIANGLES,.count=3,.instances=1};
+    nvn_be_sub_begin(); state_reset(); S.prog=&pg; rp_flush(); memset(&R.rt,0,sizeof R.rt); R.rt.n=1; R.rt.color[0]=t; R.has_rt=1; g_pso_dirty=1; args_dirty_all();
+    g_nseen=0;
+    for (int i=0;i<nsc;i++) {
+        g_on=0; put(OP_SCISSOR,&sc[i],sizeof sc[i]); put(OP_DRAW,&d,sizeof d); put(OP_END,NULL,0);
+        nvn_be_exec(g_ops); g_aw_seen[g_nseen]=g_enc?g_rp_aw:9999; g_ah_seen[g_nseen++]=g_enc?g_rp_ah:9999;
+    }
+    rp_flush();
+    uint64_t fe=nvn_be_sub_commit(); REQUIRE(nvn_be_wait(fe,10000000000ull)); REQUIRE(!mtl_last_commit_error());
+    id<MTLTexture> mt=tex_mtl(t); sw_seen=mt.width; sh_seen=mt.height;
+    memset(buf.contents,0xA5,(size_t)BIG*BIG*4); xfer_rect(mt,BIG,BIG/2,0);
+}
 
-int main(void) { @autoreleasepool {
+int main(int argc, char **argv) { @autoreleasepool {
     setvbuf(stdout,NULL,_IOLBF,0);
+    int up = argc > 1 && !strcmp(argv[1], "up"); if (up) setenv("S2A_RES_SCALE", "2", 1); else unsetenv("S2A_RES_SCALE");
     char map[]="/tmp/t_rp_area_map_XXXXXX",user[]="/tmp/t_rp_area_user_XXXXXX";
     int fd=mkstemp(map); REQUIRE(fd>=0); close(fd); fd=mkstemp(user); REQUIRE(fd>=0); close(fd);
     setenv("DM_NVN_SHMAP",map,1); setenv("DM_PSO_USER",user,1); setenv("DM_PSO_ARCHIVE","0",1);
@@ -70,9 +96,29 @@ int main(void) { @autoreleasepool {
     pool_t *pool=calloc(1,sizeof *pool); REQUIRE(pool); *pool=(pool_t){.magic=MAGIC('P','O','O','L'),
         .flags=NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS|NVN_MEMORY_POOL_FLAGS_GPU_CACHED,.mem=memory,.size=psz}; nvn_be_pool_add(memory,psz);
     tex_t T, S64; texture(&T,pool,0,BIG); texture(&S64,pool,big,64);
+    if (up) { uint8_t *um=NULL; REQUIRE(!posix_memalign((void **)&um,65536,big)); memset(um,0,big); upool=calloc(1,sizeof *upool); REQUIRE(upool);
+        *upool=(pool_t){.magic=MAGIC('P','O','O','L'),.flags=NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS|NVN_MEMORY_POOL_FLAGS_GPU_CACHED,.mem=um,.size=big}; nvn_be_pool_add(um,big); }
     buf=[g_dev newBufferWithLength:big options:MTLResourceStorageModeShared]; REQUIRE(buf);
 
     const p_scissor s1={16,16,32,32}, s2={0,2000,64,64};
+    if (up) {   // 可缩的渲染目标：标可压缩、长方形（方形放大时不放大，nvn_rscale.inc rs_eligible）：4096x2048 存成 8192x4096
+        tex_t U; memset(&U,0,sizeof U); U.magic=MAGIC('T','E','X',0); U.serial=nvn_new_serial();
+        U.d=(nvn_texdesc){.target=NVN_TEXTURE_TARGET_2D,.format=NVN_FORMAT_RGBA8,.flags=NVN_TEXTURE_FLAGS_COMPRESSIBLE,.width=BIG,.height=BIG/2,.depth=1,.levels=1};
+        U.pool=upool; U.off=0; U.mem=upool->mem; nvn_tex_layout(&U.d,&U.L); nvn_be_tex_init(&U); REQUIRE(tex_mtl(&U));
+        const p_scissor u2={0,900,64,64};
+        run_up(&U,&s1,1);
+        CHECK(sw_seen==2*BIG && sh_seen==BIG,"④ 2 倍：4096x2048 目标存储 %lux%lu（期望 8192x4096）",(unsigned long)sw_seen,(unsigned long)sh_seen);
+        CHECK(g_aw_seen[0]==96 && g_ah_seen[0]==96,"④ 剪裁 (16,16,32,32)：开遍区域 %lux%lu 存储像素（期望 96x96）",(unsigned long)g_aw_seen[0],(unsigned long)g_ah_seen[0]);
+        CHECK(px(BIG,32,32)==128 && px(BIG,60,60)==128 && px(BIG,95,95)==128,"④ 框内画满：(32,32)=%d (60,60)=%d (95,95)=%d（期望 128）",px(BIG,32,32),px(BIG,60,60),px(BIG,95,95));
+        CHECK(px(BIG,31,31)==64 && px(BIG,96,96)==64 && px(BIG,4095,2047)==64,"④ 框外保留：(31,31)=%d (96,96)=%d (4095,2047)=%d（期望 64）",px(BIG,31,31),px(BIG,96,96),px(BIG,4095,2047));
+        const p_scissor u12[2]={s1,u2};
+        run_up(&U,u12,2);
+        CHECK(g_aw_seen[1]==128 && g_ah_seen[1]==1928,"⑤ 第二笔出了区域 → 重开：%lux%lu（期望 128x1928）",(unsigned long)g_aw_seen[1],(unsigned long)g_ah_seen[1]);
+        CHECK(px(BIG,0,1800)==128 && px(BIG,127,1927)==128 && px(BIG,128,1800)==64 && px(BIG,0,1799)==64,"⑤ 第二个框画满、框外保留：(0,1800)=%d (127,1927)=%d (128,1800)=%d (0,1799)=%d（期望 128 128 64 64）",
+              px(BIG,0,1800),px(BIG,127,1927),px(BIG,128,1800),px(BIG,0,1799));
+        unlink(map); unlink(user);
+        printf("%s t_nvn_rp_area up：%u 项，失败 %u\n",failures?"✗":"✓",checks,failures); return failures?1:0;
+    }
     run(&T,BIG,&s1,1);
     CHECK(g_aw_seen[0]==48 && g_ah_seen[0]==48,"① 4096x4096 目标、剪裁 (16,16,32,32)：开遍区域 %lux%lu（期望 48x48）",(unsigned long)g_aw_seen[0],(unsigned long)g_ah_seen[0]);
     CHECK(px(BIG,16,16)==128 && px(BIG,47,47)==128,"① 框内画上：(16,16)=%d (47,47)=%d（期望 128）",px(BIG,16,16),px(BIG,47,47));

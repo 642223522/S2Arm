@@ -3,7 +3,7 @@
 # facts_of(ExeFS, RomFS) reads the code modules (dynamic symbols, sizes, SDK strings) and the RomFS file headers (a romfs_manifest.tsv from nx_extract --manifest, or a RomFS folder);
 # guess(facts) turns the facts into profile keys, each with the reason written above it in game.tsv. Every rule was checked against the hand-made profiles; --check runs that comparison again.
 # The keys no short run decides (render_cond, tex_flush_upload,
-# tex_dirty_upload, core_preempt, gpu_timestamps, feedback_snap, alpha_from_red, vconv_range, present_interval) keep their defaults for a developer: a minute's boot without input
+# tex_dirty_upload, gpu_timestamps, feedback_snap, alpha_from_red, vconv_range, present_interval) keep their defaults for a developer: a minute's boot without input
 # cannot tell the games that need them (Tears of the Kingdom) from those that only use what they answer (Wonder's conditional clears, Breath of the Wild's flushed textures).
 # Usage: profile_guess.py <ExeFS dir> <romfs_manifest.tsv | RomFS dir>   the facts and the guessed keys
 #        profile_guess.py --check [<NSP root>]                        every profile in dm/games against its extraction under <NSP root> (default ~/nsp): where the guess differs
@@ -23,10 +23,18 @@ MAGICS = [(b'UnityFS\0', 'UnityFS'), (b'UnityWeb', 'UnityWeb'), (b'UnityRaw', 'U
 PACKED = {'UnityFS', 'UnityWeb', 'Yaz0', 'zstd', 'BWAV', 'CRI CPK', 'CRI USM', 'Wwise pck', 'FMOD', 'PNG', 'Ogg', 'zip', 'Trinity pack', 'MT Framework ARC', 'Bezel Engine archive'}   # file headers of compressed / media formats (zip_store)
 # IL2CPP by the metadata file every IL2CPP player opens: Unity 2022's main (Ace Attorney Investigations Collection) has no il2cpp_ API names, Engage's 2020.3 has both
 MARKERS = [(b'nvnBootstrapLoader', 'NVN'), (b'vkCreateInstance', 'Vulkan'), (b'eglGetProcAddress', 'EGL / OpenGL'), (b'global-metadata.dat', 'Unity IL2CPP'), (b'UnityEngine', 'Unity'),
-           (b'sead::', 'Nintendo sead'), (b'agl::', 'Nintendo agl'), (b'gsys::', 'Nintendo gsys'), (b'Unreal', 'Unreal'), (re.compile(rb'(?<![A-Za-z])UE4'), 'Unreal 4'), (b'Havok', 'Havok'), (b'CRIWARE', 'CRIWARE'), (b'Wwise', 'Wwise'),
+           (b'sead::', 'Nintendo sead'), (b'agl::', 'Nintendo agl'), (b'gsys::', 'Nintendo gsys'), (b'Unreal', 'Unreal'), (lambda img: _word_start(img, b'UE4'), 'Unreal 4'), (b'Havok', 'Havok'), (b'CRIWARE', 'CRIWARE'), (b'Wwise', 'Wwise'),
            (b'MonoGame.Framework', 'MonoGame'), (b'FMOD mixer', 'FMOD')]
 # UE4 要是独立词头：暗黑3 main 的 UE4 来自「VALUE4」，子串命中误标 Unreal（10-29 情报核实）；「UE4Game」这类真 Unreal 串照认
-hit = lambda pat, img: bool(pat.search(img)) if isinstance(pat, re.Pattern) else pat in img
+def _word_start(img, word):
+    """img 里有没有前一个字节不是 ASCII 字母的 word（= 正则 (?<![A-Za-z])word，逐字等价）。11-16 出包提速：原先那条带后顾断言的正则
+    每个模块整段跑一遍，大主程序上一次一秒多；字节查找先定位、只在命中处看前一个字节"""
+    i = img.find(word)
+    while i >= 0:
+        if i == 0 or not (0x41 <= img[i - 1] <= 0x5A or 0x61 <= img[i - 1] <= 0x7A): return True
+        i = img.find(word, i + 1)
+    return False
+hit = lambda pat, img: pat(img) if callable(pat) else pat in img
 GLSLC_MAGIC = b'\x91\x68\x86\x19'   # GLSLC compiler outputs (shader_split.py glslc_shaders)
 APP_POOL = 0xCD500000               # the application memory pool of a 4 GB Switch (3285 MiB), what every profile but Engage's reports
 MiB = 1 << 20
@@ -89,14 +97,15 @@ def facts_of(exefs, romfs):
         m = F['mods'][p.name] = {'bid': bid, 'sizes': szs, 'bss': bss, 'far': end > 0x7000000,   # far: the patch area goes before the base (patch_nso.py FAR), the bss counts as used memory (hle_svc.c big_bss_bytes)
                                  'imports': {s for s, defined, _ in syms if not defined}, 'exports': {s for s, defined, bind in syms if defined and bind in (1, 2)},
                                  'comps': {c.decode().rsplit('-', 1)[0] for c in re.findall(rb'NintendoSDK_(?!nnSdk)\w+-[0-9_]+', img)}}
-        F['sdkver'] |= {v.decode() for v in re.findall(rb'(?i)NintendoSDK_nnSdk-([0-9_]+)', img)}   # SDK 12 spells it NintendoSdk_, SDK 16 NintendoSDK_
+        F['sdkver'] |= {v.decode() for v in re.findall(rb'nintendosdk_nnsdk-([0-9_]+)', img.lower())}   # = (?i)NintendoSDK_nnSdk-([0-9_]+)：捕获的只有数字与下划线，先转小写再普通匹配结果相同（大小写不敏感的正则没有字面前缀快路，大主程序一次 0.2 秒）   # SDK 12 spells it NintendoSdk_, SDK 16 NintendoSDK_
         F['comps'] |= {c.decode() for c in re.findall(rb'SDK MW\+Nintendo\+([\w]+-[0-9_]+)', img)}
+        found = {name for pat, name in MARKERS if hit(pat, img)}   # 每个模块每个特征只判一次（main 的 main_markers 也用它，原先对 main 再全判一遍）
         for pat, name in MARKERS:
-            if hit(pat, img): F['markers'].setdefault(name, []).append(p.name)
+            if name in found: F['markers'].setdefault(name, []).append(p.name)
         if p.name == 'main':
             F['unity'] = {v.decode() for v in re.findall(rb'(?:20[12][0-9]|6000)\.[0-9]+\.[0-9]+f[0-9]', img)}   # Unity 6 起版本号 6000.x（丝之歌 6000.0.50f1）
             F['glslc'], F['glsl_src'], F['gl_names'] = img.count(GLSLC_MAGIC), img.count(b'#version '), img.count(b'glShaderSource')
-            F['main_markers'] = {name for pat, name in MARKERS if hit(pat, img)}
+            F['main_markers'] = found
             F['vk_name'] = gfx_api.VK_NAME in img   # the name main passes to nn::ro::LookupSymbol for its Vulkan entry (vk_lookup_of)
         m['kind'] = {'main': 'the game', 'sdk': 'nnSdk', 'rtld': 'rtld'}.get(p.name) or kind(m)
     F['sysres'], F['program'] = npdm(exefs / 'main.npdm')
@@ -232,7 +241,6 @@ def va_heap(sysres, imports):   # virtual address memory (an NPDM system resourc
 def engine(F):   # keys that follow from the engine rather than from a general signal
     out = {}
     if 'hagi.config' in F['romfs']['root']:   # NERD's Hagi Wii layer: the pointer is the touch screen in handheld mode (docked it is the Joy-Con gyro, which the host does not have)
-        out['op_mode'] = ('handheld', 'Hagi (hagi.config): the Wii pointer is the touch screen in handheld mode')
         out['pad_layout'] = ('full', 'Hagi: a 3D game pad (D-pad, right stick)')
 
     # present_interval 推导（10-28 60 帧零配置放开）：引擎 / 呈现路径标记 + L3 判定 → 缺省值
@@ -253,8 +261,8 @@ def engine(F):   # keys that follow from the engine rather than from a general s
 
 
 # ---- Checking the rules against the hand-made profiles ----
-DEFAULTS = {'op_mode': 'console', 'pad_layout': 'simple'}
-NO_SIGNAL = {'pad_layout', 'op_mode'}   # no static signal outside the engine presets; the player switches the pad layout in game, DM_OPMODE in env.txt sets the mode
+DEFAULTS = {'pad_layout': 'simple'}
+NO_SIGNAL = {'pad_layout'}   # no static signal outside the engine presets; the player switches the pad layout in game
 
 
 def find_extraction(root, g):   # (ExeFS, RomFS manifest or folder) for a profile: its survey, else a work folder's extraction of the packed version

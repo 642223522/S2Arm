@@ -1,5 +1,21 @@
 # Android host bring-up
 
+## Supported devices / 支持的设备
+
+| Tier / 档 | Devices / 设备 |
+| --- | --- |
+| Guaranteed / 保证 | Snapdragon 8 Gen 2 and newer (Adreno 740+); Dimensity 9000 and newer (Mali-G710 / Immortalis). Stock vendor driver, 64-bit (`arm64-v8a`), Vulkan 1.1+, Android 14+.<br>骁龙 8 Gen 2 及以上（Adreno 740 起）；天玑 9000 及以上（Mali-G710 / Immortalis）。原厂驱动、64 位（`arm64-v8a`）、Vulkan 1.1+、Android 14+。 |
+| Best effort / 尽力 | Adreno 6xx–7xx, Dimensity 8000 series, Turnip (Mesa driver for Adreno), Samsung Xclipse.<br>Adreno 6xx–7xx、天玑 8000 系、Turnip（Adreno 的 Mesa 开源驱动）、三星 Xclipse。 |
+| Separate track / 单独跑道 | Kirin with Maleoon GPU (HarmonyOS): served by the HarmonyOS port (`ohos/` and its integration branch), not by this APK.<br>麒麟 Maleoon GPU（鸿蒙）：走鸿蒙移植（`ohos/` 及其集成分支），不走本 APK。 |
+| Not supported / 不支持 | GPUs that only expose Vulkan 1.0; 32-bit devices or systems.<br>只支持 Vulkan 1.0 的 GPU；32 位设备或系统。 |
+
+- Android 14 is the policy floor and the package floor: minSdk 34 (Android 14).
+  Android 14 是支持范围与包的下限：最低 Android 14（minSdk 34）。
+- Dimensity (Mali / Immortalis) devices are verified by the community on real hardware.
+  天玑（Mali / Immortalis）机型由社区真机验证。
+- A GPU that only supports Vulkan 1.0 is rejected when the Vulkan device is created (`android/native/direct/vk_device.c`), and the player sees a readable reason on the failed start. Nothing is checked before the start.
+  只支持 Vulkan 1.0 的 GPU 在建 Vulkan 设备时具名拒绝（`android/native/direct/vk_device.c`），玩家在启动失败时看到看得懂的原因；启动前不做检查。
+
 This directory follows the multi-platform plan.
 It builds an ARM64 diagnostic APK with Activity / SurfaceView lifecycle, JNI,
 memory and rewrite probes, a Vulkan test presenter, and a gamepad snapshot using
@@ -33,6 +49,65 @@ presenter draws clear colours and orientation markers; it is not connected to
 Ryujinx game rendering. No game-specific
 addresses, assets, firmware, keys, storage permissions, or network permission
 are included.
+
+## Local wireless (LDN) settings
+
+The release game library settings panel includes **Local wireless (LDN)**.
+Automatic is the default and writes no environment variables, preserving the
+existing LAN behavior. Manual host uses `S2A_LDN_SERVER=127.0.0.1`,
+`S2A_LDN_RELAY=1`, and `S2A_LDN_LISTEN=0.0.0.0`. Manual client uses the entered
+reachable IPv4 as `S2A_LDN_SERVER` and `S2A_LDN_RELAY=0`. Manual mode performs
+no automatic discovery or relay election. The port is fixed at TCP 30456.
+Saving a client requires four dotted ASCII decimal octets (0–255, no leading
+zeroes, hostname, IPv6 or port suffix). Empty/invalid input stays in the dialog
+with a specific field error and does not update preferences. The environment
+policy retains the empty-client `0.0.0.0` fallback only for legacy/Intent input,
+so it cannot silently re-enable discovery.
+
+**Test connection** optionally connects to the entered IPv4 on TCP 30456 on a
+background thread with a 3-second timeout, then closes without sending payload.
+This checks the actual relay port rather than ICMP ping. A successful connection
+only proves that a TCP listener accepted it, not LDN protocol/game compatibility.
+Failure is advisory: saving remains available when the relay/VPN is not up yet.
+The result names its target, is cleared after edits, and cannot update a closed
+dialog or a destroyed Activity.
+
+All players must use the same relay; keep the relay app in the foreground.
+Use reachable public or LAN addresses or an externally configured VPN; the app includes
+no VPN SDK. Hosting listens on all network interfaces, exposing TCP 30456 to
+reachable peers (including other interfaces); use trusted networks only.
+Ensure TCP 30456 can reach the relay. Fully exit the app and reopen
+after changing settings. Returning through the app icon or resuming a running
+game retains its existing process settings.
+
+Preferences persist per app package. `GameActivity.launch` copies them into a
+cold launch Intent so the separate game process receives the library's current
+snapshot without relying on cross-process SharedPreferences cache refresh.
+The production startup applies it through Android `Os.setenv` before Host
+creation, without `DebugEnvironment` or debug build flags. A nonempty existing
+`S2A_LDN_SERVER` preserves all externally supplied LDN environment settings as a
+unit. Direct cold starts without a snapshot read persisted settings.
+
+Once-per-process application matches the supported game lifecycle:
+`MainActivity.stopGame` admits native stop, `bridge.cpp` transfers to shared
+`s2a_host_shutdown`, and `runtime/src/lifecycle.c` terminates with `_exit` (the
+Android watchdog also exits on timeout). The library waits for the old game PID
+to disappear before switching games. Activity recreation/resume is not a new
+configuration window: shared `Host.LdnServer` is cached statically. The Java
+10-second task-finish fallback alone does not prove process death; device
+lifecycle validation remains required.
+
+`python3 android/tests/ldn_settings_test.py` covers policy mapping, external
+precedence, empty-client fallback, strict IPv4 validation, offline injected TCP
+success/failure and port/timeout contracts, release wiring and negative controls.
+`python3 android/tests/ldn_dialog_test.py` compiles the real settings dialog with
+Android stubs and an offline connector: invalid input stays open, failed tests
+allow saving, late callbacks respect dialog/Activity lifetime, and an ignored
+address-error negative control fails. Java policy tests compile the real policy
+with `javac`; Android wiring checks inspect the source. These do not replace APK
+or device validation. Device
+acceptance still needs a Release APK, a full restart, host/client environment
+receipts, and two peers on a reachable relay.
 
 ## FPS overlay
 
@@ -94,8 +169,8 @@ AOT hosts). The sections below keep the Docker recipe for Linux / WSL hosts.
 ## Build with Docker (Linux / WSL hosts)
 
 Pinned tools: JDK 17, Gradle 9.8.1, Android Gradle Plugin 9.4.1, SDK / target 36,
-build-tools 36.0.0, NDK 29.0.14206865, CMake 3.31.6. Minimum OS is Android 10
-(API 29); only `arm64-v8a` is packaged. Native code queries the actual host page
+build-tools 36.0.0, NDK 29.0.14206865, CMake 3.31.6. The current package declares
+minSdk 34 (Android 14, see "Supported devices" above). Only `arm64-v8a` is packaged. Native code queries the actual host page
 size, and the library / APK are built with 16 KB alignment.
 
 From the repository root:
@@ -424,35 +499,41 @@ also has one more platform signal handler without `SA_ONSTACK` (45) than Android
 
 ## Physical gamepad mapping
 
-Physical controllers use `position` mapping by default. Use `s2arm.gamemap=label`
-to match the A/B/X/Y labels reported by an Xbox-layout controller:
+The face-button layout is the same `padFace` choice as iOS and Mac (`runtime/src/pad.c`):
+`auto` (default) follows the printed letters, `switch` puts Switch A on the right button,
+`xbox` puts it on the bottom button. Android key codes are positional on every controller
+(AOSP key layouts send `BUTTON_A` for a Nintendo pad's bottom "B"), so `auto` is the Switch
+layout on Nintendo pads (vendor `057e`, or a name with Nintendo / Switch / Joy-Con) and the
+Xbox layout on everything else (PlayStation: × confirms). Pick it in the in-game four-finger
+menu ("Controller button layout", shown while a controller is attached) or with an intent:
 
-| Android button | `position` (default) | `label` |
+| Android button (position) | `switch` | `xbox` |
 |---|---|---|
-| A | Switch B (`0x0002`) | Switch A (`0x0001`) |
-| B | Switch A (`0x0001`) | Switch B (`0x0002`) |
-| X | Switch Y (`0x0008`) | Switch X (`0x0004`) |
-| Y | Switch X (`0x0004`) | Switch Y (`0x0008`) |
+| A (bottom) | Switch B (`0x0002`) | Switch A (`0x0001`) |
+| B (right) | Switch A (`0x0001`) | Switch B (`0x0002`) |
+| X (left) | Switch Y (`0x0008`) | Switch X (`0x0004`) |
+| Y (top) | Switch X (`0x0004`) | Switch Y (`0x0008`) |
 
 ```sh
-adb shell am start -n org.s2arm.android/.MainActivity --es s2arm.gamemap label --es s2arm.touchlog on
-adb shell am start -n org.s2arm.android/.MainActivity --es s2arm.gamemap position
+adb shell am start -n org.s2arm.android/.MainActivity --es s2arm.gamemap xbox --es s2arm.touchlog on
+adb shell am start -n org.s2arm.android/.MainActivity --es s2arm.gamemap auto
 ```
 
-For a per-game APK, use its application ID with the same `org.s2arm.android.MainActivity`
-class. The option applies to physical face buttons only. Sticks, the D-pad, shoulder
-buttons and the on-screen pad keep their existing mappings. Unknown modes are rejected.
+The older values still work: `position` = `switch`, `label` = `xbox` (a saved
+`gamepadMapping` from before carries over). For a per-game APK, use its application ID with
+the same `org.s2arm.android.MainActivity` class. The option applies to physical face buttons
+only. Sticks, the D-pad, shoulder buttons and the on-screen pad keep their existing mappings.
 
-A new intent with this extra changes the current Activity's mode immediately and saves
-it in app-private preferences. An intent without it keeps the current mode; a later
-launch restores the saved mode. The first launch defaults to `position`. Unknown modes
-are rejected with an error message before they are saved; the previous saved mode remains
-active. The option is also a running-session control when a development runtime is loaded.
-Focus loss clears input but keeps the mode.
+A new intent with this extra changes the current Activity's layout immediately and saves
+it in app-private preferences (`padFace`). An intent without it keeps the current layout; a
+later launch restores the saved one. Unknown values are rejected with an error message before
+they are saved; the previous layout remains active. The option is also a running-session
+control when a development runtime is loaded. Focus loss clears input but keeps the layout.
 
-`GamepadStateTest` covers both mappings, release after switching while held, reset,
-and independent hat/trigger input. These are host tests of the production state
-implementation; physical-controller validation of `label` mode is still pending.
+`GamepadStateTest` covers all three layouts on Nintendo and other pads, the older values,
+kind detection, release after switching while held, reset, and independent hat/trigger input.
+These are host tests of the production state implementation; physical-controller validation
+is still pending.
 
 The diagnostic APK also has an SDK-only instrumentation runner (no third-party test dependency):
 
@@ -462,12 +543,32 @@ The diagnostic APK also has an SDK-only instrumentation runner (no third-party t
 adb shell am instrument -w org.s2arm.android.test/org.s2arm.android.GamepadMappingInstrumentation
 ```
 
-A successful run reports `passed=true`. It checks the real Activity, preferences, both face-button
-mappings, held-button switching/release, invalid values and Activity recreation, then restores the
-original mapping preference. It uses software KeyEvents; cold process restart and physical input
-are separate checks. `label` follows Android's reported A/B/X/Y key codes. A controller whose
-Android key layout reports a different X/Y code must still be checked against its printed labels;
-no controller-model override is applied.
+A successful run reports `passed=true`. It checks the real Activity, preferences, the default
+(`auto`, which software events without a device read as the Xbox layout), `switch`, the older
+`position` / `label` values, held-button switching/release, invalid values and Activity recreation,
+then restores the original preferences. It uses software KeyEvents; cold process restart and
+physical input are separate checks. A controller whose Android key layout reports a different X/Y
+code must still be checked against its printed labels; no controller-model override is applied.
+
+## Controller rumble and six-axis
+
+Player 1's controller is the one that last sent input (else the first attached gamepad).
+`PadFeedback.java` gives native (`native/phone_feedback.c`) its motors and sensors:
+
+- Rumble: a controller with a motor rumbles instead of the phone (four-finger menu
+  "Controller rumble", on by default). Two motors (API 31 `InputDevice.getVibratorManager`,
+  id 0 left / strong, id 1 right / weak) get the left and right HD Rumble sides; one motor
+  (or Android 10/11 `InputDevice.getVibrator`) gets the stronger side. Same 1 s lease as the
+  phone motor.
+- Six-axis (API 31 `InputDevice.getSensorManager`, only while the game wants six-axis): a
+  controller with samples wins over the phone (`runtime/src/motion_pick.c`); switching drops
+  one frame, and the phone sensors rest after the controller has supplied samples for 2 s.
+  Android keeps each driver's axes, so the conversion is per vendor: PlayStation (DS4,
+  DualSense: x right, y face normal, z toward the player) and Nintendo (Pro, Joy-Con: x top,
+  y left, z face normal). Other vendors' sensors are not used (the phone gyro stays on).
+
+`phone_feedback_test` checks the axis conversion by pose (plus SDL's Nintendo-to-PlayStation
+shuffle as a cross-check), the per-side motor levels and the source routing.
 
 ## On-screen gamepad
 
@@ -612,19 +713,18 @@ All of it is listed in one index.
     5. `current.json` is switched by a flushed temp file and a rename, recording
        `previousContentRoot`.
 
-    Any failure, or a killed process, leaves the previous version active. Stale
-    `.staging` folders are removed at startup.
-  - **Versions share storage.** Each file is stored once, under its SHA-256, in
-    `objects/<aa>/<sha256>`: checked, then read-only. A revision's files are hard
-    links to those objects: a hard link is an ordinary directory entry, not a
-    symbolic link, so package readers that reject links (the offline shader pack
-    validator) see regular files. An update stores only the files it changes.
-    The previous version is kept for rollback at the cost of the files that
-    differ. Objects no revision uses are deleted. If a hard link is refused for
-    one path, the stored object is copied into the revision instead; if hard
-    links are refused entirely, every file is copied into the revision and no
-    store is kept, so no file is ever stored twice. A file already stored is not
-    read from the package again.
+    A managed revision syncs its file data and directories before activation.
+    Recovery keeps the old revision when the pointer was not switched, or
+    retains the complete new revision after activation. Staging folders and
+    interrupted replacements are recovered under the game lock.
+  - **Versions share storage.** Managed private revisions store checked,
+    read-only files in `objects/<aa>/<sha256>` and expose them through relative
+    file links. A delta reuses an unchanged object when the previous index and
+    its verified file stamp agree. A missing or stale stamp requires a hash
+    check. The previous revision continues to reference its objects for
+    rollback. Generic offline shader packs require regular files and use hard
+    links or checked copies. A delta from a legacy plain revision uses checked
+    copies until that revision is migrated.
   - Game files are only read. Rewritten modules are copied into anonymous memory
     by `native/module.c`, never mapped executable from storage.
 - **Load check:** the panel lists installed games, and maps each module through
@@ -667,6 +767,10 @@ python3 android/tools/game_apk.py --resources build/pack/<game> \
 出包链路（`pack/targets/android/package.py`）给 `--resources` 加 `--reuse-from <上一个已发布 release 的 resources/>`：上一包自己的 index 里与新包同路径、同大小、同 SHA-256 的**只读**文件改成硬链接，不再各写一份（ext4 没有 reflink，以前每个 release 的 `resources/` 都是一整份 RomFS）。链接后仍逐个核新包的 index；上一包不可用（读不出、与输出或输入重叠）、跨盘、链接被拒、文件可写或字节已变的，一律退回复制。所以同一台机器上相邻 release 的只读文件共享同一个 inode：别原地改 release 里的文件（先改权限再写会同时改到两个包），删哪个 release 都不影响另一个。
 
 构建后的设备部署统一用 `python3 android/tools/deploy_game.py --pack <完整源包> --apk <最终签名APK> --serial <设备> --mode direct`。
+
+要在正式包恢复已有进度，先关闭游戏，在游戏库选中目标游戏，打开设置面板的「导入存档备份」，用系统文件选择器选择 Mac 或 iPhone 导出的 `.s2asave`。核对检查结果再确认恢复，现有存档会先备份。
+
+QA 可在设备租约内给同一部署命令加 `--save-archive <备份.s2asave> --no-start`。应用完成恢复后，部署回执的 `saveImport` 包含标题号、恢复的文件数和字节数、以及相对于应用私有文件目录的备份位置。无旧存档时位置为空。确认回执后在游戏内选择继续，并验证预期的检查点场景。
 脚本冻结 APK、生成配套资源绑定、安装、导入并核对设备 APK 哈希，避免重编后反复出现 `artifact.apk.sha256` 不匹配。
 同资源版本仅更新 APK 时加 `--refresh-existing`，通过正常安装事务刷新绑定，无须重传 RomFS。
 已绑定的资源目录可改用 `--resources <目录>`；默认导入后启动并等待接受，`--no-start` 只导入。导入仅指定本次暂存目录。
@@ -946,7 +1050,7 @@ Microsoft's release metadata. It then publishes NativeAOT shared libraries for
   - **Opus and VP8 decoding** (implementation plan §6.2 / §6.3). The service layer
     binds `s2a_opus` (Horizon's `HardwareOpusDecoder`) and `s2a_vpx` (Nvdec's
     `VpxVp8Decoder`), C shims in `services/opus` and `services/vpx` that Apple links
-    statically. `codecs/build.sh` builds the same libraries for the NDK (API 29),
+    statically. `codecs/build.sh` builds the same libraries for the NDK (API 34),
     with the version, source SHA-256 and configure options read from
     `services/*/build.sh`. It also builds each shim into one archive with its
     library. `cs/build.sh` appends both archives to `link.txt`, and the AOT project
@@ -1018,7 +1122,7 @@ Packaged in the APK, in the same form as the root README's
 
 | Dependency | Version | License | Use |
 |---|---|---|---|
-| [OpenSSL](https://www.openssl.org) | 3.5.9 (`openssl-3.5.9.tar.gz`, sha256 `603f5602e2eef00d77fbd429d34dcd5822bb301757a1bc9cdb24c670f1eb859a`; the GitHub release and openssl.org agree) | Apache-2.0 | `libssl.so` / `libcrypto.so` for .NET's crypto on Android, which aborts the process without a loadable libssl. Built by `openssl/build.sh` with the NDK (`android-arm64`, API 29) from the pinned source, not stored in the repository |
+| [OpenSSL](https://www.openssl.org) | 3.5.9 (`openssl-3.5.9.tar.gz`, sha256 `603f5602e2eef00d77fbd429d34dcd5822bb301757a1bc9cdb24c670f1eb859a`; the GitHub release and openssl.org agree) | Apache-2.0 | `libssl.so` / `libcrypto.so` for .NET's crypto on Android, which aborts the process without a loadable libssl. Built by `openssl/build.sh` with the NDK (`android-arm64`, API 34) from the pinned source, not stored in the repository |
 | [.NET runtime](https://github.com/dotnet/runtime) (NativeAOT runtime pack `linux-bionic-arm64`) | 10.0.14 (SDK 10.0.403, `compat/tree/global.json`) | MIT (third-party components such as LLVM libunwind under the notices in that package) | The C# service layer's runtime, linked from nuget.org's runtime pack by `cs/build.sh`, either into its own `.so` or into `libs2arm_android.so` (single-library build) |
 | [libopus](https://opus-codec.org) | 1.6.1 (pin and options from `services/opus/build.sh`) | BSD-3-Clause (with patent license notices) | Horizon's hardware Opus decoder (hwopus), linked into `libs2arm_android.so` by the single-library build. Built by `codecs/build.sh` with the NDK, not stored in the repository |
 | [libvpx](https://chromium.googlesource.com/webm/libvpx) | 1.17.0 (pin and options from `services/vpx/build.sh`; VP8 and VP9 decoders, with S2Arm's NVDEC hook patch `services/vpx/patches/`) | BSD-3-Clause plus patent grant (`PATENTS`) | Nvdec's VP8 video, and Nvdec's VP9 video by default (NVDEC jobs through the hook; the managed decoder takes any job libvpx cannot represent exactly; `S2A_NVDEC_VP9=managed` in debuggable builds turns it off), linked into `libs2arm_android.so` by the single-library build. Built by `codecs/build.sh` with the NDK, not stored in the repository |

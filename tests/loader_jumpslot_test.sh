@@ -12,7 +12,7 @@ INC="-Iruntime/include -Iruntime/src -Itests/support/hoststub"
 "$CC" -std=c11 -Wall -Wextra -Werror -DS2A_UNIT_TEST -D_GNU_SOURCE $INC \
   -c runtime/src/nrodefer.c -o build/tests/loader_jumpslot_nrodefer.o || { echo "不通 nrodefer.c 编译"; exit 1; }
 "$CC" -std=c11 -Wall -Wextra -Werror -D_GNU_SOURCE -Iruntime/include -Iruntime/src \
-  -o build/tests/loader_jumpslot tests/loader_jumpslot.c build/tests/loader_jumpslot_loader.o build/tests/loader_jumpslot_nrodefer.o -pthread \
+  -o build/tests/loader_jumpslot tests/loader_jumpslot.c build/tests/loader_jumpslot_loader.o build/tests/loader_jumpslot_nrodefer.o runtime/src/snapsw.c -pthread \
   || { echo "不通 loader_jumpslot 链接"; exit 1; }
 fail=0
 env -u S2A_JUMP_SLOT_ADDEND build/tests/loader_jumpslot || fail=1

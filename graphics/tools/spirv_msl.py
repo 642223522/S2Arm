@@ -188,7 +188,10 @@ def translate(
     dual_source=True,
     texture_1d_as_2d=True,
 ):
-    data = open(path, "rb").read()
+    # 按路径读经 romfs_list（spirv_files 给的 RomFS 路径：RomFS 不落散文件、只有镜像时从镜像读；采集目录等盘上文件同 open）
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "nvn", "tools"))
+    import romfs_list
+    data = romfs_list.read_file(path)
     if len(data) % 4:
         red(f"{path}: SPIR-V length {len(data)} is not a multiple of 4")
     key = key or hashlib.sha256(data).hexdigest()[:16]  # of the game's words, which the host hashes

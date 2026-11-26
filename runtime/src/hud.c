@@ -22,8 +22,8 @@
 #include <os/proc.h>
 #endif
 
-// GPU 已分配（Metal 设备 currentAllocatedSize，直连层 graphics/nvn nvn_mtl.m 强定义）：和进程实占是两本账——内存池的零拷贝缓冲、贴图都记在这里，
-//   没有直连层 / 设备还没建 = 0（浮层就只写进程实占）
+// GPU 已分配（直连层 graphics/nvn nvn_mtl.m 强定义）：Metal 设备 currentAllocatedSize 减去零拷贝缓冲——贴图、我们自己分配的缓冲记在这里；
+//   内存池的零拷贝缓冲就是游戏内存（已在进程实占里），Metal 按每个缓冲全长、重叠的块重复记，不算进来（#1827）。没有直连层 / 设备还没建 = 0（浮层就只写进程实占）
 __attribute__((weak)) uint64_t s2a_gpu_alloc_bytes(void) { return 0; }
 // 上屏时间戳环在 ap_host.c（逐帧路径只依赖它自己；只链 ap_host 的单测不用带上本文件）：写方只有上屏线程，界面线程按序号读，读到被覆盖的就停
 enum { HR = 2048 };
@@ -57,12 +57,15 @@ static int cap_fps(void) {
 // 目标 = 实际生效周期 max(游戏间隔周期, 1/上限) 对应的帧率，即 min(游戏帧率, 上限)（#619 审计 F-hud-cap-above-game）。
 //   游戏帧率：GL 前端回报它自己的（nvn_gl_game_fps，graphics/nvn/gfx/gl/egl.m：交换间隔折成帧率，0 = 交换间隔 0、游戏不锁垂直同步；-1 = 本局没走 GL），
 //   其余直连前端取 nvn_game_fps；通用模式读不到游戏帧率。没有原生锁 / 读不到时目标就是上限（GL 交换间隔 0 + 上限 120 = 120，不是缺省 60）；上限也没有 = 0「未取得」
+// 帧率被补丁 / 我方帧率表抬高了没有：runtime/src/fps.c 强定义覆盖；只链本文件的单测用缺省 1 = 当作抬高了（上限照常算进目标）
+__attribute__((weak)) int s2a_fps_raised(void) { return 1; }
 static int hud_target(void) {
     int cap = cap_fps(), game = 0;
     if (s2a_gfx_mode() == S2A_GFX_DIRECT) {
         int (*gl)(void) = (int (*)(void))dlsym(RTLD_DEFAULT, "nvn_gl_game_fps"), (*nv)(void) = (int (*)(void))dlsym(RTLD_DEFAULT, "nvn_game_fps");
         int g = gl ? gl() : -1; game = g >= 0 ? g : nv ? nv() : 0;
     }
+    if (game > 0 && !s2a_fps_raised()) return game;   // 帧率没被抬高：上限不压游戏原生出图率（graphics/nvn/gfx/nvn/nvn_fps.c，11-25 #502），目标就是游戏帧率
     return game <= 0 ? cap : cap && cap < game ? cap : game;
 }
 static int cmp_u64(const void *a, const void *b) { uint64_t x = *(const uint64_t *)a, y = *(const uint64_t *)b; return (x > y) - (x < y); }
@@ -147,6 +150,50 @@ static void sys_power(char *o, size_t n) {
     snprintf(o, n, "%s", shown);
 }
 
+#if defined(__APPLE__) && !TARGET_OS_IPHONE
+// 插没插电（gfxmode.c 直连音频调度缺省按电源档分的强定义，11-14 卡顿诊断）：AppleSmartBattery 的 ExternalConnected。
+//   与 sys_power 各持一份按名取（那边整机瓦数要遥测三键；这边只要外接电源一位，读不到时两边要给不同方向的兜底：浮层显示「取不到」，
+//   这里没电池服务（桌面机）算非电池回实时，读得出但键坏按电池回 interactive 保 10-24 起的现状），互不影响
+int s2a_mac_on_battery(void) {
+    typedef unsigned int io_obj;
+    static struct {
+        io_obj (*get_svc)(unsigned int, CFDictionaryRef); CFMutableDictionaryRef (*match)(const char *);
+        CFTypeRef (*prop)(io_obj, CFStringRef, CFAllocatorRef, uint32_t); CFStringRef (*str)(CFAllocatorRef, const char *, CFStringEncoding);
+        CFTypeID (*type)(CFTypeRef), (*bool_t)(void), (*num_t)(void);
+        Boolean (*bl)(CFBooleanRef); Boolean (*num)(CFNumberRef, CFNumberType, void *); void (*rel)(CFTypeRef);
+    } f;
+    static io_obj svc; static int tried;
+    if (!tried) {
+        tried = 1;
+        void *io = dlopen("/System/Library/Frameworks/IOKit.framework/IOKit", RTLD_LAZY), *cf = dlopen("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation", RTLD_LAZY);
+        if (io && cf) {
+            f.get_svc = (io_obj (*)(unsigned int, CFDictionaryRef))dlsym(io, "IOServiceGetMatchingService");
+            f.match = (CFMutableDictionaryRef (*)(const char *))dlsym(io, "IOServiceMatching");
+            f.prop = (CFTypeRef (*)(io_obj, CFStringRef, CFAllocatorRef, uint32_t))dlsym(io, "IORegistryEntryCreateCFProperty");
+            f.str = (CFStringRef (*)(CFAllocatorRef, const char *, CFStringEncoding))dlsym(cf, "CFStringCreateWithCString");
+            f.type = (CFTypeID (*)(CFTypeRef))dlsym(cf, "CFGetTypeID"); f.bool_t = (CFTypeID (*)(void))dlsym(cf, "CFBooleanGetTypeID");
+            f.num_t = (CFTypeID (*)(void))dlsym(cf, "CFNumberGetTypeID");
+            f.bl = (Boolean (*)(CFBooleanRef))dlsym(cf, "CFBooleanGetValue"); f.num = (Boolean (*)(CFNumberRef, CFNumberType, void *))dlsym(cf, "CFNumberGetValue");
+            f.rel = (void (*)(CFTypeRef))dlsym(cf, "CFRelease");
+        }
+        if (f.get_svc && f.match && f.prop && f.str && f.type && f.bool_t && f.num_t && f.bl && f.num && f.rel)
+            svc = f.get_svc(0, f.match("AppleSmartBattery"));
+    }
+    if (!f.get_svc || !svc) return 0;   // 框架取不到 / 没电池服务（桌面机）：不算电池
+    CFStringRef k = f.str(NULL, "ExternalConnected", kCFStringEncodingUTF8);
+    CFTypeRef d = k ? f.prop(svc, k, NULL, 0) : NULL;
+    if (k) f.rel(k);
+    int on_battery = 1;   // 键读不出：按电池（interactive，10-24 起的现状），宁可保守
+    if (d) {
+        int64_t v = 1;
+        if (f.type(d) == f.bool_t()) on_battery = !f.bl((CFBooleanRef)d);
+        else if (f.type(d) == f.num_t() && f.num((CFNumberRef)d, kCFNumberSInt64Type, &v)) on_battery = !v;
+        f.rel(d);
+    }
+    return on_battery;
+}
+#endif
+
 // 能耗：本进程 CPU 能耗 + GPU 忙时间（s2a_energy_snap 差分；GPU 没有瓦数，读不到时写明）+ 整机功率（电池遥测）+ 系统发热档 + 电量与变化速率
 static void line_energy(char *o, size_t n, const s2a_hud_host *h) {
     static s2a_esnap last; static int have; s2a_esnap s; char w[64] = "测量中";
@@ -227,13 +274,17 @@ static uint64_t mids_last_second(uint64_t now) {
     for (uint64_t i = end; i > 0 && end - i < MR - 1; i--) { uint64_t t = atomic_load_explicit(&g_mt[(i - 1) % MR], memory_order_relaxed); if (!t || now - t > 1000000000ull) break; c++; }
     return c;
 }
-int s2a_hud_brief(char *out, size_t n) {
-    uint64_t end = atomic_load_explicit(&g_fn, memory_order_acquire), now = mono_ns(), f1 = 0;
+static uint64_t frames_last_second(uint64_t now) {
+    uint64_t end = atomic_load_explicit(&g_fn, memory_order_acquire), f1 = 0;
     for (uint64_t i = end; i > 0 && end - i < HR - 1; i--) {
         uint64_t t = atomic_load_explicit(&g_ft[(i - 1) % HR], memory_order_relaxed);
         if (!t || now - t > 1000000000ull) break;
         f1++;
     }
+    return f1;
+}
+int s2a_hud_brief(char *out, size_t n) {
+    uint64_t now = mono_ns(), f1 = frames_last_second(now);
     task_vm_info_data_t vi; mach_msg_type_number_t c = TASK_VM_INFO_COUNT;
     double gb = task_info(mach_task_self(), TASK_VM_INFO, (task_info_t)&vi, &c) == KERN_SUCCESS ? vi.phys_footprint / 1073741824.0 : -1;
     char m[64]; snprintf(m, sizeof m, "%s", S2A_UI(S2A_UI_HUD_MEM_FAIL)); uint64_t g = s2a_gpu_alloc_bytes();
@@ -241,6 +292,12 @@ int s2a_hud_brief(char *out, size_t n) {
     uint64_t mid = mids_last_second(now);
     if (mid) return snprintf(out, n, S2A_UI(S2A_UI_HUD_BRIEF_FI), (unsigned long long)(f1 + mid), (unsigned long long)f1, m);
     return snprintf(out, n, S2A_UI(S2A_UI_HUD_BRIEF), (unsigned long long)f1, m);
+}
+// 只看帧率（#2207 Mac「显示」菜单）：同简版的帧数，不带内存
+int s2a_hud_brief_fps(char *out, size_t n) {
+    uint64_t now = mono_ns(), f1 = frames_last_second(now), mid = mids_last_second(now);
+    if (mid) return snprintf(out, n, S2A_UI(S2A_UI_HUD_FPS_FI), (unsigned long long)(f1 + mid), (unsigned long long)f1);
+    return snprintf(out, n, S2A_UI(S2A_UI_HUD_FPS), (unsigned long long)f1);
 }
 
 int s2a_hud_text(char *out, size_t n, const s2a_hud_host *h) {

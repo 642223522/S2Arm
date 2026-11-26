@@ -95,12 +95,32 @@ static void one(int kind, const char *name) {
     }
     API(nvnTextureFinalize)(&t); cases++;
 }
+// 多重采样贴图（#1499 被囚禁的掌心：警告页之后整屏黑，日志「deswizzle failed format 0x29 target 5」）：采样只在宿主 GPU 上，客体内存里排不出。
+//   GPU 清成绿 → CPU 再写它自己的存储（同 GPU_THEN_CPU 那例的写法）→ 降采样到普通 2D 贴图读回：期望仍是 GPU 清的绿（Switch 上这块存储的字节是 GPU 的压缩采样格式，
+//   CPU 写进去的字节不会变成「新的采样」；宿主按客体内存重传会换上一张内容未定义的新贴图，修前读回不是绿）
+static void msaa_case(void) {
+    phase="GPU 写过的多重采样贴图，CPU 再写它的存储：保留 GPU 内容"; tex_off+=65536;
+    NVNtextureBuilder b; API(nvnTextureBuilderSetDefaults)(&b); API(nvnTextureBuilderSetDevice)(&b,&device); API(nvnTextureBuilderSetTarget)(&b,NVN_TEXTURE_TARGET_2D_MULTISAMPLE);
+    API(nvnTextureBuilderSetSize2D)(&b,SIDE,SIDE); API(nvnTextureBuilderSetLevels)(&b,1); API(nvnTextureBuilderSetFormat)(&b,NVN_FORMAT_RGBA8); API(nvnTextureBuilderSetSamples)(&b,4);
+    size_t bytes=API(nvnTextureBuilderGetStorageSize)(&b); REQUIRE(bytes && tex_off+bytes+65536<=READ_OFFSET);
+    API(nvnTextureBuilderSetStorage)(&b,&pool,(ptrdiff_t)tex_off); NVNtexture ms; REQUIRE(API(nvnTextureInitialize)(&ms,&b));
+    tex_off+=(bytes+65535)&~(size_t)65535;
+    NVNtexture rs; make(&rs);   // 读回用的普通 2D 贴图（降采样目标）
+    gpu_clear(&ms);
+    begin(); API(nvnCommandBufferDownsample)(&commands,&ms,&rs); submit();
+    read_check(&rs,green_rgba,"GPU 清成的绿（降采样读回）");
+    for (size_t i=0; i<bytes; i+=4) memcpy((uint8_t *)pool_storage+(tex_off-((bytes+65535)&~(size_t)65535))+i,new_rgba,4);   // CPU 写多重采样贴图自己的存储
+    begin(); API(nvnCommandBufferDownsample)(&commands,&ms,&rs); submit();
+    read_check(&rs,green_rgba,"CPU 写过多重采样贴图的存储后，仍是 GPU 清的绿");
+    API(nvnTextureFinalize)(&rs); API(nvnTextureFinalize)(&ms); cases++;
+}
 int main(int argc, char **argv) { @autoreleasepool {
     (void)argv; if (argc!=1) { fprintf(stderr,"用法：%s\n",argv[0]); return 2; }
     setup();
     one(CPU_ONLY,"GPU 读过的未压缩贴图，CPU 不 Flush 再写：轮询发布");
     one(GPU_THEN_NEIGHBOUR,"GPU 写过的贴图，CPU 只写同页别处：保留 GPU 内容");
     one(GPU_THEN_CPU,"GPU 写过的贴图，CPU 再写它自己的字节：CPU 后写的赢");
+    msaa_case();
     API(nvnCommandBufferFinalize)(&commands); API(nvnQueueFinalize)(&queue);
     API(nvnMemoryPoolFinalize)(&pool); API(nvnMemoryPoolFinalize)(&cmd_pool); API(nvnDeviceFinalize)(&device);
     if (fails) { printf("✗ t_nvn_ftpoll：%u 项检查里 %u 项不符\n",checks,fails); return 1; }   // 原生门禁按「✓ t_ / ✗ t_」逐组判

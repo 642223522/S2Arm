@@ -48,6 +48,16 @@ void s2a_pad_abxy_order(int kind, int layout, int out[4]);
 //   slot_of[j] 写第 j 只占的槽（-1 = 超过 max 只，丢弃）；返回占到的最高槽位 + 1（至少 1：槽 0 留给键盘 / 鼠标 / 触屏）。
 //   还在线的保留原槽；新来的占最小空槽，所以断开后重连、中间没插别的就回原槽
 int s2a_slot_plan(const void *const *prev, const void *const *live, int count, int max, int *slot_of);
+// 顺序表登记了第 r 位（rank = s2a_pad_order_rank，0 起）的手柄钉在第 r 格：面板写它是 P1，游戏读的玩家 1 就是它（#1264）。
+//   在 s2a_slot_plan 之前改 prev：它原在别格就挪过来，被挤掉的没登记手柄由 s2a_slot_plan 另找空格；没登记的照旧「留原槽」
+void s2a_slot_pin(const void **prev, const void *const *live, const int *rank, int count, int max);
+// 游戏限人数时压缩名次（D-VYNF / D-BS3T：顺序表「P1 空、P2 空、P3 手柄」，游戏只收 1 人 → 手柄被钉在第 3 格、一个都没配给游戏，
+//   手柄设置小程序无限重弹黑屏）：cap > 0 且有登记过的在线手柄名次 ≥ cap 时，登记过的按名次先后改写成 0、1、2…（玩家排的先后照旧，空位不占名额）；
+//   没限（cap = 0）或都在名额以内不动。在 s2a_slot_pin 之前调；cap 取 s2a_pad_cap()（服务层经 s2a_vpad_set_cap 设）
+void s2a_slot_rank_cap(int *rank, int count, int cap);
+int s2a_pad_cap(void);
+void s2a_vpad_set_cap(int n);
+extern void (*volatile s2a_pad_cap_hook)(void);   // 上限变化时调（可为空）
 
 // 分配玩家的顺序表（#520 E；启动器写 ~/Library/Application Support/S2Arm/pad-order.json，宿主读）：
 //   entry 依次是 P1、P2…——NS2 手柄写通道玩家号（ns2_player ≥ 0），系统手柄写名字 + 同名第几只（ns2_player = -1）；
@@ -55,11 +65,17 @@ int s2a_slot_plan(const void *const *prev, const void *const *live, int count, i
 enum { S2A_PAD_ORDER_MAX = 8, S2A_PAD_ORDER_UNLISTED = 100, S2A_PAD_ORDER_DROPPED = -1 };
 // 键盘也能当一位玩家（分配时按任一键登记）：entry 的 ns2_player 写 S2A_PAD_ORDER_KEYBOARD；排第几同手柄
 // 一代 Joy-Con 按设备当玩家（D2）：单只 name = 设备 id（序列号，蓝牙地址）；按设备读的一对 name = 「左 id|右 id」。几套都行，各占一位
-enum { S2A_PAD_ORDER_KEYBOARD = -2, S2A_PAD_ORDER_GEN1 = -3, S2A_PAD_ORDER_GEN1_PAIR = -4 };
+// 空槽占位（S2A_PAD_ORDER_EMPTY）：该槽手柄暂时断开，保持后面玩家在原位不变
+enum { S2A_PAD_ORDER_KEYBOARD = -2, S2A_PAD_ORDER_GEN1 = -3, S2A_PAD_ORDER_GEN1_PAIR = -4, S2A_PAD_ORDER_EMPTY = -5 };
 typedef struct { int ns2_player; char name[64]; int index; } s2a_pad_order_entry;
 typedef struct { int count, dropped_count; s2a_pad_order_entry entry[S2A_PAD_ORDER_MAX], dropped[S2A_PAD_ORDER_MAX]; } s2a_pad_order;
 // 一只手柄排第几（0 起）；表里没有 → S2A_PAD_ORDER_UNLISTED（排在表里的后面，彼此照原顺序）；被 dropped → S2A_PAD_ORDER_DROPPED（不进槽位）
 int s2a_pad_order_rank(const s2a_pad_order *order, int ns2_player, const char *name, int index);   // 键盘：ns2_player = S2A_PAD_ORDER_KEYBOARD；一代：GEN1 / GEN1_PAIR + name
+// 按顺序表排一拍里在线的手柄（Mac front_mac.m 与 iOS ios/controller.m 共用）：第 j 只的身份 = ns2_player[j]（NS2 通道玩家号 / KEYBOARD / GEN1… / -1 = 系统手柄）
+//   + group[j]（系统手柄名字，用来数「同名第几只」，可 NULL）+ key[j]（一代按设备的 id，非 NULL 时代替名字去比；key 整个可传 NULL）。
+//   keep[k] = 排好后第 k 只是原来的第几只（表里的按表顺序在前，没列的照原顺序接在后面，没分配的去掉），rank[k] = 它排第几（没列 = UNLISTED）；返回留下几只
+enum { S2A_PAD_ARRANGE_MAX = 32 };
+int s2a_pad_order_arrange(const s2a_pad_order *order, int count, const int *ns2_player, const char *const *group, const char *const *key, int *keep, int *rank);
 
 // 原子快照，固定 56 字节。epoch 在切源/前后台切换时变化，旧短按不得跨 epoch 回放。
 typedef struct {
@@ -85,6 +101,11 @@ typedef struct {
     float acceleration_x, acceleration_y, acceleration_z;
     float gyro_x, gyro_y, gyro_z;
 } s2a_pad_motion;
+// 补满采样（#2146）：一次取走一拍累积的全部 IMU 样本（时间升序、消费式）。slot 0 = P1；side 0 = 主路、1 = 另一路。
+//   返回 >=0 条数，-1 = 这一格没有可批量的体感源（服务层走单笔路径）。宿主装配取 provider 登记给服务层；
+//   没有批量源的宿主（runtime/src/host_main.c 弱定义）回 NULL。
+typedef int (*s2a_pad_motion_burst_fn)(int slot, int side, s2a_pad_motion *out, int max);
+s2a_pad_motion_burst_fn s2a_pad_motion_burst_provider(void);
 uint64_t s2a_pad_rumble_session(void); // 0 = 不可用；重连、前后台切换后会变化。
 // 与游戏 VibrationValue 同序，每侧 16 字节；一次提交左右完整帧。
 typedef struct {

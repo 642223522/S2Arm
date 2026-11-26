@@ -135,6 +135,63 @@ class WindowsBoundaries(OriginalContracts):
         import winproc
         self.w = winproc
 
+    def test_read_shared_reads_whole_file_across_chunks(self):
+        # 直接 ReadFile 按 1 MiB 一块读（D-2QSE / D-EX8J）：3 MiB + 7 字节、空文件都整份读回，逐字节同写入
+        d = Path(tempfile.mkdtemp())
+        data = bytes(range(256)) * (3 * 4096) + b"tail\x00\x01\x02"
+        (d / "big.bin").write_bytes(data); (d / "empty.bin").write_bytes(b"")
+        self.assertEqual(self.w.read_shared(d / "big.bin"), data)
+        self.assertEqual(self.w.read_shared(d / "empty.bin"), b"")
+
+    def test_read_shared_reports_real_windows_error(self):
+        # ReadFile 失败时报 GetLastError 原码（不再被 CRT 换成 errno 22）：替身 ReadFile 置 1117（ERROR_IO_DEVICE）后返回失败
+        import ctypes
+        f = Path(tempfile.mkdtemp()) / "catalog.json"; f.write_text("{}")
+        real = self.w._api
+        def fake(dll, name, *sig):
+            if name != "ReadFile":
+                return real(dll, name, *sig)
+            def read(*a):
+                ctypes.set_last_error(1117)
+                return 0
+            return read
+        self.w._api = fake
+        try:
+            with self.assertRaises(OSError) as got:
+                self.w.read_shared(f)
+        finally:
+            self.w._api = real
+        self.assertEqual((got.exception.winerror, got.exception.filename), (1117, str(f)))
+        os.remove(f)   # 句柄已关：文件删得掉（读失败也不漏句柄）
+
+    def test_access_denied_carries_file_facts(self):
+        # #3c209a：拒绝访问时报错带上这份文件的属性与 SDDL（诊断里才定得了因）。造法：给文件加一条拒绝本人读的规则
+        import getpass
+        f = Path(tempfile.mkdtemp()) / "state.json"; f.write_text("{}")
+        user = getpass.getuser()
+        subprocess.run(["icacls", str(f), "/deny", f"{user}:(RD)"], check=True, capture_output=True)
+        try:
+            with self.assertRaises(PermissionError) as got:
+                self.w.read_shared(f)
+            self.assertEqual(got.exception.filename, str(f))
+            self.assertIn("属性 0x", got.exception.strerror)
+            self.assertIn("权限 O:", got.exception.strerror)   # SDDL 以属主 O: 开头
+        finally:
+            subprocess.run(["icacls", str(f), "/remove:d", user], capture_output=True)
+
+    def test_app_control_block_names_the_tool(self):
+        # #0745b9：CreateProcess 被应用控制拦下（WinError 4551）不带文件名 → popen 补上要起的程序，errors.explain 点名；私有作业对象照样关掉
+        def blocked(*a, **k):
+            e = OSError(13, "应用程序控制策略已阻止此文件。"); e.winerror = 4551
+            raise e
+        exe = str(Path(sys.executable))
+        with patch.object(subprocess, "Popen", blocked):
+            with self.assertRaises(OSError) as got:
+                self.w.popen([exe, "-c", "pass"])
+        self.assertEqual((got.exception.winerror, got.exception.filename), (4551, exe))
+        import errors
+        self.assertEqual(errors.explain(got.exception).code, "app_control_blocked")
+
     def child(self, *args, managed=True):
         spawn = self.w.popen if managed else subprocess.Popen
         p = spawn([sys.executable,'-u','-c',*args],stdout=subprocess.PIPE,stderr=subprocess.PIPE)

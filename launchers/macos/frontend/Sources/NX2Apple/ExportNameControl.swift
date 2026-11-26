@@ -16,6 +16,7 @@ struct ExportNameControl: View {
     @State private var draft: String
     @State private var editing = false
     @State private var controllerEditing = false
+    @State private var hovered = false
     @FocusState private var focused: Bool
 
     init(name: String, custom: Bool, save: @escaping (String) -> Void) {
@@ -35,9 +36,11 @@ struct ExportNameControl: View {
                 .accessibilityLabel(loc.t("s2arm.custom.name.title"))
                 .accessibilityIdentifier("export.name.field")
             Button { focused = true } label: {
-                Image(systemName: "pencil").font(.system(size: 15, weight: .semibold)).foregroundStyle(.secondary)
+                Image(systemName: "pencil").font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(focused || hovered ? LauncherPalette.cream : .secondary)
             }.buttonStyle(.plain).accessibilityLabel(loc.t("s2arm.custom.name.help"))
         }
+        .onHover { hovered = $0 }
         .controllerControl(id: "export.name", activate: editFromController)
         .help(loc.t("s2arm.custom.name.help"))
         .contextMenu {

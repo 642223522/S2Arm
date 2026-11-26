@@ -394,6 +394,80 @@ int main(void) {
                slot_of[3] == 3 && slot_of[4] == -1);   // 第 5 只丢弃
         assert(s2a_slot_plan(none, five, 0, 4, slot_of) == 1);   // 没有手柄：1 格（触屏 / 键盘）
     }
+    // 游戏限人数时压缩名次（s2a_slot_rank_cap → s2a_slot_pin → s2a_slot_plan，Mac / iOS 同一串）。期望值手算：
+    //   ① D-VYNF：顺序表「P1 空、P2 空、P3 手柄」，只连这一只（名次 2），游戏限 1 人 → 手柄落槽 0（改前钉在槽 2，游戏一个手柄都没有）
+    //   ② 表「P1 X、P2 空、P3 Y、P4 Z」，三只都在，限 2 人 → X 槽 0、Y 槽 1（按表先后取前两个，空位不占名额），Z 排到槽 2（超名额不给游戏）
+    //   ③ 不限（cap 0）、或都在名额以内（限 4 人、名次 0 / 2）→ 名次不动，照表原位（玩家排的空位在多人游戏里照旧保留）
+    {
+        static const char X, Y, Z;
+        int slot_of[4];
+        {   // ①
+            const void *prev[4] = {0}, *live[1] = {&X}; int rank[1] = {2};
+            s2a_slot_rank_cap(rank, 1, 1); s2a_slot_pin(prev, live, rank, 1, 4);
+            assert(rank[0] == 0 && s2a_slot_plan(prev, live, 1, 4, slot_of) == 1 && slot_of[0] == 0);
+        }
+        {   // ②
+            const void *prev[4] = {0}, *live[3] = {&Y, &X, &Z}; int rank[3] = {2, 0, 3};
+            s2a_slot_rank_cap(rank, 3, 2); s2a_slot_pin(prev, live, rank, 3, 4);
+            assert(rank[0] == 1 && rank[1] == 0 && rank[2] == 2);
+            assert(s2a_slot_plan(prev, live, 3, 4, slot_of) == 3 && slot_of[1] == 0 && slot_of[0] == 1 && slot_of[2] == 2);
+        }
+        {   // ③
+            int r0[2] = {0, 2}; s2a_slot_rank_cap(r0, 2, 0); assert(r0[0] == 0 && r0[1] == 2);
+            int r1[2] = {0, 2}; s2a_slot_rank_cap(r1, 2, 4); assert(r1[0] == 0 && r1[1] == 2);
+            int r2[2] = {S2A_PAD_ORDER_UNLISTED, 2}; s2a_slot_rank_cap(r2, 2, 1); assert(r2[0] == S2A_PAD_ORDER_UNLISTED && r2[1] == 0);   // 没登记的不动
+        }
+        s2a_vpad_set_cap(1); assert(s2a_pad_cap() == 1); s2a_vpad_set_cap(0); assert(s2a_pad_cap() == 0); s2a_vpad_set_cap(-3); assert(s2a_pad_cap() == 0);
+    }
+    // 按顺序表排在线手柄（s2a_pad_order_arrange，Mac / iOS 共用）：期望值按「表里的按表顺序在前、没列的照原顺序接在后、没分配的去掉、系统手柄按名字 + 同名第几只认」手算
+    {
+        s2a_pad_order order = {0};
+        order.count = 2;
+        order.entry[0].ns2_player = -1; strcpy(order.entry[0].name, "Xbox"); order.entry[0].index = 1;   // P1 = 第 2 只 Xbox
+        order.entry[1].ns2_player = 0;                                                                     // P2 = NS2 通道玩家 0
+        order.dropped_count = 1;
+        order.dropped[0].ns2_player = -1; strcpy(order.dropped[0].name, "Pad X"); order.dropped[0].index = 0;
+        int ns2[5] = {-1, -1, 0, -1, -1};
+        const char *group[5] = {"Xbox", "Xbox", NULL, "Pad X", "8BitDo"};
+        int keep[5], rank[5];
+        assert(s2a_pad_order_arrange(&order, 5, ns2, group, NULL, keep, rank) == 4);   // Pad X 没分配：去掉
+        assert(keep[0] == 1 && rank[0] == 0);                                // 第 2 只 Xbox 是 P1
+        assert(keep[1] == 2 && rank[1] == 1);                                // NS2 玩家 0 是 P2
+        assert(keep[2] == 0 && rank[2] == S2A_PAD_ORDER_UNLISTED);           // 第 1 只 Xbox 没列：照原顺序接在后
+        assert(keep[3] == 4 && rank[3] == S2A_PAD_ORDER_UNLISTED);
+        // 没有表：一个不去、顺序不动（= 改前照连接顺序）
+        assert(s2a_pad_order_arrange(NULL, 5, ns2, group, NULL, keep, rank) == 5);
+        for (int k = 0; k < 5; k++) assert(keep[k] == k && rank[k] == S2A_PAD_ORDER_UNLISTED);
+        // 一代按设备：key 代替名字去比，同名的两只照设备 id 分开
+        s2a_pad_order g1 = {0};
+        g1.count = 1; g1.entry[0].ns2_player = S2A_PAD_ORDER_GEN1; strcpy(g1.entry[0].name, "dev-B");
+        int gn[2] = {S2A_PAD_ORDER_GEN1, S2A_PAD_ORDER_GEN1};
+        const char *gg[2] = {"Joy-Con (L)", "Joy-Con (L)"}, *gk[2] = {"dev-A", "dev-B"};
+        assert(s2a_pad_order_arrange(&g1, 2, gn, gg, gk, keep, rank) == 2 && keep[0] == 1 && rank[0] == 0 && keep[1] == 0);
+    }
+    // #1428：iPhone 上 NS2 Pro（BLE）和系统手柄一起分槽（ios/controller.m 给 NS2 Pro 一个固定身份 N），期望按「先连先占、不重排、断开留空」手算
+    {
+        static const char X, Y, N;
+        int slot_of[3];
+        const void *empty[4] = {0};
+        const void *x[1] = {&X};
+        assert(s2a_slot_plan(empty, x, 1, 4, slot_of) == 1 && slot_of[0] == 0);   // 魔派先连：玩家 1
+        const void *p1[4] = {&X};
+        const void *xn[2] = {&X, &N};
+        assert(s2a_slot_plan(p1, xn, 2, 4, slot_of) == 2 && slot_of[0] == 0 && slot_of[1] == 1);   // NS2 Pro 后连：玩家 2（原先不分槽，没输入）
+        const void *n_first[4] = {&N};
+        assert(s2a_slot_plan(n_first, xn, 2, 4, slot_of) == 2 && slot_of[1] == 0 && slot_of[0] == 1);   // NS2 Pro 先连：仍是玩家 1，魔派顺延玩家 2
+        const void *p2[4] = {&X, &N};
+        const void *n_only[1] = {&N};
+        assert(s2a_slot_plan(p2, n_only, 1, 4, slot_of) == 2 && slot_of[0] == 1);   // 魔派断开：NS2 Pro 留玩家 2、不顶上来，玩家 1 空着
+        const void *p3[4] = {NULL, &N};
+        const void *ny[2] = {&N, &Y};
+        assert(s2a_slot_plan(p3, ny, 2, 4, slot_of) == 2 && slot_of[0] == 1 && slot_of[1] == 0);   // 新来的系统手柄占空出的玩家 1
+        const void *x_only[1] = {&X};
+        assert(s2a_slot_plan(p2, x_only, 1, 4, slot_of) == 1 && slot_of[0] == 0);   // NS2 Pro 断开：魔派留玩家 1，玩家 2 空着（最高占到槽 0 → 1 格）
+        const void *p4[4] = {&X, NULL};
+        assert(s2a_slot_plan(p4, xn, 2, 4, slot_of) == 2 && slot_of[0] == 0 && slot_of[1] == 1);   // NS2 Pro 重连：回空着的玩家 2
+    }
 
     const int iterations = 1000000;
     struct timespec start, end; int32_t axes[4];

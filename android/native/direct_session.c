@@ -4,9 +4,7 @@
 #include "direct_choice.h"   // direct-vulkan.txt 的唯一解析、AUTO 判定与 attempt 标记（#274）
 #include "direct_callback.h"
 #include "direct/selection.h"   // NVN 直连的冻结选择（s2a_direct_lookup 的 nvnBootstrapLoader 分支）
-#include "capprobe/capprobe.h"  // #1456 runtime-lost 回写
 #include "vk_loader_shim.h"  // 窄 shim 的入口表（__wrap_* 在 vk_loader_shim.c；拦的是 Vulkan loader 一级的实例创建，归平台壳）
-S2A_CAPPROBE_RUNTIME_LOST_WEAK_REF;   // 宿主链接单元无 bridge.cpp 时解析为 NULL
 #include <errno.h>
 #include <stdatomic.h>
 // 浮层的「成功交给呈现」计数：新回放层（缺省）取 rp_present_stats 的已上屏数，旧层（对照诊断用）取 mtl_present_count。
@@ -70,9 +68,6 @@ static void error(const char *operation, VkResult result) {
     fprintf(stderr, "[vk-direct] 【红】%s: VkResult=%d\n", operation, result);
     if (result == VK_ERROR_DEVICE_LOST) {
         mark_failure(operation);
-        // #1456：真实 DEVICE_LOST 回写当前指纹 capprobe 结果（source=runtime-lost，
-        // 只记指纹不记游戏），下次启动直接走规避不再探。
-        if (s2a_capprobe_runtime_lost) s2a_capprobe_runtime_lost();
         const s2a_host_api_v1 *h = s2a_host_get();
         if (h && h->stop) h->stop->request_stop(h->host, S2A_HOST_STOP_DEVICE_LOST, operation);
     }
@@ -733,6 +728,22 @@ int s2a_android_vk_skip_module(const char *name) {
     return s2a_gfx_mode() == 1 && name && strlen(name) == 7 && !strncmp(name, "subsdk", 6) &&
         name[6] >= '0' && name[6] <= '9' && (skipped & (1u << (name[6] - '0')));
 }
+// Switch 2 的 SDK 接管（共用实现 graphics/nvn/gfx/nvn/nvn2.c；次序与条件同 runtime/src/gfxmode.c：nn::vi 先、nv:: 后）：
+//   游戏导入的 nv::（GPU 驱动启动层）与 nn::vi（显示层）解析到宿主，条件同 nvnBootstrapLoader：选择事务已冻结为 NVN 直连。
+//   不接的后果：nv::InitializeGraphics 落到 sdk 原实现，经 nn::gs::sdk::BootGraphicsSystem → nn::gsv::BootWithRemoteMemory →
+//   nn::am::GetGraphicsSupervisor 去起游戏自带的 NVN2 驱动，轮询 ISelfController 命令 2000（服务层没有），游戏永远黑屏。
+//   Switch 1 进程两个入口都回 NULL（nvn2_on 为 0）。nn::codec / syncpt / gs 那一族（s2a_codec_entry，nvn2_codec.c，含 Apple 视频解码）安卓没链，不在这里。
+static void *ns2_sdk_entry(const char *name) {
+    if (strncmp(name, "_Z", 2) && strncmp(name, "Nv", 2)) return NULL;
+    const struct s2a_direct_selection *selection = s2a_direct_selection_current();
+    if (!selection || selection->mode != 1) return NULL;
+    extern void *nvn2_vi_entry(const char *name) __attribute__((weak));
+    extern void *s2a_nv_entry(const char *name) __attribute__((weak));
+    void *f = NULL;
+    if ((!strncmp(name, "_ZN2nn2vi", 9) || !strncmp(name, "_ZNK2nn2vi", 10)) && nvn2_vi_entry) f = nvn2_vi_entry(name);
+    if (!f && s2a_nv_entry) f = s2a_nv_entry(name);
+    return f;
+}
 uint64_t s2a_direct_lookup(const char *name) {
     // 本线 NVN 直连前端（共享 hle_nvn.c 的 HLE_FORCE 入口）：只在 relocation 前的
     // 选择事务（direct/selection.c）冻结为 direct 时接管 nvnBootstrapLoader。
@@ -749,6 +760,15 @@ uint64_t s2a_direct_lookup(const char *name) {
             abort();
         }
         return (uint64_t)(uintptr_t)sw_xstack_wrap(name, (void *)h_nvnBootstrapLoader);   // 对齐 gfxmode.c 的 Apple 侧包装
+    }
+    void *ns2 = name ? ns2_sdk_entry(name) : NULL;
+    if (ns2) {
+        static _Atomic int said;
+        if (!atomic_exchange_explicit(&said, 1, memory_order_relaxed)) {   // 只记第一个：stderr 在发布包上下一局才回放，同一行写系统日志，当局就能核对
+            fprintf(stderr, "[s2a] Switch 2 SDK 接管（NVN 直连）：游戏导入 %s 起，nv:: / nn::vi 由宿主应答\n", name);
+            __android_log_print(ANDROID_LOG_INFO, "S2Arm", "[s2a] Switch 2 SDK 接管（NVN 直连）：游戏导入 %s 起，nv:: / nn::vi 由宿主应答", name);
+        }
+        return (uint64_t)(uintptr_t)sw_xstack_wrap(name, ns2);
     }
     return name && s2a_gfx_mode() == 1 && !strncmp(name, "vk", 2) ? (uint64_t)(uintptr_t)s2a_vk_entry(name) : 0;
 }

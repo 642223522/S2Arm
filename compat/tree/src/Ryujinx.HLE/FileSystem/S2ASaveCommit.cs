@@ -8,6 +8,7 @@ using LibHac.FsSystem;
 using LibHac.FsSystem.Save;
 using Ryujinx.Common.Logging;
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Threading;
@@ -147,6 +148,27 @@ namespace Ryujinx.HLE.FileSystem
         // process dies first, the next mount or commit finds the pending file and applies it only when the committed directory carries its token
         // (= the swap happened), so a later mount never copies the old ExtraData0 over the new extra data.
         private const string PendingExtra = ".s2a_extra_pending";
+        public const string PreviousDir = ".s2a_prev";   // 上一次提交前的已提交版本（提交换下来的那份）
+        // 护栏标记：最近一次提交被护栏拦下、到现在还没有一次正常提交（界面据此提示「回到上一份存档」）。一行：UTC 时间、第几次提交、哪里对不上。
+        //   拦下时写，之后一次正常提交或回到上一份时删
+        public const string GuardFile = ".s2a_guard";
+
+        private static void ClearGuard(string dir)
+        {
+            string guard = System.IO.Path.Combine(dir, GuardFile);
+
+            try
+            {
+                if (File.Exists(guard))
+                {
+                    File.Delete(guard);
+                }
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+            {
+                Red($"存档事务：{dir} 护栏标记没删掉（{e.Message}）");
+            }
+        }
         private const int TokenSize = 16;
 
         private SharedRef<ISaveDataFileSystem> _base;
@@ -159,6 +181,13 @@ namespace Ryujinx.HLE.FileSystem
         private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, object> _dirLocks = new(StringComparer.Ordinal);
         private static int _commits;
         private int _openWritable;   // files open for writing: a commit with one open is refused, as LibHac's journaled commit does
+        // 上次提交（或挂载、回滚）以来游戏对每个文件的最后一次写入：偏移 + 头 64 字节，按游戏的实际调用记（WritableFile）。提交前把这些文件刷到盘再克隆，
+        //   克隆后逐个核对新版本里这段字节就是游戏写的；对不上就不提交（已提交版本不动、报红）。一款游戏（iPhone）写成功的 2 字节存档被提交成了 2 个零字节，
+        //   下次起局读它抛异常中止：提交永远不能把游戏写进去的数据换成别的
+        private readonly Dictionary<string, (long Offset, byte[] Head)> _lastWrites = new(StringComparer.Ordinal);
+        // 这次游戏动过的路径（写 / 改长短 / 建 / 删 / 改名，目录按前缀）：没动过的文件提交时大小必须和已提交版本一样（非空变零字节、凭空消失都不让进）
+        private readonly HashSet<string> _touched = new(StringComparer.Ordinal), _touchedDirs = new(StringComparer.Ordinal);
+        private const int WriteHead = 64;
 
         internal S2ASaveTransaction(ref SharedRef<ISaveDataFileSystem> baseFileSystem, string dir)
         {
@@ -203,6 +232,51 @@ namespace Ryujinx.HLE.FileSystem
 
                 return e == 0 ? null : Errno("克隆已提交版本", e);
             }
+        }
+
+        // 回到上一份存档（玩家确认后，起局前、没有挂载着这棵存档时调）：已提交版本和上一份原子交换，再调一次就换回来。附加数据不跟着换（存档属性、大小，几乎不变）。
+        //   成功回 null，否则回原因
+        public static string RestorePrevious(string dir)
+        {
+            IHostDirectoryTransaction txn = Txn;
+
+            if (txn == null)
+            {
+                return "平台没登记宿主目录原语";
+            }
+
+            lock (LockFor(dir))
+            {
+                string prev = System.IO.Path.Combine(dir, PreviousDir), committed = System.IO.Path.Combine(dir, "0");
+
+                if (!Directory.Exists(prev))
+                {
+                    return "没有上一份存档";
+                }
+
+                if (!Directory.Exists(committed))
+                {
+                    return "没有已提交目录";
+                }
+
+                int e = txn.Exchange(prev, committed);
+
+                if (e != 0)
+                {
+                    return Errno("和上一份交换", e);
+                }
+
+                e = txn.SyncDirectory(dir);
+
+                if (e != 0)
+                {
+                    return Errno("交换后目录项落盘", e);
+                }
+
+                ClearGuard(dir);   // 回到了上一份：被拦的那次与它无关了
+            }
+
+            return null;
         }
 
         internal static void Red(string what)
@@ -361,13 +435,55 @@ namespace Ryujinx.HLE.FileSystem
 
                 ApplyPendingExtra(_dir);   // a previous commit's extra data that never landed
 
-                int errno = Txn.CloneTree(working, fresh);
+                // 刷盘 → 克隆 → 核对；对不上先在内部重做一次（很多游戏提交收到错误码就中止，玩家等于闪退丢进度：偶发的一次自己吞掉，记黄行留给定因），
+                //   重做还对不上才整次不提交
+                int errno = 0;
+                string firstMismatch = null;
 
-                if (errno != 0)
+                for (int attempt = 1; ; attempt++)
                 {
-                    Red($"存档事务：提交 {_dir} 时克隆工作目录失败（errno {errno}），已提交版本不动");
+                    string unsynced = SyncWrittenLocked(working);
 
-                    return errno == 28 ? ResultFs.UsableSpaceNotEnough.Log() : ResultFs.UnexpectedInLocalFileSystemE.Log();   // 28 = ENOSPC
+                    if (unsynced != null)
+                    {
+                        Logger.Warning?.Print(LogClass.ServiceFs, $"【黄】存档事务：提交 {_dir} 时{unsynced}（记录已丢掉），照常提交");
+                    }
+
+                    errno = Txn.CloneTree(working, fresh);
+
+                    if (errno != 0)
+                    {
+                        Red($"存档事务：提交 {_dir} 时克隆工作目录失败（errno {errno}），已提交版本不动");
+
+                        return errno == 28 ? ResultFs.UsableSpaceNotEnough.Log() : ResultFs.UnexpectedInLocalFileSystemE.Log();   // 28 = ENOSPC
+                    }
+
+                    string mismatch = VerifyWrittenLocked(fresh, committed);
+
+                    if (mismatch == null)
+                    {
+                        if (firstMismatch != null)
+                        {
+                            Logger.Warning?.Print(LogClass.ServiceFs, $"【黄】存档事务：第 {Volatile.Read(ref _commits) + 1} 次提交 {_dir} 第一次克隆和游戏写的不一样（{firstMismatch}），重新刷盘克隆后一致，照常提交");
+                        }
+
+                        break;
+                    }
+
+                    if (attempt == 2)
+                    {
+                        // 校验不过不拒绝（维护者 11-17）：游戏收到提交错误码多半当场中止。写入记录与写盘用的是同一份字节（WritableFile.DoWrite），
+                        //   记录覆盖得到的就按记录补进新版本（克隆是写时复制，不动工作目录）再核一遍；补不了的照常提交，黄字留给定因
+                        string left = RepairFromWritesLocked(fresh);
+                        Logger.Warning?.Print(LogClass.ServiceFs, $"【黄】存档事务：第 {Volatile.Read(ref _commits) + 1} 次提交 {_dir} 克隆出的新版本和游戏写的不一样（{mismatch}；重做一次仍不对），"
+                            + (left == null ? "已按游戏写的字节补进新版本，照常提交" : $"补不全（{left}），照常提交"));
+
+                        break;
+                    }
+
+                    Directory.Delete(fresh, true);
+
+                    firstMismatch = mismatch;
                 }
 
                 byte[] token = System.Security.Cryptography.RandomNumberGenerator.GetBytes(TokenSize);
@@ -464,12 +580,23 @@ namespace Ryujinx.HLE.FileSystem
 
             try
             {
-                Directory.Delete(fresh, true);   // the old version, swapped out
+                // 换出的旧版本留作「上一份」（APFS 克隆共享数据块，几乎不占地方）：这一版万一有问题，玩家可以回到它（RestorePrevious）。只留一份
+                string prev = System.IO.Path.Combine(_dir, PreviousDir);
+
+                if (Directory.Exists(prev))
+                {
+                    Directory.Delete(prev, true);
+                }
+
+                Directory.Move(fresh, prev);
             }
             catch (Exception e) when (e is IOException or UnauthorizedAccessException)
             {
-                Red($"存档事务：{_dir} 已提交，换出的旧版本没删掉（{e.Message}），下次挂载清掉");
+                Red($"存档事务：{_dir} 已提交，换出的旧版本没能留作上一份（{e.Message}），下次挂载清掉");
             }
+
+            ClearWritesLocked();   // 换上的就是这一版：写入记录随它了结
+            ClearGuard(_dir);      // 正常提交过了：护栏标记了结
 
             if (!durable)
             {
@@ -479,6 +606,152 @@ namespace Ryujinx.HLE.FileSystem
             Logger.Info?.Print(LogClass.ServiceFs, $"存档提交 #{Interlocked.Increment(ref _commits)}：{_dir} 克隆 + 原子交换 {System.Diagnostics.Stopwatch.GetElapsedTime(t0).TotalMilliseconds:F1} ms");
 
             return Result.Success;
+        }
+
+        internal void NoteWrite(string path, long offset, ReadOnlySpan<byte> source)
+        {
+            if (source.IsEmpty) return;
+            lock (_lock) { _touched.Add(path); _lastWrites[path] = (offset, source[..Math.Min(WriteHead, source.Length)].ToArray()); }
+        }
+
+        private void TouchLocked(string path, bool directory) { if (directory) _touchedDirs.Add(path.TrimEnd('/') + "/"); else _touched.Add(path); }
+
+        private bool TouchedLocked(string path)
+        {
+            if (_touched.Contains(path)) return true;
+            foreach (string d in _touchedDirs) if (path.StartsWith(d, StringComparison.Ordinal)) return true;
+            return false;
+        }
+
+        private void ClearWritesLocked() { _lastWrites.Clear(); _touched.Clear(); _touchedDirs.Clear(); }
+
+        internal void NoteSetSize(string path, long size)
+        {
+            lock (_lock)
+            {
+                _touched.Add(path);
+                if (!_lastWrites.TryGetValue(path, out var w) || w.Offset + w.Head.Length <= size) return;
+                if (w.Offset >= size) _lastWrites.Remove(path); else _lastWrites[path] = (w.Offset, w.Head[..(int)(size - w.Offset)]);
+            }
+        }
+
+        // 删 / 改名：记录跟着走（目录按前缀）；调用方持锁
+        private void ForgetLocked(string path, bool directory)
+        {
+            TouchLocked(path, directory);
+            if (!directory) { _lastWrites.Remove(path); return; }
+            string prefix = path.TrimEnd('/') + "/";
+            foreach (string k in new List<string>(_lastWrites.Keys)) if (k.StartsWith(prefix, StringComparison.Ordinal)) _lastWrites.Remove(k);
+        }
+
+        private void MoveLocked(string from, string to, bool directory)
+        {
+            TouchLocked(from, directory); TouchLocked(to, directory);
+            if (!directory) { if (_lastWrites.Remove(from, out var w)) _lastWrites[to] = w; return; }
+            string prefix = from.TrimEnd('/') + "/", target = to.TrimEnd('/') + "/";
+            foreach (string k in new List<string>(_lastWrites.Keys))
+                if (k.StartsWith(prefix, StringComparison.Ordinal) && _lastWrites.Remove(k, out var w)) _lastWrites[target + k[prefix.Length..]] = w;
+        }
+
+        private static string HostPath(string root, string path) => System.IO.Path.Combine(root, path.TrimStart('/'));
+
+        // 提交克隆之前：这次写过的文件刷到盘（克隆只拿元数据，不靠它带上还在系统缓存里没落盘的数据）。回失败原因或 null
+        private string SyncWrittenLocked(string working)
+        {
+            foreach (string path in _lastWrites.Keys)
+            {
+                string host = HostPath(working, path);
+                if (!File.Exists(host)) return $"文件 {path} 游戏写过、提交时却不在工作目录里";
+                using FileStream stream = new(host, FileMode.Open, FileAccess.Write, FileShare.ReadWrite);
+                stream.Flush(flushToDisk: true);
+            }
+
+            return null;
+        }
+
+        // 重做后仍对不上：游戏这次没动过、大小却变了的文件按已提交版本拷回；每个写过的文件按记录（偏移 + 游戏写的头部字节）写进新版本 fresh，再核一遍。
+        //   回仍对不上的说明或 null
+        private string RepairFromWritesLocked(string fresh)
+        {
+            string committed = System.IO.Path.Combine(_dir, "0");
+
+            if (Directory.Exists(committed))
+            {
+                foreach (string src in Directory.EnumerateFiles(committed, "*", SearchOption.AllDirectories))
+                {
+                    string path = "/" + System.IO.Path.GetRelativePath(committed, src).Replace(System.IO.Path.DirectorySeparatorChar, '/');
+                    string dst = HostPath(fresh, path);
+                    if (TouchedLocked(path) || (File.Exists(dst) && new FileInfo(dst).Length == new FileInfo(src).Length)) continue;
+
+                    try
+                    {
+                        Directory.CreateDirectory(System.IO.Path.GetDirectoryName(dst));
+                        File.Copy(src, dst, overwrite: true);
+                    }
+                    catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+                    {
+                        return $"没动过的文件 {path} 拷不回去（{e.Message}）";
+                    }
+                }
+            }
+
+            foreach (var (path, w) in _lastWrites)
+            {
+                string host = HostPath(fresh, path);
+
+                try
+                {
+                    Directory.CreateDirectory(System.IO.Path.GetDirectoryName(host));
+                    using FileStream stream = new(host, FileMode.OpenOrCreate, FileAccess.Write, FileShare.None);
+                    stream.Seek(w.Offset, SeekOrigin.Begin);
+                    stream.Write(w.Head);
+                    stream.Flush(flushToDisk: true);
+                }
+                catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+                {
+                    return $"文件 {path} 补不进去（{e.Message}）";
+                }
+            }
+
+            return VerifyWrittenLocked(fresh, committed);
+        }
+
+        // 克隆之后：①游戏这次没动过的文件，新版本里大小和已提交版本一样（非空变零字节、凭空消失都算对不上）；②每个写过的文件，在游戏最后一次写的偏移处
+        //   就是游戏写的字节。回第一处对不上的说明或 null
+        private string VerifyWrittenLocked(string fresh, string committed)
+        {
+            if (Directory.Exists(committed))
+            {
+                foreach (string host in Directory.EnumerateFiles(committed, "*", SearchOption.AllDirectories))
+                {
+                    string path = "/" + System.IO.Path.GetRelativePath(committed, host).Replace(System.IO.Path.DirectorySeparatorChar, '/');
+                    if (TouchedLocked(path)) continue;
+                    long old = new FileInfo(host).Length;
+                    string now = HostPath(fresh, path);
+                    long cur = File.Exists(now) ? new FileInfo(now).Length : -1;
+                    if (cur != old) return $"游戏这次没动过的文件 {path} 大小从 {old} 变成 {(cur < 0 ? "不在了" : cur.ToString())}";
+                }
+            }
+
+            foreach (var (path, w) in _lastWrites)
+            {
+                byte[] got = new byte[w.Head.Length];
+                int n = 0;
+                string host = HostPath(fresh, path);
+
+                if (File.Exists(host))
+                {
+                    using FileStream stream = File.OpenRead(host);
+                    if (stream.Length >= w.Offset + w.Head.Length) { stream.Seek(w.Offset, SeekOrigin.Begin); n = stream.ReadAtLeast(got, got.Length, throwOnEndOfStream: false); }
+                }
+
+                if (n != got.Length || !got.AsSpan().SequenceEqual(w.Head))
+                {
+                    return $"文件 {path} 偏移 {w.Offset}：游戏写的是 {Convert.ToHexString(w.Head, 0, Math.Min(8, w.Head.Length))}…（{w.Head.Length} 字节），新版本里是 {(n == 0 ? "空 / 不够长" : Convert.ToHexString(got, 0, Math.Min(8, n)))}";
+                }
+            }
+
+            return null;
         }
 
         protected override Result DoCommit()
@@ -581,7 +854,8 @@ namespace Ryujinx.HLE.FileSystem
                     return ResultFs.UnexpectedInLocalFileSystemE.Log();
                 }
 
-                // 回滚已成立：换出的旧工作树删不掉只报红，下次挂载 / 提交清掉
+                // 回滚已成立：工作目录回到已提交版本，写入记录作废；换出的旧工作树删不掉只报红，下次挂载 / 提交清掉
+                ClearWritesLocked();
                 try
                 {
                     Directory.Delete(fresh, true);
@@ -619,7 +893,7 @@ namespace Ryujinx.HLE.FileSystem
             }
 
             Interlocked.Increment(ref _openWritable);
-            outFile.Reset(new WritableFile(ref file.Ref, this));
+            outFile.Reset(new WritableFile(ref file.Ref, this, path.ToString()));
 
             return Result.Success;
         }
@@ -628,17 +902,58 @@ namespace Ryujinx.HLE.FileSystem
         {
             private UniqueRef<IFile> _file;
             private S2ASaveTransaction _owner;
+            private readonly S2ASaveTransaction _txn;
+            private readonly string _path;
 
-            public WritableFile(ref UniqueRef<IFile> file, S2ASaveTransaction owner)
+            public WritableFile(ref UniqueRef<IFile> file, S2ASaveTransaction owner, string path)
             {
                 _file = new UniqueRef<IFile>(ref file);
                 _owner = owner;
+                _txn = owner;
+                _path = path;
             }
 
             protected override Result DoRead(out long bytesRead, long offset, Span<byte> destination, in ReadOption option) => _file.Get.Read(out bytesRead, offset, destination, in option);
-            protected override Result DoWrite(long offset, ReadOnlySpan<byte> source, in WriteOption option) => _file.Get.Write(offset, source, in option);
+            // 游戏缓冲只读一次：source 直接指着客体内存（IFile.Write 不另拷），游戏别的线程可能在这次调用期间改它（回收 / 清零）。
+            //   原先写盘读一次、记录再读一次，两次读到的不一样：真机上记成「游戏写的是 0000」而盘上是 7B7D（"{}"），提交核对两头对不上。
+            //   这里先拷一份，写盘和记录都用这一份；超过 4 MB 的大写入不拷（iPhone 低区内存紧），记录在写盘之前取头部
+            private const int CopyMax = 4 << 20;
+            protected override Result DoWrite(long offset, ReadOnlySpan<byte> source, in WriteOption option)
+            {
+                if (source.Length > CopyMax)
+                {
+                    byte[] head = source[..WriteHead].ToArray();
+                    Result big = _file.Get.Write(offset, source, in option);
+                    if (big.IsSuccess()) _txn.NoteWrite(_path, offset, head);
+                    return big;
+                }
+
+                byte[] buf = System.Buffers.ArrayPool<byte>.Shared.Rent(Math.Max(source.Length, 1));
+                try
+                {
+                    ReadOnlySpan<byte> data = buf.AsSpan(0, source.Length);
+                    source.CopyTo(buf);
+                    Result result = _file.Get.Write(offset, data, in option);
+                    if (result.IsSuccess()) _txn.NoteWrite(_path, offset, data);
+                    int k = Math.Min(source.Length, WriteHead);
+                    if (!source[..k].SequenceEqual(data[..k]))
+                    {
+                        Logger.Warning?.Print(LogClass.ServiceFs, $"【黄】存档事务：{_path} 偏移 {offset} 写盘期间游戏缓冲被改了（写的是 {Convert.ToHexString(data[..Math.Min(k, 8)])}…，现在是 {Convert.ToHexString(source[..Math.Min(k, 8)])}…），按写下去的那份记");
+                    }
+                    return result;
+                }
+                finally
+                {
+                    System.Buffers.ArrayPool<byte>.Shared.Return(buf);
+                }
+            }
             protected override Result DoFlush() => _file.Get.Flush();
-            protected override Result DoSetSize(long size) => _file.Get.SetSize(size);
+            protected override Result DoSetSize(long size)
+            {
+                Result result = _file.Get.SetSize(size);
+                if (result.IsSuccess()) _txn.NoteSetSize(_path, size);
+                return result;
+            }
             protected override Result DoGetSize(out long size) => _file.Get.GetSize(out size);
             protected override Result DoOperateRange(Span<byte> outBuffer, OperationId operationId, long offset, long size, ReadOnlySpan<byte> inBuffer) => _file.Get.OperateRange(outBuffer, operationId, offset, size, inBuffer);
 
@@ -656,14 +971,14 @@ namespace Ryujinx.HLE.FileSystem
             }
         }
 
-        protected override Result DoCreateFile(ref readonly Path path, long size, CreateFileOptions option) { lock (_lock) return _base.Get.CreateFile(in path, size, option); }
-        protected override Result DoDeleteFile(ref readonly Path path) { lock (_lock) return _base.Get.DeleteFile(in path); }
+        protected override Result DoCreateFile(ref readonly Path path, long size, CreateFileOptions option) { lock (_lock) { Result r = _base.Get.CreateFile(in path, size, option); if (r.IsSuccess()) TouchLocked(path.ToString(), false); return r; } }
+        protected override Result DoDeleteFile(ref readonly Path path) { lock (_lock) { Result r = _base.Get.DeleteFile(in path); if (r.IsSuccess()) ForgetLocked(path.ToString(), false); return r; } }
         protected override Result DoCreateDirectory(ref readonly Path path) { lock (_lock) return _base.Get.CreateDirectory(in path); }
-        protected override Result DoDeleteDirectory(ref readonly Path path) { lock (_lock) return _base.Get.DeleteDirectory(in path); }
-        protected override Result DoDeleteDirectoryRecursively(ref readonly Path path) { lock (_lock) return _base.Get.DeleteDirectoryRecursively(in path); }
-        protected override Result DoCleanDirectoryRecursively(ref readonly Path path) { lock (_lock) return _base.Get.CleanDirectoryRecursively(in path); }
-        protected override Result DoRenameFile(ref readonly Path currentPath, ref readonly Path newPath) { lock (_lock) return _base.Get.RenameFile(in currentPath, in newPath); }
-        protected override Result DoRenameDirectory(ref readonly Path currentPath, ref readonly Path newPath) { lock (_lock) return _base.Get.RenameDirectory(in currentPath, in newPath); }
+        protected override Result DoDeleteDirectory(ref readonly Path path) { lock (_lock) { Result r = _base.Get.DeleteDirectory(in path); if (r.IsSuccess()) TouchLocked(path.ToString(), true); return r; } }
+        protected override Result DoDeleteDirectoryRecursively(ref readonly Path path) { lock (_lock) { Result r = _base.Get.DeleteDirectoryRecursively(in path); if (r.IsSuccess()) ForgetLocked(path.ToString(), true); return r; } }
+        protected override Result DoCleanDirectoryRecursively(ref readonly Path path) { lock (_lock) { Result r = _base.Get.CleanDirectoryRecursively(in path); if (r.IsSuccess()) ForgetLocked(path.ToString(), true); return r; } }
+        protected override Result DoRenameFile(ref readonly Path currentPath, ref readonly Path newPath) { lock (_lock) { Result r = _base.Get.RenameFile(in currentPath, in newPath); if (r.IsSuccess()) MoveLocked(currentPath.ToString(), newPath.ToString(), false); return r; } }
+        protected override Result DoRenameDirectory(ref readonly Path currentPath, ref readonly Path newPath) { lock (_lock) { Result r = _base.Get.RenameDirectory(in currentPath, in newPath); if (r.IsSuccess()) MoveLocked(currentPath.ToString(), newPath.ToString(), true); return r; } }
         protected override Result DoGetEntryType(out DirectoryEntryType entryType, ref readonly Path path) => _base.Get.GetEntryType(out entryType, in path);
         // Space within the save's size, not the host volume's (S2ASaveSpace)
         protected override Result DoGetFreeSpaceSize(out long freeSpace, ref readonly Path path)

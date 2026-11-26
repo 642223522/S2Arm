@@ -61,5 +61,13 @@ sr=; for v in "$@"; do case $v in -isysroot|-isysroot*|--sysroot|--sysroot=*) sr
 # 带调试信息（-g…）时把仓库根映射成「.」：调试信息里的编译目录 / 源路径不带树的绝对路径，同一份输入在哪棵树编出的 .o 都逐字节相同，
 #   缓存才能跨树共用而不把「先编的那棵树」的路径带给别的树（ccache 见到 -fdebug-prefix-map 也不再把当前目录算进键）
 g=; for v in "$@"; do case $v in -g|-g[0-9]|-ggdb*|-gline-tables-only|-gfull|-gdwarf*) g=1; break ;; esac; done
-[ -n "$g" ] && [ -n "${CCACHE_BASEDIR:-}" ] && set -- "$@" "-fdebug-prefix-map=$CCACHE_BASEDIR=."
+# 当前目录在树下、又不是树根（graphics/nvn、dsx、metal 的 Makefile 进 mktemp 出的随机目录 libnvn.a.o.XXXXXX 编）：当前目录也映射成「.」。
+#   否则映射后的编译目录仍带随机后缀、ccache 把它算进键，这几份核心库在门禁里永远不命中（11-16 实测 58 次编译中 2 次）；
+#   映射后调试信息里的编译目录是「.」、源路径照旧按树根映射，不同目录编出的 .o 逐字节相同
+if [ -n "$g" ] && [ -n "${CCACHE_BASEDIR:-}" ]; then
+  set -- "$@" "-fdebug-prefix-map=$CCACHE_BASEDIR=."
+  #   首尾各放一份：ccache 算键取第一条匹配编译目录的映射（Makefile 自带的 -ffile-prefix-map=<树根>= 排在前面会先匹配），clang 写调试信息取最后一条
+  #   逻辑路径（$PWD，ccache 算键用）与物理路径（clang 写调试信息用；macOS 的 /var → /private/var）都判、都映射
+  for cw in "$PWD" "$(pwd -P)"; do case $cw/ in "$CCACHE_BASEDIR"/?*|"$(cd "$CCACHE_BASEDIR" 2> /dev/null && pwd -P)"/?*) set -- "-fdebug-prefix-map=$cw=." "$@" "-fdebug-prefix-map=$cw=." ;; esac; done
+fi
 exec "$S2A_CCACHE_BIN" "$real" "$@"

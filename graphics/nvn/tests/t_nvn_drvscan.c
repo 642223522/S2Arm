@@ -28,6 +28,18 @@ static void form_ldrsw(size_t f, size_t tbl, int major, int minor) {
     int32_t e0 = (int32_t)((int64_t)ret - (int64_t)tbl), e1 = (int32_t)((int64_t)c1 - (int64_t)tbl);
     memcpy(img + tbl, &e0, 4); memcpy(img + tbl + 4, &e1, 4);
 }
+// 形状三（最早的 SDK 0.12，驱动在 subsdk0）：adrp/add 表 ; movz w0,#major ; ldrsw ; add ; br——主版本在取表项之前就放进 w0，离 br 隔两条
+static void form_early(size_t f, size_t tbl, int major, int minor) {
+    pc = f;
+    emit(cmp_w(20, 0x4c)); emit(bhi(40)); emit(0x2a1403e8u /* mov w8, w20 */);
+    emit(adrp(9, pc, tbl)); emit(add_imm(9, 9, (int)(tbl & 0xfff)));
+    emit(movz_w(0, major));
+    emit(0xb8a87928u /* ldrsw x8, [x9, x8, lsl #2] */); emit(0x8b090108u /* add x8, x8, x9 */); emit(br(8));
+    size_t ret = pc; emit(0xd65f03c0u);
+    size_t c1 = pc; emit(movz_w(0, minor)); emit(0xd65f03c0u);
+    int32_t e0 = (int32_t)((int64_t)ret - (int64_t)tbl), e1 = (int32_t)((int64_t)c1 - (int64_t)tbl);
+    memcpy(img + tbl, &e0, 4); memcpy(img + tbl + 4, &e1, 4);
+}
 // 形状二（塞尔达 SDK 20 / 3D 世界 SDK 10.4）：adrp/add 表 ; adr 基准 ; ldrb ; add 基准, u8 lsl 2 ; movz w0,#major ; br
 static void form_ldrb(size_t f, size_t tbl, int major, int minor) {
     pc = f;
@@ -46,6 +58,36 @@ static int scan(int api[2]) { api[0] = api[1] = -1; return nvn_drv_api_scan(img,
 static uint32_t movz_x(int rd, int imm, int hw) { return 0xd2800000u | (uint32_t)hw << 21 | (uint32_t)imm << 5 | (uint32_t)rd; }
 static uint32_t movk_x(int rd, int imm, int hw) { return 0xf2800000u | (uint32_t)hw << 21 | (uint32_t)imm << 5 | (uint32_t)rd; }
 static uint32_t b_to(size_t pc, size_t t) { return 0x14000000u | ((uint32_t)(((int64_t)t - (int64_t)pc) >> 2) & 0x3ffffff); }
+static uint32_t bl_to(size_t pc, size_t t) { return 0x94000000u | ((uint32_t)(((int64_t)t - (int64_t)pc) >> 2) & 0x3ffffff); }
+// 原创合成夹具：外层先调用二级查询写入栈临时槽，再从该槽读取指定项目。
+static void form_nested_item(void) {
+    const size_t outer = 0x800, table = 0x2d82, inner = 0x1200, inner_table = 0x3800;
+    form_ldrb(outer, table, 55, 15);
+    size_t outer_base = outer + 4 * 10;
+    pc = outer - 16;
+    emit(0xd10013a1u); /* sub x1, x29, #4 */
+    emit(0xb81fc3bfu); /* stur wzr, [x29, #-4] */
+    emit(0x2a0003f4u); /* mov w20, w0 */
+    emit(bl_to(pc, inner));
+    img[table + 0x5f] = 4;
+    pc = outer_base + 16;
+    emit(0xb85fc3a0u); /* ldur w0, [x29, #-4] */
+    emit(0xd65f03c0u); /* ret */
+    pc = inner;
+    emit(0x2a0003e8u); /* mov w8, w0 */
+    emit(0x2a1f03e0u); /* mov w0, wzr */
+    emit(0x51000909u); /* sub w9, w8, #2 */
+    emit(cmp_w(9, 0x60)); emit(bhi(40));
+    emit(adrp(10, pc, inner_table)); emit(add_imm(10, 10, (int)(inner_table & 0xfff)));
+    const size_t inner_base = 0x1240; emit(adr(11, pc, inner_base));
+    emit(0x3869694cu); /* ldrb w12, [x10, x9] */
+    emit(0x8b0c096bu); /* add x11, x11, x12, lsl #2 */
+    emit(movz_w(8, 14)); emit(br(11));
+    pc = inner_base;
+    emit(movz_w(8, 32)); /* mov w8, #32 */
+    emit(movz_w(0, 1)); emit(0xb9000028u); /* str w8, [x1] */
+    emit(0xd65f03c0u);
+}
 static uint32_t cbz_w0(size_t pc, size_t t) { return 0x34000000u | ((uint32_t)(((int64_t)t - (int64_t)pc) >> 2) & 0x7ffff) << 5; }
 static uint32_t ldr_x0_slot(size_t slot) { return 0xf9400000u | (uint32_t)((slot & 0xfff) >> 3) << 10; }
 #define NAME_AT 0x3100
@@ -85,6 +127,51 @@ int main(void) {
         int32_t it[8]; int n = nvn_drv_items_scan(img, 0x2000, sizeof img, it, 8);
         CHECK(n == 0x63 && it[0] == 55 && it[1] == 16 && it[2] == 77 && it[3] == -1);
     }
+    {   // 未知项目不可识别；二级查询明确写回 32 时，0x5f 应报告 32。
+        memset(img, 0, sizeof img); form_nested_item();
+        int32_t it[0x63]; int n = nvn_drv_items_scan(img, 0x2000, sizeof img, it, 0x63);
+        CHECK(n == 0x63 && it[0x5e] == -1);
+        CHECK(it[0x5f] == 32);
+        put(0x1248, 0xd503201fu); /* 不再写入输出参数，不能视作常量 */
+        CHECK(nvn_drv_items_scan(img, 0x2000, sizeof img, it, 0x63) == 0x63 && it[0x5f] == -1);
+    }
+    {
+        // 读取栈槽后修改返回值，不能把槽值当结果。
+        memset(img, 0, sizeof img); form_nested_item();
+        put(0x800 + 4 * 15, movz_w(0, 99));
+        put(0x800 + 4 * 16, 0xd65f03c0u);
+        int32_t it[0x63];
+        CHECK(nvn_drv_items_scan(img, 0x2000, sizeof img, it, 0x63) == 0x63 && it[0x5f] == -1);
+    }
+    {
+        // 跳表索引不来自保存的查询项：无法证明同一项。
+        memset(img, 0, sizeof img); form_nested_item();
+        put(0x800 + 8, 0x2a1303e8u); /* mov w8, w19 */
+        int32_t it[0x63];
+        CHECK(nvn_drv_items_scan(img, 0x2000, sizeof img, it, 0x63) == 0x63 && it[0x5f] == -1);
+    }
+    {
+        // 边界检查的值与跳表索引必须来自同一个已保存的查询项。
+        memset(img, 0, sizeof img); form_nested_item();
+        put(0x800, cmp_w(19, 0x62));
+        int32_t it[0x63];
+        CHECK(nvn_drv_items_scan(img, 0x2000, sizeof img, it, 0x63) == 0x63 && it[0x5f] == -1);
+    }
+    {
+        // 二级查询不在 text 范围内、表项不在映像范围内时均不可读取。
+        memset(img, 0, sizeof img); form_nested_item();
+        int32_t it[0x63];
+        CHECK(nvn_drv_items_scan(img, 0x1208, sizeof img, it, 0x63) == 0x63 && it[0x5f] == -1);
+        CHECK(nvn_drv_items_scan(img, 0x2000, 0x3810, it, 0x63) == 0x63 && it[0x5f] == -1);
+    }
+    {   // 两份查询对同一项给出不同答案，不采用其中任何一份。
+        memset(img, 0, sizeof img); form_nested_item();
+        form_ldrb(0x1500, 0x3b00, 55, 15);
+        img[0x3b00 + 0x5f] = 4;
+        put(0x1500 + 4 * 14, movz_w(0, 77));
+        int32_t it[0x63];
+        CHECK(nvn_drv_items_scan(img, 0x2000, sizeof img, it, 0x63) == 0);
+    }
     {   // 条目目标是 orr w0, wzr, #位掩码（超级马力欧派对 / GRID 的驱动这样写 GPU 代码版本）：按 ARMv8 逻辑立即数手算
         //   0x320003e0 → 1；0x321c03e0（immr 28）→ 16；0x32001fe0（imms 7）→ 0xff；0x32007fe0（imms 31：32 位元素全 1，保留编码）→ −1
         static const uint32_t w[4] = {0x320003e0u, 0x321c03e0u, 0x32001fe0u, 0x32007fe0u}; static const int32_t want[4] = {1, 16, 255, -1};
@@ -97,7 +184,11 @@ int main(void) {
     }
     memset(img, 0, sizeof img); form_ldrb(0x800, 0x2d82, 53, 313); form_ldrsw(0x1200, 0x3104, 53, 310);   // 两处不同值：二义，不认
     CHECK(scan(api) == 0 && api[0] == -1);
-    memset(img, 0, sizeof img); form_ldrsw(0x100, 0x3004, 52, 310);   // 主版本不是 53 / 55：不是这个函数
+    memset(img, 0, sizeof img); form_ldrsw(0x100, 0x3004, 7, 310);   // 主版本不是 52 / 53 / 55：不是这个函数
+    CHECK(scan(api) == 0);
+    memset(img, 0, sizeof img); form_early(0x100, 0x3004, 52, 32);   // 形状三：SDK 0.12 驱动报 52.32（该款游戏要求主版本恰为 52、次版本至少 32）
+    CHECK(scan(api) == 1 && api[0] == 52 && api[1] == 32);
+    memset(img, 0, sizeof img); form_early(0x100, 0x3004, 52, 32); put(0x100 + 4 * 5, 0xd503201fu);   // 形状三把 movz 换成 nop：br 前三条里没有主版本，不认
     CHECK(scan(api) == 0);
     memset(img, 0, sizeof img); form_ldrb(0x800, 0x2d82, 55, 15); put(0x800 + 4 * 12, 0x2a1403e0u);   // case 1 不是 movz（读别的）：不认
     CHECK(scan(api) == 0);

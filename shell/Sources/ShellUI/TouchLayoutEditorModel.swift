@@ -1,3 +1,4 @@
+#if !os(tvOS)   // tvOS 不编本文件：触屏虚拟手柄布局编辑（电视版库界面见 TVLibraryView.swift，UPSTREAM.md「我方改动」）
 import Observation
 import SwiftUI
 #if os(iOS)
@@ -170,3 +171,4 @@ enum TouchLayoutScreens {
                                     division: fold, topSafeOnly: true))
     }
 }
+#endif   // !os(tvOS)

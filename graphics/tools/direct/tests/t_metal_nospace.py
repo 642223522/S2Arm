@@ -7,6 +7,10 @@
 #   ④ 冷缓存 70 支全编不过、一支没编成 → 编完 70 支由编库收尾 Tally 整次停（退出 2、编译器调用 140 次 = 70 支 × 两次、红行「一份都没出」）
 #   ⑦ 热缓存（复用 1 支）上新编 70 支全编不过 → 不整次停（退出 1、70 failed）（审计 P1-150：原先连败 64 支就停掉整份直连库）
 #   ⑤ 先编成一支、之后 70 支编不过 → 不熔断（退出 1、70 failed）：逐支编不过是翻译缺陷，照旧只记
+#   ⑧ 编译器本身用不了（连开编前试编的最小着色器都编不过，#840 / D-AH9G）→ 开编前就整次停（退出 2），红行「Metal 编译工具没能运行」带编译器原话，
+#      编译器只被调 1 次（试编），一支正式着色器都不编；⑨ 编译器根本起不来（PATH 上没有 xcrun）→ 同样开编前停
+#   ⑩ 编译器卡住不结束（#1560：玩家出包最后一批两个 metal 进程跑了三个半小时）→ 到限时（S2A_METAL_TIMEOUT_S）整组杀掉（含编译器起的孙进程）、这一支记编不过、
+#      不重编第二遍，其余照编；修前这一例一直等下去（本脚本 60 秒超时判不符）
 #   ⑥ Windows 路径改写（Metal.WinRelative，--win-relative）：带空格 / 非 ASCII 的路径参数改成相对工作区（含 -xxx=<路径>），纯 ASCII 不动；不在工作区下的报停
 import os, subprocess, sys, tempfile
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -22,6 +26,7 @@ case " $* " in
   *" --version "*) echo "Apple metal version 32023.999 (fake)"; exit 0;;
   *" --show-sdk-version "*) echo 99.0; exit 0;;
   *" --show-sdk-build-version "*) echo FAKE1; exit 0;;
+  *s2a_probe*) out=; prev=; for a in "$@"; do [ "$prev" = -o ] && out=$a; prev=$a; done; printf x > "$out"; exit 0;;   # 开编前试编（Metal.Probe）：编译器本身是好的
 esac
 echo "$FAKE_ERR" >&2; exit 1
 '''
@@ -42,6 +47,7 @@ case " $* " in
   *" --version "*) echo "Apple metal version 32023.999 (fake)"; exit 0;;
   *" --show-sdk-version "*) echo 99.0; exit 0;;
   *" --show-sdk-build-version "*) echo FAKE1; exit 0;;
+  *s2a_probe*) out=; prev=; for a in "$@"; do [ "$prev" = -o ] && out=$a; prev=$a; done; printf x > "$out"; exit 0;;   # 开编前试编（Metal.Probe）：编译器本身是好的
 esac
 out=; prev=; for a in "$@"; do [ "$prev" = -o ] && out=$a; prev=$a; done
 case " $* " in *" metallib "*) printf lib > "$out"; exit 0;; esac
@@ -73,6 +79,29 @@ r, calls = many(['ok0'] + [f'bad{i}' for i in range(70)])
 check(r.returncode == 1 and 'mac 0 reused, 1 compiled, 70 failed' in r.stdout, f'⑤ 先编成一支再连败 70 支 → 不熔断、70 failed（实得 {r.returncode}：{r.stdout.strip()[-120:]}）')
 r, calls = many(['ok0'] + [f'bad{i}' for i in range(70)], warm=['ok0'])
 check(r.returncode == 1 and 'mac 1 reused, 0 compiled, 70 failed' in r.stdout and calls == 140, f'⑦ 热缓存（复用 1 支）上新编 70 支全编不过 → 不整次停、70 支逐支记（实得 {r.returncode}、{calls} 次：{r.stdout.strip()[-160:]}）')
+# ⑧ 编译器整体坏了：试编也编不过 → 开编前停，只调 1 次编译器
+FAKE3 = '''#!/bin/sh
+case " $* " in
+  *" --version "*) echo "Apple metal version 32023.999 (fake)"; exit 0;;
+esac
+echo call >> "$FAKE_LOG"; echo "metal.exe: error: cannot execute: Access is denied" >&2; exit 1
+'''
+with tempfile.TemporaryDirectory() as t:
+    b = os.path.join(t, 'bin'); os.makedirs(b); x = os.path.join(b, 'xcrun'); open(x, 'w').write(FAKE3); os.chmod(x, 0o755)
+    srcs = []
+    for i in range(30):
+        s_ = os.path.join(t, f'k{i}.metal'); open(s_, 'w').write(f'kernel void k{i}() {{}}\n'); srcs.append(s_)
+    w = os.path.join(t, 'work'); os.makedirs(w); log = os.path.join(t, 'calls')
+    env = dict(os.environ, PATH=b + os.pathsep + os.environ['PATH'], FAKE_LOG=log, S2A_METAL_PCH='0')
+    r = subprocess.run([*CMD, '--metal-compile', w, *srcs], capture_output=True, text=True, env=env)
+    calls = len(open(log).read().split()) if os.path.exists(log) else 0
+    check(r.returncode == 2 and 'Metal 编译工具没能运行' in r.stdout and 'cannot execute: Access is denied' in r.stdout and calls == 1,
+          f'⑧ 编译器整体坏了 → 开编前停、带原话、编译器只调 1 次（实得 {r.returncode}、{calls} 次：{r.stdout.strip()[:220]}）')
+# ⑨ 编译器起不来：PATH 上没有 xcrun
+with tempfile.TemporaryDirectory() as t:
+    src = os.path.join(t, 'k.metal'); open(src, 'w').write('kernel void k() {}\n'); w = os.path.join(t, 'work'); os.makedirs(w)
+    r = subprocess.run([*CMD, '--metal-compile', w, src], capture_output=True, text=True, env=dict(os.environ, PATH=t, S2A_METAL_PCH='0'))
+    check(r.returncode == 2 and 'Metal 编译工具没能运行' in r.stdout, f'⑨ 编译器起不来 → 开编前停（实得 {r.returncode}：{r.stdout.strip()[:220]}{r.stderr.strip()[:200]}）')
 with tempfile.TemporaryDirectory() as t:
     cwd = os.path.join(t, '萧小五11', 'j', 'r2px'); os.makedirs(cwd)
     a = [os.path.join(cwd, 'ios-0f', 'k.metal'), '-o', os.path.join(cwd, 'ios-0f', 'k.air'), '-fmodules-cache-path=' + os.path.join(cwd, 'pch-ios', 'mcache'), '-w', '/opt/ascii/x.h']
@@ -81,5 +110,33 @@ with tempfile.TemporaryDirectory() as t:
     check(r.returncode == 0 and r.stdout.split('\n')[:-1] == want, f'⑥ 非 ASCII 路径改成相对工作区、纯 ASCII 不动（实得 {r.returncode}：{r.stdout.split(chr(10))[:6]}）')
     r = subprocess.run([*CMD, '--win-relative', cwd, os.path.join(t, '别处', 'k.metal')], capture_output=True, text=True)
     check(r.returncode == 2 and '非 ASCII' in r.stdout, f'⑥ 不在工作区下的非 ASCII 路径 → 报停（实得 {r.returncode}：{r.stdout.strip()[:120]}）')
+FAKE3 = '''#!/bin/bash
+case " $* " in
+  *" --version "*) echo "Apple metal version 32023.999 (fake)"; exit 0;;
+  *" --show-sdk-version "*) echo 99.0; exit 0;;
+  *" --show-sdk-build-version "*) echo FAKE1; exit 0;;
+esac
+out=; prev=; for a in "$@"; do [ "$prev" = -o ] && out=$a; prev=$a; done
+case " $* " in *" metallib "*) printf lib > "$out"; exit 0;; esac
+case " $* " in *"/hang"*".metal "*) echo hang >> "$FAKE_LOG"; sleep "300.$FAKE_TAG" & wait; exit 0;; esac   # 像 metal 起编译器子进程那样：孙进程 sleep 拿着 stderr 管道
+printf air > "$out"; exit 0
+'''
+with tempfile.TemporaryDirectory() as t:
+    b = os.path.join(t, 'bin'); os.makedirs(b); x = os.path.join(b, 'xcrun'); open(x, 'w').write(FAKE3); os.chmod(x, 0o755)
+    srcs = []
+    for n in ('hang', 'ok'):
+        s = os.path.join(t, n + '.metal'); open(s, 'w').write(f'kernel void {n}() {{}}\n'); srcs.append(s)
+    w = os.path.join(t, 'work'); os.makedirs(w); log = os.path.join(t, 'calls.log')
+    env = dict(os.environ, PATH=b + os.pathsep + os.environ['PATH'], S2A_METAL_PCH='0', S2A_METAL_TIMEOUT_S='3', FAKE_LOG=log, FAKE_TAG=str(os.getpid()))
+    import time; t0 = time.time()
+    try: r = subprocess.run([*CMD, '--metal-compile', w, *srcs], capture_output=True, text=True, env=env, timeout=60); out = r.stdout
+    except subprocess.TimeoutExpired: r, out = None, '60 秒没结束'
+    dt = time.time() - t0
+    hangs = open(log).read().count('hang') if os.path.exists(log) else 0
+    time.sleep(1); left = subprocess.run(['pgrep', '-f', f'sleep 300.{os.getpid()}$'], capture_output=True, text=True).stdout.split()
+    check(r is not None and r.returncode == 1 and 'metal timeout' in out and '1 compiled' in out and '1 failed' in out and hangs == 1 and dt < 30,
+          f'⑩ 编译器卡住 → 3 秒限时杀掉、记编不过、不重编、其余照编（实得 rc={r and r.returncode}、卡住那支调用 {hangs} 次、{dt:.0f} 秒：{out.strip()[:200]}）')
+    for p in left: subprocess.run(['kill', '-9', p])
+    check(not left, f'⑩ 超时后编译器的孙进程一并停掉（实得残留 {left}）')
 print(f't_metal_nospace：{"全符" if not fails else f"{len(fails)} 例不符"}')
 sys.exit(1 if fails else 0)

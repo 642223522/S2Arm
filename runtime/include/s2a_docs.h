@@ -15,12 +15,19 @@
 #if defined(__APPLE__)
 #include <TargetConditionals.h>
 #endif
+// 容器文档根相对 HOME 的位置（11-15 Apple TV 版）：iOS / Mac = Documents；tvOS 不让 App 写 Documents、大文件只能放 Caches（系统空间紧时可清），
+//   电视上用 Library/Caches/S2Arm：多款容器 games/<游戏号>、资源包 games/<游戏号>/资源包 都在它下面（资源包被清后电脑端「装到 Apple TV」重推）
+#if defined(__APPLE__) && TARGET_OS_TV
+#define S2A_CONTAINER_DOCS_REL "Library/Caches/S2Arm"
+#else
+#define S2A_CONTAINER_DOCS_REL "Documents"
+#endif
 
 // 文档根写进 out；返回 snprintf 的长度（截断时 ≥ n）
 static inline int s2a_docs_root(char *out, size_t n) {
     const char *d = getenv("S2A_DOCS"), *h = getenv("HOME");
     if (d && *d) return snprintf(out, n, "%s", d);
-    return snprintf(out, n, "%s/Documents", h && *h ? h : ".");
+    return snprintf(out, n, "%s/" S2A_CONTAINER_DOCS_REL, h && *h ? h : ".");
 }
 
 // <文档根>/<按 fmt 拼的相对路径> 写进 out（fmt 为 NULL / 空 = 文档根本身）；返回总长度（截断时 ≥ n）
@@ -51,7 +58,24 @@ static inline const char *s2a_pack_base_rel(const char *container, int clen) {  
     snprintf(alt, sizeof alt, "%.*s/" S2A_PACK_BASE_ALT_REL "/games", clen, container);
     return !stat(alt, &st) && S_ISDIR(st.st_mode) ? S2A_PACK_BASE_ALT_REL : S2A_PACK_BASE_REL;
 }
+// App 包内的资源包（11-16 Apple TV 安装包导出：pack/jobs/tvos.py export_tv 把这款资源包整份打进 App 本体 <App>/Games/<游戏号>/资源包/，
+//   包内带 .applied，电视上闸门判「已应用」、不在只读区写）：docs 以 /games/<游戏号> 结尾、<bundle>/Games/<游戏号>/资源包/manifest.json 在
+//   → 写包内路径、回长度；否则回 0（照旧找 Library/Caches）。纯函数，单测 runtime/tests/t_docs.c；只在 tvOS 上由 s2a_pack_root 先调（没上电视验过）
+static inline int s2a_pack_root_in_bundle(char *out, size_t n, const char *bundle, const char *docs) {
+    const char *k = docs ? strrchr(docs, '/') : NULL;
+    if (!bundle || !*bundle || !k || k - docs < 6 || strncmp(k - 6, "/games", 6) || !k[1] || k[1] == '.') return 0;
+    char m[2048]; struct stat st;
+    if (snprintf(m, sizeof m, "%s/Games/%s/资源包/manifest.json", bundle, k + 1) >= (int)sizeof m || stat(m, &st) || !S_ISREG(st.st_mode)) return 0;
+    int r = snprintf(out, n, "%s/Games/%s/资源包", bundle, k + 1);
+    return r > 0 ? r : 0;
+}
+#if defined(__APPLE__) && TARGET_OS_TV
+const char *s2a_launch_ctx_bundle_dir(void) __attribute__((weak_import));   // runtime/src/launchctx.c：App 包根（单测不链它）
+#endif
 static inline int s2a_pack_root(char *out, size_t n, const char *docs) {
+#if defined(__APPLE__) && TARGET_OS_TV
+    { int r = s2a_launch_ctx_bundle_dir ? s2a_pack_root_in_bundle(out, n, s2a_launch_ctx_bundle_dir(), docs) : 0; if (r) return r; }   // 电视：先找包内，没有再找 Library/Caches
+#endif
     static const char key[] = "/Documents/games/";
     const char *k = docs ? strstr(docs, key) : NULL;
     if (k) {
@@ -62,8 +86,21 @@ static inline int s2a_pack_root(char *out, size_t n, const char *docs) {
     return s2a_pack_legacy_root(out, n, docs ? docs : ".");
 }
 // 进程级 Documents（<容器>/Documents）→ 资源包位置的根（备用位置在就是它，否则 Library/Application Support/S2Arm；迁移、#569 写不进修复扫这里的 games/）；
-//   proc_docs 不以 /Documents 结尾返回 -1（不猜）。s2a_pack_base_main / _alt：固定取其中一处（修复时两处都要看）
+//   proc_docs 不以 /Documents 结尾返回 -1（不猜；tvOS 见上面 s2a_pack_base_tv）。s2a_pack_base_main / _alt：固定取其中一处（修复时两处都要看）
+// Apple TV（11-21 D-SDS6：电视上 .s2arm 导入全拒「文档根 …/Library/Caches/S2Arm 不是 …/Documents」）：容器文档根就是 <容器>/Library/Caches/S2Arm，
+//   每款资源包按 s2a_pack_root 的旧位置在 <文档根>/games/<号>/资源包、程序在 <文档根>/games/<号>/program（s2a_program_games_root 同一套推出来）——
+//   资源位置的根就是文档根本身，没有 Library/Application Support 那一层、也没有备用位置。proc_docs 不以 /Library/Caches/S2Arm 结尾返回 -1（不猜）。
+//   纯函数，各平台都编、单测 runtime/tests/t_docs.c；只在 tvOS 上由 s2a_pack_base_at 用
+static inline int s2a_pack_base_tv(char *out, size_t n, const char *proc_docs) {
+    static const char tail[] = "/Library/Caches/S2Arm";
+    size_t l = proc_docs ? strlen(proc_docs) : 0, t = sizeof tail - 1;
+    if (l <= t || strcmp(proc_docs + l - t, tail)) return -1;
+    return snprintf(out, n, "%s", proc_docs);
+}
 static inline int s2a_pack_base_at(char *out, size_t n, const char *proc_docs, const char *rel) {
+#if defined(__APPLE__) && TARGET_OS_TV
+    (void)rel; return s2a_pack_base_tv(out, n, proc_docs);   // 电视只有一处，_main / _alt 都是它
+#endif
     size_t l = proc_docs ? strlen(proc_docs) : 0;
     if (l < 10 || strcmp(proc_docs + l - 10, "/Documents")) return -1;
     return snprintf(out, n, "%.*s/%s", (int)(l - 10), proc_docs, rel ? rel : s2a_pack_base_rel(proc_docs, (int)(l - 10)));
@@ -77,6 +114,6 @@ static inline int s2a_pack_base_alt(char *out, size_t n, const char *proc_docs) 
 //   只在 iOS 编出来：Mac 代码调不到它，不会再落到用户文稿夹
 static inline int s2a_container_docs(char *out, size_t n) {
     const char *h = getenv("HOME");
-    return snprintf(out, n, "%s/Documents", h && *h ? h : ".");
+    return snprintf(out, n, "%s/" S2A_CONTAINER_DOCS_REL, h && *h ? h : ".");
 }
 #endif

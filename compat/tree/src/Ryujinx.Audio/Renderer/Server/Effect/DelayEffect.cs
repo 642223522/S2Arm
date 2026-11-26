@@ -15,6 +15,8 @@ namespace Ryujinx.Audio.Renderer.Server.Effect
     /// </summary>
     public class DelayEffect : BaseEffect
     {
+        public override void S2AForceReinit() => Parameter.Status = UsageState.Invalid;   // S2Arm 即时存档
+
         /// <summary>
         /// The delay parameter.
         /// </summary>

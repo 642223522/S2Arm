@@ -15,7 +15,7 @@ import android.view.View;
 @android.annotation.SuppressLint({"ViewConstructor", "ClickableViewAccessibility"})
 final class TouchPadView extends View {
     interface Listener {
-        void onTouchPad(TouchPad pad);
+        void onTouchPad(boolean fromInputEvent);
         /** Exactly four fingers held for MENU_HOLD_MS (the iOS gesture): the in-game touch menu. */
         default void onTouchMenu() { }
     }
@@ -32,6 +32,25 @@ final class TouchPadView extends View {
     private boolean controlsVisible = true;
     private boolean trace;
     private boolean editing;
+    private int opacityPercent = 100;
+
+    int opacityPercent() { return opacityPercent; }
+    void setOpacityPercent(int percent) {
+        opacityPercent = Math.max(0, Math.min(100, percent));
+        invalidate();
+    }
+
+    void scaleEditingButtons(double factor) {
+        if (!editing) return;
+        // Snapshot drags before rebuilding controls; Save/Cancel still own persistence.
+        setLayout(pad.editedLayout(TouchLayoutStore.MINE, "My layout").withButtonScale(factor));
+    }
+
+    private int appearanceColor(int color) {
+        if (editing) return color; // keep controls discoverable even at zero runtime opacity
+        int alpha = ((color >>> 24) * opacityPercent + 50) / 100;
+        return (color & 0x00FFFFFF) | (alpha << 24);
+    }
     private TouchPad.Control dragging;
     private int dragPointer = -1;
     private float dragX, dragY;
@@ -40,7 +59,11 @@ final class TouchPadView extends View {
     /** The editor bar fades while a control is dragged, so a control can pass under it. */
     void setEditDragListener(EditDragListener listener) { editDrag = listener; }
     private final Runnable menuHold = this::openMenu;
-    void setTrace(boolean enabled) { trace = enabled; TouchInputBridge.touchTrace(enabled); }
+    void setTrace(boolean enabled) {
+        trace = enabled;
+        TouchInputBridge.touchTrace(enabled);
+        pad.setLayoutTrace(enabled ? line -> android.util.Log.i("S2Arm", line) : null);
+    }
 
     boolean gameTouchEnabled() { return gameTouch.enabled(); }
     boolean controlsVisible() { return controlsVisible; }
@@ -161,7 +184,7 @@ final class TouchPadView extends View {
         pad.cancel();
         revokeGameViewport();
         pad.layout(insetLeft, insetTop, getWidth() - insetLeft - insetRight, getHeight() - insetTop - insetBottom);
-        listener.onTouchPad(pad);
+        listener.onTouchPad(false);
         invalidate();
     }
 
@@ -218,7 +241,7 @@ final class TouchPadView extends View {
         int pressed = pad.buttons() & ~lastButtons;
         if (pressed != 0) performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY);
         lastButtons = pad.buttons();
-        listener.onTouchPad(pad);
+        listener.onTouchPad(true);
         invalidate();
         return true;
     }
@@ -275,15 +298,17 @@ final class TouchPadView extends View {
         pad.cancel();
         gameTouch.cancel();
         lastButtons = 0;
-        listener.onTouchPad(pad);
+        listener.onTouchPad(false);
         invalidate();
     }
 
     @Override protected void onDraw(Canvas canvas) {
         if (!controlsVisible && !editing) return;
         if (editing) canvas.drawColor(0x66000000);   // the game dims; every control can be dragged
+        ring.setColor(appearanceColor(0x99FFFFFF));
+        text.setColor(appearanceColor(0xCCFFFFFF));
         for (TouchPad.Control c : pad.controls()) {
-            fill.setColor(editing ? (c == dragging ? 0x8800C8FF : 0x40FFFFFF) : c.pressed ? 0x66FFFFFF : 0x26FFFFFF);
+            fill.setColor(appearanceColor(editing ? (c == dragging ? 0x8800C8FF : 0x40FFFFFF) : c.pressed ? 0x66FFFFFF : 0x26FFFFFF));
             if (c.kind == TouchPad.BUTTON) {
                 // F01 key frame; a round key (corner == half side) draws the same disc as before.
                 canvas.drawRoundRect(c.x - c.halfWidth, c.y - c.halfHeight, c.x + c.halfWidth, c.y + c.halfHeight,
@@ -295,7 +320,7 @@ final class TouchPadView extends View {
                 canvas.drawCircle(c.x, c.y, c.radius, ring);
             }
             if (c.kind == TouchPad.STICK) {
-                fill.setColor(c.pressed ? 0xAAFFFFFF : 0x55FFFFFF);
+                fill.setColor(appearanceColor(c.pressed ? 0xAAFFFFFF : 0x55FFFFFF));
                 canvas.drawCircle(c.x + c.knobX * c.radius, c.y + c.knobY * c.radius, c.radius * 0.45f, fill);
             } else if (c.kind == TouchPad.DPAD) {
                 float a = c.radius * 0.55f;

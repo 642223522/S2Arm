@@ -28,8 +28,7 @@ zip_store	.pak:.ttf:.ucas:.usm:.utoc:.metallib
 # 60 fps (30 on the Switch): the game's config caps Unreal at 30 (FrameRateLimit=30 in DefaultGameUserSettings.ini and SwitchGameUserSettings.ini, which UEngine::SetMaxFPS, main+0x134d2c0, puts
 # in t.MaxFPS; rhi.syncinterval=2 in SwitchDeviceProfiles.ini, the present interval 2 it asks for while BaseSwitchEngine.ini's r.VSync=1 locks presents to vsync); the host writes t.MaxFPS 60 and
 # rhi.SyncInterval 1 into its console variables (hle_fpslock.c), so the game asks for present interval 1 itself. Unreal steps the game by the time that really passed.
-# DM_FPS_TARGET=30 (Documents/env.txt on the iPhone) keeps the game's 30 and saves power
-fps_target	60
+# S2A_FPS=30 (env.txt; on the iPhone it is the settings page's frame-rate limit) keeps 30 and saves power
 
 # ---- Memory ----
 # Unreal Engine 4.27: nninitStartup (main+0xe89fa4) needs virtual address memory, sets a 6 MB heap for the C library's malloc and reserves one address region for the engine

@@ -275,6 +275,7 @@ float s2a_pad_axis_deadzone(float v, float dz) {
 //   slot_of[j] 写第 j 只该占的槽（-1 = 超过 max 只，不参与）；返回占用到的最高槽位 + 1（至少 1：槽 0 总留给键盘 / 鼠标）。
 //   断开的手柄下一轮不在 live 里 → 槽空出来；重连时按「最小空槽」占回去（中间没插别的就回到原槽）。
 static int order_match(const s2a_pad_order_entry *e, int ns2_player, const char *name, int index) {
+    if (e->ns2_player == S2A_PAD_ORDER_EMPTY) return 0;   // 空槽占位，不匹配任何在线手柄
     if (ns2_player == S2A_PAD_ORDER_GEN1 || ns2_player == S2A_PAD_ORDER_GEN1_PAIR)   // 一代单只 / 按设备的一对：照设备 id 比
         return e->ns2_player == ns2_player && name && !strcmp(e->name, name);
     if (ns2_player != -1) return e->ns2_player == ns2_player;   // 通道玩家号、键盘：照号比
@@ -285,6 +286,48 @@ int s2a_pad_order_rank(const s2a_pad_order *order, int ns2_player, const char *n
     for (int i = 0; i < order->count && i < S2A_PAD_ORDER_MAX; i++) if (order_match(&order->entry[i], ns2_player, name, index)) return i;
     for (int i = 0; i < order->dropped_count && i < S2A_PAD_ORDER_MAX; i++) if (order_match(&order->dropped[i], ns2_player, name, index)) return S2A_PAD_ORDER_DROPPED;
     return S2A_PAD_ORDER_UNLISTED;
+}
+int s2a_pad_order_arrange(const s2a_pad_order *order, int count, const int *ns2_player, const char *const *group, const char *const *key, int *keep, int *rank) {
+    if (count > S2A_PAD_ARRANGE_MAX) count = S2A_PAD_ARRANGE_MAX;
+    int r[S2A_PAD_ARRANGE_MAX], idx[S2A_PAD_ARRANGE_MAX];
+    for (int j = 0; j < count; j++) {
+        int index = 0;   // 同名第几只：只数前面同名的（名字为空不数）
+        if (group[j]) for (int k = 0; k < j; k++) if (group[k] && !strcmp(group[k], group[j])) index++;
+        r[j] = s2a_pad_order_rank(order, ns2_player[j], key && key[j] ? key[j] : group[j], index);
+        idx[j] = j;
+    }
+    for (int a = 1; a < count; a++) for (int b = a; b > 0 && r[idx[b]] < r[idx[b - 1]]; b--) { int t = idx[b]; idx[b] = idx[b - 1]; idx[b - 1] = t; }   // 稳定：同排位照原顺序
+    int m = 0;
+    for (int k = 0; k < count; k++) {
+        if (r[idx[k]] == S2A_PAD_ORDER_DROPPED) continue;   // 分配时没登记：不进槽位
+        keep[m] = idx[k]; rank[m] = r[idx[k]]; m++;
+    }
+    return m;
+}
+// 游戏这次收几人（手柄设置小程序的人数上限，服务层 InputPump.CapPads 设；0 = 不限）。宿主分槽前按它压缩名次（s2a_slot_rank_cap）
+static _Atomic int g_pad_cap;
+void (*volatile s2a_pad_cap_hook)(void);   // 上限变了通知前端重排（iOS 只在接上 / 断开时分槽，挂 s2a_ios_pad_order_changed；Mac 每次采样都重算，不挂）
+__attribute__((visibility("default"), used)) void s2a_vpad_set_cap(int n) {
+    int v = n > 0 ? n : 0;
+    if (atomic_exchange(&g_pad_cap, v) != v) { void (*hook)(void) = s2a_pad_cap_hook; if (hook) hook(); }
+}
+int s2a_pad_cap(void) { return atomic_load(&g_pad_cap); }
+void s2a_slot_rank_cap(int *rank, int count, int cap) {
+    if (cap <= 0) return;
+    int over = 0;
+    for (int j = 0; j < count; j++) if (rank[j] >= cap && rank[j] < S2A_PAD_ORDER_UNLISTED) { over = 1; break; }
+    if (!over) return;   // 登记过的在线手柄都排在名额以内：照顺序表原位，不动
+    int next = 0;
+    for (int r = 0; r < S2A_PAD_ORDER_UNLISTED; r++)   // 按名次先后（名次彼此不同）改写成 0、1、2…：空位不再占名额
+        for (int j = 0; j < count; j++) if (rank[j] == r) { rank[j] = next++; break; }
+}
+void s2a_slot_pin(const void **prev, const void *const *live, const int *rank, int count, int max) {
+    for (int j = 0; j < count; j++) {
+        int r = rank[j];
+        if (r < 0 || r >= max || !live[j] || prev[r] == live[j]) continue;
+        for (int i = 0; i < max; i++) if (prev[i] == live[j]) prev[i] = NULL;
+        prev[r] = live[j];
+    }
 }
 int s2a_slot_plan(const void *const *prev, const void *const *live, int count, int max, int *slot_of) {
     for (int j = 0; j < count; j++) {

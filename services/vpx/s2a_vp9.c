@@ -7,6 +7,10 @@
 #include "vpx/vp8dx.h"
 #include "vpx/s2a_vp9_nvdec.h"
 
+// 本机链了真 libvpx（services/build.mk S2A_VPX=1 / 探测不过 auto）：C 侧（nvn2_codec.c）与 C# 侧（AppleVideo.cs）
+//   问它决定 VP9 走 libvpx 还是系统路线；没链时链的是全失败的空垫片（stub.c，回 0）——同一份导出只会链二者之一
+int s2a_vpx_linked(void) { return 1; }
+
 // threads：libvpx 解码线程数（≤ 1 = 单线程）；多线程时同时开 VP9 行级并行
 void *s2a_vp9_open(int threads)
 {

@@ -2,6 +2,7 @@
 //   读服务层写的 status.txt 显示每条状态（每秒刷新）。执行、版本校验、改代码拦截都在 services/S2A.Services/Cheats.cs，开关约 1 秒内生效，不用重启。
 //   解析规则与 Cheats.cs Parse 一致：[名字] 普通条目，{名字} 主代码（不单独列开关，随同文件任一条开着执行），其余非空行是指令。
 #import "vpad_cheats.h"
+#import "picker_present.h"   // 选文件界面弹出 + 日志（#1939）
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #include "s2a_docs.h"
 #import "s2a_l10n.h"
@@ -65,7 +66,7 @@ UIDocumentPickerViewController *s2a_cheats_import_picker(void) {
 // status.txt 的状态值是与服务层 Cheats.cs 约定的串（比对照原样用中文），显示时换成当前语言；认不出的原样显示
 static NSString *cheat_status_text(NSString *st) {
     NSDictionary *t = @{@"生效中": S2AL(@"cheats.status.active"), @"生效中（编进游戏）": S2AL(@"cheats.status.packed"), @"地址未就绪": S2AL(@"cheats.status.addressNotReady"), @"执行出错": S2AL(@"cheats.status.execError"),
-        @"改代码，不支持": S2AL(@"cheats.status.modifiesCode"), @"格式不对": S2AL(@"cheats.status.badFormat"), @"版本不符": S2AL(@"cheats.status.versionMismatch"),
+        @"改代码，不支持": S2AL(@"cheats.status.modifiesCode"), @"改代码，没编进包": S2AL(@"cheats.status.notPacked"), @"格式不对": S2AL(@"cheats.status.badFormat"), @"版本不符": S2AL(@"cheats.status.versionMismatch"),
         @"关": S2AL(@"cheats.status.off"), @"游戏未装载": S2AL(@"cheats.status.gameNotLoaded"), @"指令有误": S2AL(@"cheats.status.badInstruction")};
     return st ? t[st] ?: st : nil;
 }
@@ -139,7 +140,7 @@ static NSString *cheat_status_text(NSString *st) {
 }
 
 - (void)import {
-    UIDocumentPickerViewController *p = s2a_cheats_import_picker(); p.delegate = self; [self presentViewController:p animated:YES completion:nil];
+    UIDocumentPickerViewController *p = s2a_cheats_import_picker(); p.delegate = self; s2a_present_picker(self, p, "cheats-import");
 }
 - (void)documentPicker:(UIDocumentPickerViewController *)c didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     (void)c; NSFileManager *fm = NSFileManager.defaultManager; NSURL *dir = cheats_dir(); NSMutableArray *bad = [NSMutableArray array];
@@ -234,6 +235,8 @@ static NSString *cheat_status_text(NSString *st) {
 }
 - (void)tableView:(UITableView *)t didSelectRowAtIndexPath:(NSIndexPath *)ip {
     [t deselectRowAtIndexPath:ip animated:YES];
+    // 第 0 组是「分享给其他玩家」开关那一行（cellForRow 单做）：点到行本身（不是开关）也会进这里，没有金手指文件时 _files[-1] 越界崩（诊断#c84d01，0.6.1）
+    if (ip.section == 0) return;
     S2ACheatFile *f = _files[ip.section - 1];
     if (ip.row < (NSInteger)(f.bad ? 0 : f.rows.count)) return;
     UIAlertController *a = [UIAlertController alertControllerWithTitle:[NSString stringWithFormat:S2AL(@"cheats.delete.title"), f.file] message:S2AL(@"cheats.delete.message") preferredStyle:UIAlertControllerStyleAlert];

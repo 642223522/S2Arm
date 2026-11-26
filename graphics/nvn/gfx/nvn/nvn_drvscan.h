@@ -2,10 +2,11 @@
 // the device-info items whose cases 0 / 1 return the API major / minor as immediates. Games compare against the version of the headers they were built with,
 // some for exact equality (Raiden V Director's Cut, SDK 6.5: main+0x173914 requires 53 and 310 exactly and asserts otherwise; the SDK-based guess said 53.313).
 // Shape, the same in every SDK checked (4.4 to 20.5): cmp wI, #items ; b.hi default ; <jump table dispatch> ; movz w0, #major ; br xT, with case 1's target
+// (SDK 0.12, 01007EF00011E000 v1.0.0's driver in subsdk0: movz w0, #52 sits before the table load, up to two instructions ahead of br; its game requires major 52 exactly)
 // starting movz w0, #minor. Dispatch is either adrp/add T ; ldrsw xE, [T, xI, lsl #2] ; add xT, xE, T (entry = T + s32) or adrp/add T ; adr L ; ldrb / ldrh
 // wE, [T, xI(, lsl #1)] ; add xT, L, xE, lsl #2 (entry = L + 4 * u8 / u16). img = the module image (offset 0 = base, page-aligned), text = [0, text_end).
 // nvn_drv_items_scan: every case of that switch whose target is movz w0, #imm gives items[case] = imm (−1: the case computes its value, reads the device, or is out of range);
-//   items[0] is the major (preset before the branch). Returns the number of cases on exactly one match with major 53 or 55 (two matches with the same table count as one); 0 otherwise.
+//   items[0] is the major (preset before the branch). Returns the number of cases on exactly one match with major 52, 53 or 55 (two matches with the same table count as one); 0 otherwise.
 //   11-02 Mario + Rabbids Sparks of Hope (SDK 13.3.5): its driver reports the newest GPU code version as 1.16 (items 0x2E / 0x30), the host's SMO-era table said 1.14, and the game
 //   checks each of its 1120 shaders against that range: the compute shader for Quarter Depth was refused, its resource stayed null and main+0x963c28 read it.
 // nvn_drv_api_scan: items 0 / 1 (the API version); returns 1 and fills api[] on a match
@@ -30,14 +31,81 @@ static inline int32_t drv_orr_w0(uint32_t m) {
     uint32_t v = 0; for (unsigned k = 0; k < 32; k += e) v |= (uint32_t)el << k;
     return (int32_t)v;
 }
+// Read a constant from an independently guarded device query called before the outer switch.
+// Accept only a completely recognized stack handoff and constant-return sequence.
+static inline int drv_nested_return(const uint8_t *img, size_t text_end, size_t pos) {
+    if (pos + 8 > text_end || drv_w(img, pos) != 0xb85fc3a0u) return 0;
+    pos += 4;
+    uint32_t w = drv_w(img, pos);
+    if ((w >> 26) == 5) {
+        int64_t dest = (int64_t)pos + drv_sx(w & 0x3ffffffu, 26) * 4;
+        if (dest < 0 || (uint64_t)dest + 4 > text_end || (size_t)dest == pos) return 0;
+        pos = (size_t)dest;
+    }
+    // Only restore registers other than x0, adjust sp, and return. Unknown instructions are not proof.
+    for (int i = 0; i < 5 && pos + 4 <= text_end; i++, pos += 4) {
+        w = drv_w(img, pos);
+        if (w == 0xd65f03c0u) return 1;
+        if ((w & 0xffc003e0u) == 0xa94003e0u && (w & 31) != 0 && ((w >> 10) & 31) != 0) continue;
+        if ((w & 0xffc003ffu) == 0x910003ffu) continue;
+        return 0;
+    }
+    return 0;
+}
+static inline int32_t drv_nested_item(const uint8_t *img, size_t text_end, size_t size, size_t cmp, int item, size_t target) {
+    if (cmp < 16 || cmp + 40 > text_end || !drv_nested_return(img, text_end, target) ||
+        drv_w(img, cmp - 16) != 0xd10013a1u || drv_w(img, cmp - 12) != 0xb81fc3bfu ||
+        drv_w(img, cmp - 8) != 0x2a0003f4u ||
+        (drv_w(img, cmp) & 0xffc003ffu) != 0x7100029fu ||
+        drv_w(img, cmp + 8) != 0x2a1403e8u ||
+        (drv_w(img, cmp + 12) & 0x9f00001fu) != 0x90000009u ||
+        (drv_w(img, cmp + 16) & 0xffc003ffu) != 0x91000129u ||
+        (drv_w(img, cmp + 20) & 0x9f00001fu) != 0x1000000au ||
+        drv_w(img, cmp + 24) != 0x3868692bu || drv_w(img, cmp + 28) != 0x8b0b094au ||
+        (drv_w(img, cmp + 32) & 0xffe0001fu) != 0x52800000u || drv_w(img, cmp + 36) != 0xd61f0140u) return -1;
+    uint32_t call = drv_w(img, cmp - 4);
+    if ((call >> 26) != 0x25) return -1;
+    int64_t fn = (int64_t)cmp - 4 + drv_sx(call & 0x3ffffffu, 26) * 4;
+    if (fn < 0 || (uint64_t)fn + 48 > text_end) return -1;
+    size_t p = (size_t)fn;
+    uint32_t sub = drv_w(img, p + 8), limit = drv_w(img, p + 12), pg = drv_w(img, p + 20), add = drv_w(img, p + 24), adr = drv_w(img, p + 28);
+    if (drv_w(img, p) != 0x2a0003e8u || drv_w(img, p + 4) != 0x2a1f03e0u ||
+        (sub & 0xffc003ffu) != 0x51000109u || (limit & 0xffc003ffu) != 0x7100013fu ||
+        (drv_w(img, p + 16) & 0xff00001fu) != 0x54000008u ||
+        (pg & 0x9f00001fu) != 0x9000000au || (add & 0xffc003ffu) != 0x9100014au ||
+        (adr & 0x9f00001fu) != 0x1000000bu || drv_w(img, p + 32) != 0x3869694cu ||
+        drv_w(img, p + 36) != 0x8b0c096bu || (drv_w(img, p + 40) & 0xffe0001fu) != 0x52800008u ||
+        drv_w(img, p + 44) != 0xd61f0160u) return -1;
+    int bias = (sub >> 10) & 0xfff, index = item - bias, last = (limit >> 10) & 0xfff;
+    if (index < 0 || index > last) return -1;
+    int64_t table = (int64_t)((p + 20) & ~(size_t)0xfff) + (drv_sx(((pg >> 29) & 3) | (((pg >> 5) & 0x7ffff) << 2), 21) * 4096) + ((add >> 10) & 0xfff);
+    int64_t base = (int64_t)(p + 28) + drv_sx(((adr >> 29) & 3) | (((adr >> 5) & 0x7ffff) << 2), 21);
+    if (table < 0 || (uint64_t)table + (unsigned)index >= size) return -1;
+    int64_t dest = base + 4 * (int64_t)img[table + index];
+    if (dest < 0 || (uint64_t)dest + 8 > text_end) return -1;
+    uint32_t val = drv_w(img, (size_t)dest);
+    if ((val & 0xffe0001fu) != 0x52800008u) return -1;
+    int32_t result = (val >> 5) & 0xffff;
+    size_t end = (size_t)dest + 4;
+    uint32_t branch = drv_w(img, end);
+    if ((branch >> 26) == 5) {
+        int64_t dest2 = (int64_t)end + drv_sx(branch & 0x3ffffffu, 26) * 4;
+        if (dest2 < 0 || (uint64_t)dest2 + 12 > text_end) return -1;
+        end = (size_t)dest2;
+    }
+    if (end + 12 > text_end || drv_w(img, end) != 0x52800020u || drv_w(img, end + 4) != 0xb9000028u || drv_w(img, end + 8) != 0xd65f03c0u) return -1;
+    return result;
+}
 static inline int nvn_drv_items_scan(const uint8_t *img, size_t text_end, size_t size, int32_t *items, int nmax) {
     int found = 0; static int32_t cur[256];
     for (size_t o = 32; o + 8 <= text_end; o += 4) {
-        uint32_t mv = drv_w(img, o), br = drv_w(img, o + 4);
-        if ((mv & 0xffe0001f) != 0x52800000 || (br & 0xfffffc1f) != 0xd61f0000) continue;   // movz w0, #imm ; br xT
-        int major = (int)((mv >> 5) & 0xffff);
-        if (major != 53 && major != 55) continue;
-        size_t cmp = 0; for (size_t k = 4; k <= 9 * 4 && k <= o; k += 4) {
+        // br xT at o + 4, movz w0, #major right before it; the earliest drivers (SDK 0.12) set it before the table load instead: movz w0, #52 ; ldrsw ; add ; br
+        if ((drv_w(img, o + 4) & 0xfffffc1f) != 0xd61f0000) continue;
+        size_t mv = 0; for (size_t k = 0; k <= 2 * 4 && k <= o; k += 4) if ((drv_w(img, o - k) & 0xffe0001f) == 0x52800000) { mv = o - k; break; }
+        if (!mv) continue;
+        int major = (int)((drv_w(img, mv) >> 5) & 0xffff);
+        if (major != 52 && major != 53 && major != 55) continue;
+        size_t cmp = 0; for (size_t k = 4; k <= 11 * 4 && k <= o; k += 4) {
             uint32_t c = drv_w(img, o - k), b = drv_w(img, o - k + 4);
             if ((c & 0xffc0001f) == 0x7100001f && (b & 0xff00001f) == 0x54000008) { cmp = o - k; break; }   // cmp wI, #items ; b.hi
         }
@@ -45,7 +113,7 @@ static inline int nvn_drv_items_scan(const uint8_t *img, size_t text_end, size_t
         int ncase = (int)((drv_w(img, cmp) >> 10) & 0xfff) + 1;
         if (ncase < 2 || ncase > 256) continue;
         int64_t T = -1, L = -1; int kind = 0;   // 1 ldrsw (T-relative), 2 ldrb, 3 ldrh (L-relative)
-        for (size_t p = cmp + 8; p < o; p += 4) {
+        for (size_t p = cmp + 8; p <= o; p += 4) {
             uint32_t w = drv_w(img, p);
             if ((w & 0x9f000000) == 0x90000000 && p + 4 < o) {   // adrp ; add
                 uint32_t a = drv_w(img, p + 4); if ((a & 0xffc00000) != 0x91000000) continue;
@@ -66,6 +134,7 @@ static inline int nvn_drv_items_scan(const uint8_t *img, size_t text_end, size_t
             if (t < 0 || (uint64_t)t + 4 > text_end) { cur[i] = -1; continue; }
             uint32_t m = drv_w(img, (size_t)t);
             cur[i] = (m & 0xffe0001f) == 0x52800000 ? (int32_t)((m >> 5) & 0xffff) : drv_orr_w0(m);
+            if (cur[i] < 0) cur[i] = drv_nested_item(img, text_end, size, cmp, i, (size_t)t);
         }
         if (cur[1] < 0) continue;   // case 1 must return the minor as an immediate (this is the version switch)
         cur[0] = major;

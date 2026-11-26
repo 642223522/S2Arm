@@ -1,4 +1,6 @@
+#include "local_player_prefs.h"
 #import <Foundation/Foundation.h>
+#include "s2a_docs.h"   // s2a_container_docs：容器文档根（Apple TV 在 Library/Caches/S2Arm）
 #import "settings.h"
 #import "cpatch_model.h"
 #import "s2a_l10n.h"
@@ -61,7 +63,11 @@ void s2a_ios_apply_overlay_settings(NSUserDefaults *defaults) {
 //   以及撑不住就问玩家的「问过」与「本款原生 60 帧」记号——原先全在 App 级，一款游戏自动退回 16:9、关 60 帧会串到所有游戏
 NSArray *s2a_ios_per_game_keys(void) {
     return @[@"S2AResolutionScale", @"S2AAntiAliasing", @"S2AScalingFilter", @"S2AFrameRateLimit", @"S2AWidescreen", @"S2AFps60",
-             @"S2AFps60Manual", @"S2ADockedMode", @"S2ACommunityPatches", @"S2AWidescreenAsked", @"S2AFps60Asked", @"S2AFpsNative60", @"S2AFpsPick", S2AGameLanguageKey, @"S2AFrameInterp", @"S2AGameVolume"];
+             @"S2AFps60Manual", @"S2ADockedMode", @"S2ACommunityPatches", @"S2AWidescreenAsked", @"S2AFps60Asked", @"S2AFpsNative60", @"S2AFpsPick", S2AGameLanguageKey, @"S2AFrameInterp", @"S2AGameVolume",
+             @"S2AAudioDevice", @"S2AAudioVsSpeakers", @"S2AAudioVsHeadphones",   // 输出设备类型 + 两个虚拟环绕开关（#189 后续，5.1 虚拟环绕第二片，按游戏存）
+             @"S2AKeyboardMap",   // 外接键盘键位（ios/keyboard_settings.m，#1869）：按款存，同 Mac 启动器每款一份 input.json
+             @"S2AMouseOff",     // 改键页「使用鼠标 / 触控板」关掉（#2072）：按款存，同键位一起设为所有游戏的默认
+             @"S2AHdrSdrMap"];    // S4「SDR 转 HDR」按款开关（#625 第二阶段 PR-B，评审终稿：只放游戏库每款设置页）：按款存（缺省关 = 字节级回现状，起局只转玩家明确拨过的开 1 / 关 0——不联动 S2A_HDR）
 }
 NSArray<NSString *> *s2a_ios_game_languages(void) {
     return @[@"system", @"SimplifiedChinese", @"TraditionalChinese", @"AmericanEnglish", @"BritishEnglish", @"Japanese", @"Korean", @"French", @"CanadianFrench", @"German",
@@ -120,6 +126,8 @@ NSString *s2a_ios_game_language_note_with(NSUserDefaults *defaults, NSArray<NSSt
 }
 @interface S2AGameLayeredDefaults : NSUserDefaults
 - (instancetype)initWithGame:(NSUserDefaults *)game app:(NSUserDefaults *)app keys:(NSSet<NSString *> *)keys;
+- (NSUserDefaults *)gameLayer;
+- (NSUserDefaults *)appLayer;
 @end
 @implementation S2AGameLayeredDefaults {
     NSUserDefaults *_game, *_app; NSSet<NSString *> *_keys;
@@ -128,6 +136,8 @@ NSString *s2a_ios_game_language_note_with(NSUserDefaults *defaults, NSArray<NSSt
     if ((self = [super initWithSuiteName:nil])) { _game = game; _app = app; _keys = [keys copy]; }
     return self;
 }
+- (NSUserDefaults *)gameLayer { return _game; }
+- (NSUserDefaults *)appLayer { return _app; }
 - (NSUserDefaults *)writerFor:(NSString *)key { return [_keys containsObject:key] ? _game : _app; }
 - (id)objectForKey:(NSString *)key { return ([_keys containsObject:key] ? [_game objectForKey:key] : nil) ?: [_app objectForKey:key]; }
 - (void)setObject:(id)value forKey:(NSString *)key { [[self writerFor:key] setObject:value forKey:key]; }
@@ -158,6 +168,12 @@ NSUserDefaults *s2a_ios_settings_defaults_for(NSString *gid) {
 }
 static NSString *current_gid(void) { const char *g = getenv("S2A_LAUNCH_GAME_ID"); return g && *g ? @(g) : nil; }
 NSUserDefaults *s2a_ios_settings_defaults(void) { return s2a_ios_settings_defaults_for(current_gid()); }
+void s2a_ios_settings_layers(NSUserDefaults *__strong *game, NSUserDefaults *__strong *app) {
+    NSUserDefaults *d = s2a_ios_settings_defaults();
+    BOOL layered = [d isKindOfClass:S2AGameLayeredDefaults.class];
+    *game = layered ? [(S2AGameLayeredDefaults *)d gameLayer] : d;
+    *app = layered ? [(S2AGameLayeredDefaults *)d appLayer] : nil;
+}
 
 // 某款的随行目录（s2a_caps.tsv / widen_verified.tsv / cpatch.tsv 所在）：正在跑的这款 = 启动上下文的 caps_dir；
 //   游戏库里还没进游戏的那款 = 多款容器 <App 包>/Games/<游戏号>（runtime/src/launchctx.c 同一约定）
@@ -208,6 +224,14 @@ void s2a_ios_set_fps60_for(NSString *gid, BOOL on) {
     [d setBool:on forKey:@"S2AFps60"]; [d setBool:on forKey:@"S2AFps60Manual"];
 }
 BOOL s2a_ios_fps60_on(void) { return s2a_ios_fps60_on_for(current_gid()); }
+
+// S4「SDR 转 HDR」（#625 第二阶段 PR-B，按款存 S2AHdrSdrMap，评审终稿）：缺省关（没拨过 = 字节级回现状——末帧扩张不生效）；
+//   读写照 S2AFps60 的读写族形态（游戏库每款设置页行经它；起局翻译在 s2a_ios_apply_graphics_settings 只落 S2A_HDR_SDR_MAP，
+//   不联动 S2A_HDR——终稿口径：PQ 层载体由引擎侧层视角开关（nvn2_hdr_layer_sw）补，vi 答询照玩家 S2A_HDR 口径回答）
+BOOL s2a_ios_hdr_sdr_map_on_for(NSString *gid) { return [s2a_ios_settings_defaults_for(gid) boolForKey:@"S2AHdrSdrMap"]; }
+void s2a_ios_set_hdr_sdr_map_for(NSString *gid, BOOL on) { [s2a_ios_settings_defaults_for(gid) setBool:on forKey:@"S2AHdrSdrMap"]; }
+BOOL s2a_ios_hdr_sdr_map_on(void) { return s2a_ios_hdr_sdr_map_on_for(current_gid()); }
+void s2a_ios_set_hdr_sdr_map(BOOL on) { s2a_ios_set_hdr_sdr_map_for(current_gid(), on); }
 // 补帧开关（按游戏存，S2AFrameInterp；没设过 = 开）：有社区帧率补丁时补帧自己让路（runtime/src/fps.c s2a_fps_source），开关不用管
 // 补帧开不开（11-15 维护者：帧率解锁一个开关——有社区帧率补丁用补丁，没有就用补帧）：帧率解锁明确关（S2AFps60 = NO）= 回游戏原帧率，补帧也关；
 //   没选过 / 开着 = 补帧照今天缺省开（补丁开着时补帧每帧让路，nvn_present_fi.inc fi_wanted）。旧的单独「补帧」开关（S2AFrameInterp）关过的照旧关
@@ -249,8 +273,9 @@ int s2a_ios_fullscreen_state(NSString *gid, BOOL *on) {
     if (g && [g objectForKey:@"S2AWidescreen"]) { *on = [g boolForKey:@"S2AWidescreen"]; return 0; }
     if (!g && [app objectForKey:@"S2AWidescreen"]) { *on = [app boolForKey:@"S2AWidescreen"]; return 0; }   // 单款壳：App 级就是这款
     if ([app objectForKey:@"S2AWidescreen"] && ![app boolForKey:@"S2AWidescreen"]) { *on = NO; return 0; }
-    *on = caps_value_in(dir, "widen") == 1 || [NSFileManager.defaultManager fileExistsAtPath:[dir stringByAppendingPathComponent:@"widen_verified.tsv"]]
-        || adaptive_items(dir, NULL).count > 0;   // 有自适应满屏补丁（11-13 起命中就默认开）
+    // 没选过：只有带自适应满屏补丁的款开（11-13 起命中就默认开，补丁铺满）。清单 widen 1 / widen_verified.tsv 不算：
+    //   我方通用满屏缺省不开（11-15 维护者「手动打开满屏走通用方案」，runtime/src/widen.c 名单门），这里显示的必须是起局真生效的（#2205：原先显示开、实际 16:9）
+    *on = adaptive_items(dir, NULL).count > 0;
     return 0;
 }
 void s2a_ios_set_fullscreen(NSString *gid, BOOL on) {
@@ -277,10 +302,28 @@ NSArray<NSDictionary *> *s2a_ios_graphics_options(void) {
         @{@"key": @"S2AAntiAliasing", @"title": S2AL(@"gfx.antiAliasing"), @"initial": @"None",
           @"values": @[@"None", @"SmaaMedium", @"SmaaHigh"], @"labels": @[S2AL(@"gfx.antiAliasing.off"), S2AL(@"gfx.antiAliasing.medium"), S2AL(@"gfx.antiAliasing.high")]},
         @{@"key": @"S2AScalingFilter", @"title": S2AL(@"gfx.filter"), @"initial": @"Bilinear",
-          @"values": @[@"Bilinear", @"Nearest", @"MetalFX"], @"labels": @[S2AL(@"gfx.filter.bilinear"), S2AL(@"gfx.filter.nearest"), S2AL(@"gfx.filter.metalfx")]},
+          @"values": @[@"Bilinear", @"Nearest", @"MetalFX", @"Fsr"], @"labels": @[S2AL(@"gfx.filter.bilinear"), S2AL(@"gfx.filter.nearest"), S2AL(@"gfx.filter.metalfx"), S2AL(@"gfx.filter.fsr")]},   // Fsr：AMD FSR 1，只直连上屏认，通用模式按双线性
         @{@"key": @"S2AFrameRateLimit", @"title": S2AL(@"gfx.fpsLimit"), @"initial": @"0",
           @"values": @[@"30", @"60", @"120", @"0"], @"labels": @[@"30", @"60", @"120", S2AL(@"gfx.fpsLimit.none")]}
     ];
+}
+
+// 游戏内亮度（按款）：档位用字符串，@"system" = 跟随系统（不导出 S2A_BRIGHTNESS、不改现有行为），其余是 0–1 的字符串。
+//   放进 graphics_options 同一套 slider 机制里显示，但由 brightnessCell 单独画、单独存 S2ABrightness。
+NSDictionary *s2a_ios_brightness_option(void) {
+    return @{@"key": @"S2ABrightness", @"title": S2AL(@"gfx.brightness"),
+             @"values": @[@"system", @"0.5", @"0.65", @"0.8", @"1"],
+             @"labels": @[S2AL(@"gfx.brightness.system"), @"50%", @"65%", @"80%", @"100%"]};
+}
+
+// HDR 开关联动（PR3d，照 nxnative Upscaling 行 needs=DM_HDR=0 形态映射到本仓设置页）：HDR 管线接手（S2A_HDR=auto/on，
+//   启动环境开关、无设置页行）时，上屏增强一族（抗锯齿 / 缩放滤镜 MetalFX·FSR / 补帧）对 HDR 窗口旁路——8 位感知缩放
+//   不适配 PQ 码值（graphics/nvn/gfx/nvn/nvn_hdr_policy.h hdr_bypass_upscale；产品限制写入 docs/画面设置.md，不静默降画质）。
+//   设置页时刻读不到「下次启动」的环境（开关无持久键，页面内行内置灰会误导）——联动落在两处：设置 → 环境的应用通道
+//   （s2a_ios_apply_graphics_settings 记一行）与设置页两行下的提示（app_settings.m 按此谓词显示）。
+BOOL s2a_ios_hdr_upscale_bypassed(void) {
+    const char *v = getenv("S2A_HDR");
+    return v && (!strcmp(v, "auto") || !strcmp(v, "on"));
 }
 
 NSInteger s2a_ios_settings_docked_change(NSDictionary *entry, NSDictionary *now, BOOL *restart) {
@@ -303,7 +346,28 @@ NSDictionary *s2a_ios_graphics_snapshot(NSUserDefaults *defaults) {
     return snapshot;
 }
 
+void s2a_ios_apply_ldn_settings(NSUserDefaults *defaults) {
+    if (![[defaults stringForKey:@"S2ALdnMode"] isEqualToString:@"manual"]) return;
+    // 保留工具 / env.txt 的显式服务器，不能混进另一套托管设置。
+    if (getenv("S2A_LDN_SERVER")) return;
+    BOOL hosting = [defaults boolForKey:@"S2ALdnHost"];
+    NSString *address = [[defaults stringForKey:@"S2ALdnAddress"]
+        stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if (!hosting && !address.length) {
+        // 未填写也不能偷偷回到自动发现；交给连接路径报错，不拦启动游戏。
+        fprintf(stderr, "[S2A 联机] 指定 IP 模式尚未填写中继 IPv4 地址，请在主页设置中填写后重新启动 App\n");
+        address = @"0.0.0.0";
+    }
+    // Host 的 LdnServer 在进程内缓存：不纳入画面设置的会话撤销字典。
+    setenv("S2A_LDN_SERVER", (hosting ? @"127.0.0.1" : address).UTF8String, 0);
+    setenv("S2A_LDN_RELAY", hosting ? "1" : "0", 0);
+    if (hosting) setenv("S2A_LDN_LISTEN", "0.0.0.0", 0);
+}
+
+static void publish_local_players(void);
 void s2a_ios_apply_graphics_settings(NSUserDefaults *defaults) {
+    s2a_ios_apply_ldn_settings(NSUserDefaults.standardUserDefaults);
+    publish_local_players();
     // 字符串与 Settings.bundle 一致。起局工具显式给出的环境变量优先。
     const struct {
         __unsafe_unretained NSString *key;
@@ -313,7 +377,7 @@ void s2a_ios_apply_graphics_settings(NSUserDefaults *defaults) {
     } options[] = {
         {@"S2AResolutionScale", "S2A_RES_SCALE", @"1", @[@"0.5", @"0.75", @"1", @"1.5", @"2"]},
         {@"S2AAntiAliasing", "S2A_ANTI_ALIASING", @"None", @[@"None", @"SmaaMedium", @"SmaaHigh"]},   // 不带 FXAA（10-30：NVIDIA FXAA 3.11 没有授权条款）；存过的 Fxaa 按无效值清除
-        {@"S2AScalingFilter", "S2A_SCALING_FILTER", @"Bilinear", @[@"Bilinear", @"Nearest", @"MetalFX"]},   // 画质提升：标准 / 2D 游戏专用 / 锐利放大（MetalFX 空间放大，graphics/nvn/gfx/nvn/nvn_present_fx.inc）
+        {@"S2AScalingFilter", "S2A_SCALING_FILTER", @"Bilinear", @[@"Bilinear", @"Nearest", @"MetalFX", @"Fsr"]},   // 画质提升：标准 / 2D 游戏专用 / 锐利放大（MetalFX 空间放大，graphics/nvn/gfx/nvn/nvn_present_fx.inc）/ FSR（AMD FSR 1，nvn_present_fsr.inc）
         {@"S2AFrameRateLimit", "S2A_FPS", @"0", @[@"30", @"60", @"120", @"0"]},
     };
 
@@ -333,6 +397,36 @@ void s2a_ios_apply_graphics_settings(NSUserDefaults *defaults) {
         apply_environment(options[i].env, value);
         fprintf(stderr, "[S2A 画面设置] %s=%s（本 App 设置）\n", options[i].env, [value UTF8String]);
     }
+    // 游戏内亮度（按款）：S2ABrightness 存 0–1 的字符串→ S2A_BRIGHTNESS，交给 app.m 已有的 brightness_hold 每 2 秒保持、对抗自动亮度。
+    //   没选过 = 不导出（跟随系统、不改现有行为，和其它项的"缺省有值"不同）；显式启动环境优先；无效值清除、回退到不导出。
+    if (!getenv("S2A_BRIGHTNESS")) {
+        id value = [defaults objectForKey:@"S2ABrightness"];
+        if (value != nil) {
+            if ([value isEqual:@"system"]) {   // 跟随系统：与没选过一样，不导出、不改动屏幕亮度
+                fprintf(stderr, "[S2A 画面设置] S2ABrightness=system，亮度跟随系统\n");
+            } else {
+                double b = -1; BOOL valid = NO;
+                if ([value isKindOfClass:NSString.class]) {
+                    const char *s = [value UTF8String]; char *end = NULL;
+                    if (s && *s) { b = strtod(s, &end); valid = end && *end == '\0' && b >= 0 && b <= 1; }
+                }
+                char buf[32]; snprintf(buf, sizeof buf, "%.2f", b);
+                if (!valid) {
+                    fprintf(stderr, "[S2A 画面设置] 【红】S2ABrightness=%s 无效，清除保存值、亮度跟随系统\n", [[value description] UTF8String]);
+                    [defaults removeObjectForKey:@"S2ABrightness"];
+                } else {
+                    apply_environment("S2A_BRIGHTNESS", @(buf));
+                    fprintf(stderr, "[S2A 画面设置] S2A_BRIGHTNESS=%s（本 App 设置，画面亮度）\n", buf);
+                }
+            }
+        }
+    } else {
+        fprintf(stderr, "[S2A 画面设置] S2A_BRIGHTNESS=%s（启动环境）\n", getenv("S2A_BRIGHTNESS"));
+    }
+    // HDR 开关联动（PR3d，照 nxnative Upscaling 行 needs=DM_HDR=0 形态）：HDR 管线接手时上屏增强对 HDR 窗口旁路——
+    //   抗锯齿 / 缩放滤镜两行照存照传（SDR 窗口照常用它），这里只声明产品限制（不静默降画质，docs/画面设置.md）
+    if (s2a_ios_hdr_upscale_bypassed())
+        fprintf(stderr, "[S2A 画面设置] S2A_HDR=%s：HDR 窗口（RGB10A2 PQ 码值）旁路上屏抗锯齿 / 缩放滤镜（MetalFX / FSR）/ 补帧——8 位感知缩放不适配 PQ 码值（产品限制，SDR 窗口照常；docs/画面设置.md）\n", getenv("S2A_HDR"));
     // Switch 档位：与服务层 Host.Docked、直连 dm_opmode 和宽屏表共用；缺省掌机，下次启动生效。
     const char *docked = getenv("S2A_DOCKED");
     if (docked) fprintf(stderr, "[S2A 画面设置] S2A_DOCKED=%s（启动环境）\n", docked);
@@ -341,7 +435,7 @@ void s2a_ios_apply_graphics_settings(NSUserDefaults *defaults) {
         apply_environment("S2A_DOCKED", @(docked));
         fprintf(stderr, "[S2A 画面设置] S2A_DOCKED=%s（本 App 设置）\n", docked);
     }
-    // 帧率档位（11-13 维护者：60 / 120 帧补丁都带进去，玩家自己选）：存 S2AFpsPick（0 = 自动：不超过屏幕刷新率的最高一档），运行时 runtime/src/cpatch.c fps_pick 读
+    // 帧率档位（11-13 维护者：60 / 120 帧补丁都带进去，玩家自己选）：存 S2AFpsPick（0 = 自动：不超过 60 帧的最高一档），运行时 runtime/src/cpatch.c fps_pick 读
     if (!getenv("S2A_FPS_PICK")) {
         NSInteger pick = [defaults integerForKey:@"S2AFpsPick"];
         if (pick > 0) { apply_environment("S2A_FPS_PICK", [NSString stringWithFormat:@"%ld", (long)pick]); fprintf(stderr, "[S2A 画面设置] S2A_FPS_PICK=%ld（本 App 设置）\n", (long)pick); }
@@ -372,11 +466,13 @@ void s2a_ios_apply_graphics_settings(NSUserDefaults *defaults) {
         // 旧键 S2AWidenForce（「宽屏强制启用」，11-13 并进满屏开关）：开着的一次性转成这款满屏明确开
         if ([game boolForKey:@"S2AWidenForce"]) [game setBool:YES forKey:@"S2AWidescreen"];
         [game removeObjectForKey:@"S2AWidenForce"];
-        BOOL fs = NO;
-        // 有自适应满屏补丁的款由补丁铺满（下面社区补丁那段让 S2Arm 满屏让开），这里不强开 S2Arm 满屏，免得拉宽两次
-        // 11-15 维护者「没补丁的游戏手动打开满屏就走咱们通用方案」：玩家明确开满屏、没有自适应满屏补丁 → 我方通用满屏（第三层整套放宽，不看已验证名单）。
-        //   原先还要 S2A_CAPS_OWN=1（v0.4.0 撤通用满屏时加的），手动开也不生效；没选过照旧不开（宿主缺省关，runtime/src/widen.c）
-        if ([game objectForKey:@"S2AWidescreen"] && [game boolForKey:@"S2AWidescreen"] && s2a_ios_fullscreen_state(@(gid), &fs) == 0 && fs && !adaptive_items(s2a_ios_game_dir(@(gid)), NULL).count) {
+    }
+    // 满屏：起局与设置页读同一个生效值（s2a_ios_fullscreen_state），不另判（#2205：两处各判一套，显示开、实际 16:9）。
+    //   生效值开、又没有自适应满屏补丁 = 玩家明确开了 → 我方通用满屏（11-15 维护者「没补丁的游戏手动打开满屏就走咱们通用方案」：第三层整套放宽，不看已验证名单）；
+    //   有自适应满屏补丁的款由补丁铺满（下面社区补丁那段让 S2Arm 满屏让开），这里不强开，免得拉宽两次。单款壳（没有游戏号）同样走这里
+    {
+        NSString *g = game ? @(gid) : nil; BOOL fs = NO;
+        if (s2a_ios_fullscreen_state(g, &fs) == 0 && fs && !adaptive_items(s2a_ios_game_dir(g), NULL).count) {
             if (!getenv("S2A_WIDEN_VERIFIED")) apply_environment("S2A_WIDEN_VERIFIED", @"1");
             if (!getenv("S2A_WIDESCREEN")) apply_environment("S2A_WIDESCREEN", @"1");
             fprintf(stderr, "[S2A 画面设置] 满屏：这款明确开（没进已验证名单也铺满，自检兜底）\n");
@@ -428,6 +524,17 @@ void s2a_ios_apply_graphics_settings(NSUserDefaults *defaults) {
             fprintf(stderr, "[S2A 画面设置] S2A_FPS60=%s（玩家选了 60 帧%s）\n", pick.UTF8String, [pick isEqualToString:@"1"] ? "开" : "关");
         }
     }
+    // S4「SDR 转 HDR」（#625 第二阶段 PR-B，评审终稿；按款存 S2AHdrSdrMap，读写族见上）：只转玩家明确拨过的（开 1 / 关 0，
+    //   没拨过不写——缺省关，字节级回现状）；启动环境显式给的优先（同 60 帧块口径）。不联动 S2A_HDR——终稿口径：
+    //   PQ 层载体由引擎侧层视角开关（nvn2_hdr_layer_sw：S4 开而玩家 S2A_HDR 未设 ⇒ 层按 auto 进/持 PQ）补，
+    //   vi 答询照玩家 S2A_HDR 口径回答（off 恒不答 on=1）；玩家自己设了 S2A_HDR=auto/on 时以玩家为准
+    if (!getenv("S2A_HDR_SDR_MAP")) {
+        NSString *pick = [defaults objectForKey:@"S2AHdrSdrMap"] ? ([defaults boolForKey:@"S2AHdrSdrMap"] ? @"1" : @"0") : nil;
+        if (pick) {
+            apply_environment("S2A_HDR_SDR_MAP", pick);
+            fprintf(stderr, "[S2A 画面设置] S2A_HDR_SDR_MAP=%s（本款设置：SDR 转 HDR——技术细节见 docs/画面设置.md）\n", pick.UTF8String);
+        }
+    }
     // 开发浮层 / Metal 性能浮层：建视图之前 app.m prepareGameView 已先调 s2a_ios_apply_overlay_settings 落环境变量，
     //   这里再调一次兜底（host_run 起局、建 Metal 设备之前）；启动环境显式给的优先（#153）。
     s2a_ios_apply_overlay_settings(defaults);
@@ -446,6 +553,26 @@ void s2a_ios_apply_graphics_settings(NSUserDefaults *defaults) {
             NSInteger p = MAX(0, [v integerValue]);
             apply_environment("S2A_AUDIO_VOLUME", [NSString stringWithFormat:@"%ld", (long)p]); fprintf(stderr, "[S2A 声音设置] S2A_AUDIO_VOLUME=%ld（本 App 设置：游戏音量）\n", (long)p);
         }
+    }
+    // 输出设备类型（#189 后续，5.1 虚拟环绕第二片，定义表 game_settings.v1.json 的 audioDevice）：按游戏存的 S2AAudioDevice
+    //   （游戏库每款设置页写，ios/game_options.m）→ S2A_AUDIO_DEVICE（compat/tree/src/Ryujinx.Audio.Backends.Apple/AppleAudioDeviceType.cs）。
+    //   只转玩家显式选过的 builtin / headphones / external；没选过不设 = Auto（按设备真实声道判，5.1 直通缺省不变）。启动环境显式给的优先
+    if (!getenv("S2A_AUDIO_DEVICE")) {
+        id ad = [defaults objectForKey:@"S2AAudioDevice"];
+        if ([ad isKindOfClass:NSString.class] && [@[@"builtin", @"headphones", @"external"] containsObject:ad]) {
+            apply_environment("S2A_AUDIO_DEVICE", ad); fprintf(stderr, "[S2A 声音设置] S2A_AUDIO_DEVICE=%s（本款设置：输出设备类型）\n", [ad UTF8String]);
+        }
+    }
+    // 两个虚拟环绕开关（同表 vsSpeakers / vsHeadphones）：各存各的（切换设备类型各自恢复），只在对应显式类型下生效（驱动侧判，这里照转
+    //   玩家拨过的值）；只转拨过的（开 1 / 关 0，没拨过不设）。启动环境显式给的优先
+    id vsSpeakers = [defaults objectForKey:@"S2AAudioVsSpeakers"], vsHeadphones = [defaults objectForKey:@"S2AAudioVsHeadphones"];
+    if (!getenv("S2A_AUDIO_VS_SPEAKERS") && vsSpeakers != nil) {
+        apply_environment("S2A_AUDIO_VS_SPEAKERS", [vsSpeakers boolValue] ? @"1" : @"0");
+        fprintf(stderr, "[S2A 声音设置] S2A_AUDIO_VS_SPEAKERS=%d（本款设置：扬声器虚拟环绕）\n", [vsSpeakers boolValue]);
+    }
+    if (!getenv("S2A_AUDIO_VS_HEADPHONES") && vsHeadphones != nil) {
+        apply_environment("S2A_AUDIO_VS_HEADPHONES", [vsHeadphones boolValue] ? @"1" : @"0");
+        fprintf(stderr, "[S2A 声音设置] S2A_AUDIO_VS_HEADPHONES=%d（本款设置：耳机虚拟环绕）\n", [vsHeadphones boolValue]);
     }
     // 开着社区宽屏 / 自适应满屏补丁（编号 widescreen: / wsauto:）：游戏自己按屏幕比例画宽画面，S2Arm 的满屏让开、不拉宽两次（同 Mac pack/jobs/community.py launch_env）；
     //   启动环境显式给了 S2A_WIDESCREEN 的照它
@@ -502,6 +629,15 @@ float s2a_ios_res_scale(NSUserDefaults *defaults) {
     return v >= 0.25f && v <= 4.0f ? v : 1.0f;
 }
 
+// 容器文档根（Apple TV 在 Library/Caches/S2Arm，s2a_container_docs 只在 iOS / tvOS 编出来）；Mac 宿主单测编本文件时照旧取 Documents
+static NSString *settings_container_docs(void) {
+#if TARGET_OS_IPHONE
+    char d[1024]; s2a_container_docs(d, sizeof d); return @(d);
+#else
+    return NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
+#endif
+}
+
 // 诊断局（#438，设置「诊断」组的开关 S2ADiagRunNext）：只管下一局。起局时读到开着就设上逐通道读数的环境变量、立刻关掉开关；
 //   读数写本款文档根下的 diagrun/（出图 PNG 与颜色目标 PNG；逐通道记录 [pass] 行走 stderr → host.log），导出诊断包时带上（diag.m）。
 //   帧号：第 3600 / 7200 次出图（60 帧游戏约 1 / 2 分钟）。这些是重探针、会拖慢帧率，所以只开一局。启动环境显式给的优先
@@ -510,7 +646,7 @@ void s2a_ios_apply_diag_run(NSUserDefaults *defaults) {
     if (![defaults boolForKey:@"S2ADiagRunNext"]) return;
     [defaults setBool:NO forKey:@"S2ADiagRunNext"];
     const char *d = getenv("S2A_DOCS");
-    NSString *docs = d && *d ? @(d) : NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
+    NSString *docs = d && *d ? @(d) : settings_container_docs();
     NSString *dir = [docs stringByAppendingPathComponent:@"diagrun"];
     NSFileManager *fm = NSFileManager.defaultManager;
     [fm removeItemAtPath:dir error:nil];   // 上一次诊断局的图不混进来
@@ -558,6 +694,46 @@ NSDictionary<NSString *, NSString *> *s2a_ios_local_player(NSUserDefaults *defau
     return @{@"uid": want, @"name": name, @"folder": folder};
 }
 
+static void publish_local_players(void) {
+    if (!getenv("S2A_LOCAL_PLAYERS")) {
+        id list = [NSUserDefaults.standardUserDefaults objectForKey:@"S2ALocalPlayers"];
+        NSMutableArray *all = [NSMutableArray array];
+        BOOL hasFirst = NO;
+        if ([list isKindOfClass:NSArray.class] && [(NSArray *)list count]) {
+            for (id item in (NSArray *)list) {
+                if (![item isKindOfClass:NSDictionary.class] || ![item[@"uid"] isKindOfClass:NSString.class]) continue;
+                NSString *uid = item[@"uid"];
+                NSString *pname = [item[@"name"] isKindOfClass:NSString.class] ? item[@"name"] : @"";
+                if (!uid.length) {
+                    if (hasFirst) continue;
+                    hasFirst = YES;
+                    [all addObject:@{ @"user": @"first", @"name": pname, @"folder": @"SaveData" }];
+                } else if (player_uid_ok(uid)) {
+                    NSString *pfolder = player_folder_ok(item[@"folder"]) && ![item[@"folder"] isEqualToString:@"SaveData"]
+                        ? item[@"folder"] : [@"SaveData-" stringByAppendingString:uid];
+                    [all addObject:@{ @"user": uid, @"name": pname, @"folder": pfolder }];
+                }
+            }
+        }
+        if (!hasFirst) [all insertObject:@{ @"user": @"first", @"name": @"", @"folder": @"SaveData" } atIndex:0];
+        NSData *jsonData = [NSJSONSerialization dataWithJSONObject:all options:0 error:nil];
+        if (jsonData) {
+            NSString *jsonStr = [[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding];
+            if (jsonStr.length) apply_environment("S2A_LOCAL_PLAYERS", jsonStr);
+        }
+    }
+}
+
+// 玩家在设置里关了即时快照（S2ASnapshot 显式存过且为假）：runtime/src/snapsw.c 在构造期（vawin.c vawin_boot 定命令记录区 / 虚拟池区时）第一次读开关就问这里，
+//   不等开局再写 S2A_SNAP_MODE（那时开关已缓存成「开」、地址已占，11-21）。只读 NSUserDefaults，构造期可调
+int s2a_ios_snap_pref_off(void) {
+    // 测试口（装机冒烟从电脑侧起局，没法替玩家拨设置；往容器偏好文件里写又会被 cfprefsd 缓存挡住）：S2A_TEST_SNAP_PREF=0 / 1 当作玩家在设置里存了关 / 开，
+    //   走的仍是这一路（快照开关来源记「玩家设置」），不同于直接给 S2A_SNAP_MODE（来源记「启动环境」）
+    const char *t = getenv("S2A_TEST_SNAP_PREF"); if (t && *t) return *t == '0';
+    NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
+    return [d objectForKey:@"S2ASnapshot"] != nil && ![d boolForKey:@"S2ASnapshot"];
+}
+
 void s2a_ios_load_graphics_settings(void) {
     @autoreleasepool {
         // 先套用户设置、再读包内能力清单（在 App 包顶层）：两边都只在环境变量未设时写，先写的赢 → 启动环境 > 用户设置 > 清单
@@ -572,7 +748,7 @@ void s2a_ios_load_graphics_settings(void) {
         NSDictionary<NSString *, NSString *> *player = getenv("S2A_PLAYER_USER") ? nil : s2a_ios_local_player(NSUserDefaults.standardUserDefaults);
         if (!getenv("S2A_SAVE_FOLDER")) {
             const char *d = getenv("S2A_DOCS");
-            NSString *docs = d && *d ? @(d) : NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
+            NSString *docs = d && *d ? @(d) : settings_container_docs();
             setenv("S2A_SAVE_FOLDER", [docs stringByAppendingPathComponent:player ? player[@"folder"] : @"SaveData"].fileSystemRepresentation, 0);
         }
         if (player) {
@@ -581,6 +757,9 @@ void s2a_ios_load_graphics_settings(void) {
             fprintf(stderr, "[S2A 本地玩家] %s（%s），存档位置 %s\n", player[@"uid"].length ? player[@"uid"].UTF8String : "第一个玩家",
                     player[@"name"].length ? player[@"name"].UTF8String : "没改过名", getenv("S2A_SAVE_FOLDER"));
         }
+        // 即时快照（0.6.0，定义表 launchers/shared/game_settings.v1.json snapshot，全部游戏共用）：宿主苹果端缺省开（runtime/src/snapsw.c），
+        //   玩家在设置里关了才写 S2A_SNAP_MODE=0；启动环境显式给了就不动（同上面各项：启动环境 > 用户设置）
+        if ([NSUserDefaults.standardUserDefaults objectForKey:@"S2ASnapshot"] && ![NSUserDefaults.standardUserDefaults boolForKey:@"S2ASnapshot"]) setenv("S2A_SNAP_MODE", "0", 0);
         s2a_ios_apply_diag_run(NSUserDefaults.standardUserDefaults);
     }
 }
@@ -608,3 +787,7 @@ int s2a_ios_reload_graphics_settings(void) {
     }
 }
 
+
+__attribute__((visibility("default"), used)) int s2a_local_player_persist(const char *uid, const char *name, const char *folder) {
+    return s2a_store_local_player(NSUserDefaults.standardUserDefaults, uid, name, folder);
+}

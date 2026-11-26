@@ -22,9 +22,10 @@ static int fz_first(const uint8_t *p, op_hdr *got, int *bad) {   // 一个游标
 
 static _Atomic int t_exec_returned;
 static void *exec_thread(void *arg) { nvn_be_exec((const uint8_t *)arg); atomic_store(&t_exec_returned, 1); return NULL; }
-static int exec_returns(const uint8_t *p) {   // 回放在 3 秒内返回 → 1；没返回 → 0（那条线程留着打转，测试照常往下判、最后退出）
+static int exec_returns(const uint8_t *p) {   // 回放在 30 秒内返回 → 1；没返回 → 0（那条线程留着打转，测试照常往下判、最后退出）
+    // 原上限 3 秒：负载高时回放线程轮不上核就判「没返回」假红；坏记录打转是永不返回，30 秒兜底照样分得开
     atomic_store(&t_exec_returned, 0); pthread_t t; if (pthread_create(&t, NULL, exec_thread, (void *)p)) return 0;
-    for (int i = 0; i < 300 && !atomic_load(&t_exec_returned); i++) usleep(10000);
+    for (int i = 0; i < 3000 && !atomic_load(&t_exec_returned); i++) usleep(10000);
     if (!atomic_load(&t_exec_returned)) return 0;
     pthread_join(t, NULL); return 1;
 }
@@ -68,10 +69,10 @@ int main(void) {
         memset(top, 0, sizeof top); memset(sub, 0, sizeof sub);
         put((uint8_t *)sub, OP_BEGIN, 0);
         uint64_t t = (uint64_t)(uintptr_t)sub; put((uint8_t *)top, OP_CALL, 16); memcpy((uint8_t *)top + 8, &t, 8); put((uint8_t *)top + 16, OP_END, 8);
-        VERIFY(exec_returns((const uint8_t *)top), "④ 回放 {CALL 子列表} {END}、子列表是 {op 2, size 0}：3 秒内返回");
+        VERIFY(exec_returns((const uint8_t *)top), "④ 回放 {CALL 子列表} {END}、子列表是 {op 2, size 0}：返回（30 秒内）");
 
         memset(sub, 0, sizeof sub); put((uint8_t *)sub, OP_BEGIN, 0);
-        VERIFY(exec_returns((const uint8_t *)sub), "⑤ 回放顶层第一条就是 {op 2, size 0}：3 秒内返回");
+        VERIFY(exec_returns((const uint8_t *)sub), "⑤ 回放顶层第一条就是 {op 2, size 0}：返回（30 秒内）");
     }
     if (failures) { printf("✗ t_nvn_rec_bad：%u 项里 %u 项不符\n", checks, failures); fflush(stdout); _exit(1); }   // 回放线程可能还在打转：直接退出
     printf("✓ t_nvn_rec_bad：%u 项全过（命令流游标遇到不是我方的记录头打红行、结束该列表）\n", checks); return 0;

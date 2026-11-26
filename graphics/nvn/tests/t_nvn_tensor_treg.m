@@ -17,9 +17,9 @@ static _Atomic uint64_t grows;
 static void *grower(void *arg) {   // 登记新编号时的扩表：nvn_be_reg_tex 在 g_rmu 里 GROW(g_treg)；这里同尺寸重分配，表不涨、地址照样换（ASan 的 realloc 总是新块）
     (void)arg;
     while (!atomic_load(&done)) {
-        pthread_mutex_lock(&g_rmu);
+        os_unfair_lock_lock(&g_rmu);
         REQUIRE(GROW(g_treg, (size_t)g_ntreg * sizeof *g_treg, "texture registration table"));
-        pthread_mutex_unlock(&g_rmu);
+        os_unfair_lock_unlock(&g_rmu);
         atomic_fetch_add(&grows, 1);
         sched_yield();
     }

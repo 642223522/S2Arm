@@ -1,0 +1,34 @@
+diff --git a/src/Ryujinx.Audio/Input/AudioInputManager.cs b/src/Ryujinx.Audio/Input/AudioInputManager.cs
+index 3869867e0922646a5e3c9745af12ba0c941bfed0..9a508204f3934d5f60d7a38a7e7681d7360da5c9 100644
+--- a/src/Ryujinx.Audio/Input/AudioInputManager.cs
++++ b/src/Ryujinx.Audio/Input/AudioInputManager.cs
+@@ -40,6 +40,8 @@ namespace Ryujinx.Audio.Input
+         /// The <see cref="AudioInputSystem"/> session instances.
+         /// </summary>
+         private readonly AudioInputSystem[] _sessions;
++        public AudioInputSystem[] S2ASessions => _sessions;   // S2Arm 即时存档：按会话号找 audin 队列（读时持 S2ASessionLock）
++        public System.Threading.Lock S2ASessionLock => _sessionLock;
+ 
+         /// <summary>
+         /// The count of active sessions.
+diff --git a/src/Ryujinx.Audio/Input/AudioInputSystem.cs b/src/Ryujinx.Audio/Input/AudioInputSystem.cs
+index e366e11b62c1e0e0950e57734ff0760f011eeff9..069bd9560acf15b749418bec09c3df5764b61b82 100644
+--- a/src/Ryujinx.Audio/Input/AudioInputSystem.cs
++++ b/src/Ryujinx.Audio/Input/AudioInputSystem.cs
+@@ -225,6 +225,16 @@ namespace Ryujinx.Audio.Input
+             }
+         }
+ 
++        // S2Arm 即时存档：缓冲队列存取（同 AudioOutputSystem，共用 AudioDeviceSession.S2APending / S2AReleased / S2ARestore），持本会话锁
++        public ((ulong, ulong, ulong)[] Released, (ulong, ulong, ulong)[] Pending, ulong Played, bool Started) S2ASnapshot()
++        {
++            lock (_parentLock) { return (_session.S2AReleased(), _session.S2APending(), _session.S2APlayedSampleCount, _session.GetState() == AudioDeviceState.Started); }
++        }
++        public int S2ARestore((ulong, ulong, ulong)[] released, (ulong, ulong, ulong)[] pending, ulong played)
++        {
++            lock (_parentLock) { return _session.S2ARestore(released, pending, played); }
++        }
++
+         /// <summary>
+         /// Get the release buffers.
+         /// </summary>

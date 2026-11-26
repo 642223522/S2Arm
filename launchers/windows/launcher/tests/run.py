@@ -72,6 +72,66 @@ def main():
                        "--report-probe", str(Path(temporary) / "out"), "--data-root=" + str(Path(temporary) / "data")], env)
             if "✓ 各页顶栏故障报修键" not in out.stdout:
                 raise RuntimeError("report probe did not report success")
+        # 出包页打开哪一款（玩家反馈：A 在出包时点 B 的出包进的是 A 的页面；UI.Snapshots/BuildRouteProbe.cs）
+        with tempfile.TemporaryDirectory(prefix="s2arm-build-route-probe-") as temporary:
+            out = run([dotnet, "run", "--project", str(probe), "--no-build", "--configuration", "Release", "--",
+                       "--build-route-probe", str(Path(temporary) / "out"), "--data-root=" + str(Path(temporary) / "data")], env)
+            if "✓ 出包页打开哪一款" not in out.stdout:
+                raise RuntimeError("build route probe did not report success")
+        # 控制口 /dismiss（s2armctl dismiss）关得掉新功能大窗 / 更新弹窗（UI.Snapshots/DismissProbe.cs）
+        with tempfile.TemporaryDirectory(prefix="s2arm-dismiss-probe-") as temporary:
+            out = run([dotnet, "run", "--project", str(probe), "--no-build", "--configuration", "Release", "--",
+                       "--dismiss-probe", str(Path(temporary) / "out"), "--data-root=" + str(Path(temporary) / "data")], env)
+            if "✓ 控制口 dismiss 关弹窗" not in out.stdout:
+                raise RuntimeError("dismiss probe did not report success")
+        # 装机前清单按钮落点（11-19 落点契约，同 Mac：action 唯一来源、POST /install-action、state.presented；UI.Snapshots/InstallActionProbe.cs）
+        with tempfile.TemporaryDirectory(prefix="s2arm-install-action-probe-") as temporary:
+            out = run([dotnet, "run", "--project", str(probe), "--no-build", "--configuration", "Release", "--",
+                       "--install-action-probe", str(Path(temporary) / "out"), "--data-root=" + str(Path(temporary) / "data")], env)
+            if "✓ 装机前清单按钮落点" not in out.stdout:
+                raise RuntimeError("install action probe did not report success")
+        # 装机卡片「详细过程」点开后不被进度事件刷新收起（D-237B；UI.Snapshots/DetailsProbe.cs）
+        with tempfile.TemporaryDirectory(prefix="s2arm-details-probe-") as temporary:
+            out = run([dotnet, "run", "--project", str(probe), "--no-build", "--configuration", "Release", "--",
+                       "--details-probe", str(Path(temporary) / "out"), "--data-root=" + str(Path(temporary) / "data")], env)
+            if "✓ 装机卡片详细过程点开后不被进度刷新收起" not in out.stdout:
+                raise RuntimeError("details probe did not report success")
+        # 首位 S2Arm 总控台窄窗 / 英文不被裁、页顶不写长编号（0.6.2 前端走查；UI.Snapshots/ConsoleProbe.cs）
+        with tempfile.TemporaryDirectory(prefix="s2arm-console-probe-") as temporary:
+            out = run([dotnet, "run", "--project", str(probe), "--no-build", "--configuration", "Release", "--",
+                       "--console-probe", str(Path(temporary) / "out"), "--data-root=" + str(Path(temporary) / "data")], env)
+            if "✓ 总控台窄窗 / 英文不裁、页顶不写长编号、出法没读回不先画错" not in out.stdout:
+                raise RuntimeError("console probe did not report success")
+        # 游戏库「更新 / 导出」两件事（0.6.4 改版：大卡三态、导出确认页设备行与默认不勾、开始后起的单、逐台结果；UI.Snapshots/UpdateExportProbe.cs）
+        with tempfile.TemporaryDirectory(prefix="s2arm-update-export-probe-") as temporary:
+            out = run([dotnet, "run", "--project", str(probe), "--no-build", "--configuration", "Release", "--",
+                       "--update-export-probe", str(Path(temporary) / "out"), "--data-root=" + str(Path(temporary) / "data")], env)
+            if "✓ 更新 / 导出两件事" not in out.stdout:
+                raise RuntimeError("update/export probe did not report success")
+        # D-97FT：坏封面只让那一格用占位图；设置框没画出来时环境检查路径不变空（UI.Snapshots/CoverProbe.cs）
+        with tempfile.TemporaryDirectory(prefix="s2arm-cover-probe-") as temporary:
+            out = run([dotnet, "run", "--project", str(probe), "--no-build", "--configuration", "Release", "--",
+                       "--cover-probe", str(Path(temporary) / "out"), "--data-root=" + str(Path(temporary) / "data")], env)
+            if "✓ 坏封面与没画出的设置框" not in out.stdout:
+                raise RuntimeError("cover probe did not report success")
+        # #2191：出包客户端抛 catch 列表之外的异常，收尾照样先撤作业登记、按钮不永远灰（UI.Snapshots/EndJobProbe.cs）
+        with tempfile.TemporaryDirectory(prefix="s2arm-endjob-probe-") as temporary:
+            out = run([dotnet, "run", "--project", str(probe), "--no-build", "--configuration", "Release", "--",
+                       "--endjob-probe", str(Path(temporary) / "out"), "--data-root=" + str(Path(temporary) / "data")], env)
+            if "✓ 出包异常收尾撤登记" not in out.stdout:
+                raise RuntimeError("endjob probe did not report success")
+        # #2191：出包时只挡正在出的那一款，别的款的金手指 / 删除 / 移动照常（UI.Snapshots/PackMutexProbe.cs）
+        with tempfile.TemporaryDirectory(prefix="s2arm-pack-mutex-probe-") as temporary:
+            out = run([dotnet, "run", "--project", str(probe), "--no-build", "--configuration", "Release", "--",
+                       "--pack-mutex-probe", str(Path(temporary) / "out"), "--data-root=" + str(Path(temporary) / "data")], env)
+            if "✓ 出包只挡正在出的那款" not in out.stdout:
+                raise RuntimeError("pack mutex probe did not report success")
+        # 推游戏遇到手机上旧 App（#1842）：phone_app_outdated 走通用确认「仍然继续」、不兼容的不是确认码（UI.Snapshots/ConfirmProbe.cs）
+        with tempfile.TemporaryDirectory(prefix="s2arm-confirm-probe-") as temporary:
+            out = run([dotnet, "run", "--project", str(probe), "--no-build", "--configuration", "Release", "--",
+                       "--confirm-probe", str(Path(temporary) / "out"), "--data-root=" + str(Path(temporary) / "data")], env)
+            if "✓ 推游戏遇到旧 App 的确认页" not in out.stdout:
+                raise RuntimeError("confirm probe did not report success")
         if args.negative_controls:
             with tempfile.TemporaryDirectory(prefix="s2arm-ui-negative-") as temporary:
                 target = Path(temporary).resolve()

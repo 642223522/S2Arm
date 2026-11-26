@@ -87,6 +87,20 @@ var shared = new SharedText("""
 Check(shared.Get("action.check", "zh-Hans") == "检查", "shared Chinese text");
 Check(shared.Get("action.check", "en") == "Check", "shared English text");
 Check(shared.Get("absent", "en") == "[absent]", "missing key is placeholder, not copied text");
+// 11-19 结构 9：确认码表、原因表只在共享体验表一处，Windows 经 SharedText 读（原先各写一份：Windows 缺 libGen、两端缺 shaderMiss）
+{
+    var dir = new DirectoryInfo(AppContext.BaseDirectory);
+    while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "launchers", "shared", "experience.v1.json"))) dir = dir.Parent;
+    var real = new SharedText(File.ReadAllText(Path.Combine(dir!.FullName, "launchers", "shared", "experience.v1.json")));
+    Check(real.ConfirmFlags.TryGetValue("cert_revoke_confirm", out var crf) && crf == "acceptCertRevoke", "shared tables: cert_revoke_confirm carries acceptCertRevoke");
+    Check(real.ConfirmAlternates.TryGetValue("cert_revoke_confirm", out var cra) && cra.Action == "devCertSettings" && cra.Label == "confirm.alternate.useExistingCert"
+        && real.InstallActionLabel("devCertSettings") is not null && real.Has("confirm.alternate.useExistingCert") && !real.ConfirmAlternates.ContainsKey("save_backup_failed"),
+        "shared tables: cert_revoke_confirm offers 'use an existing certificate' (devCertSettings, no resend)");
+    Check(real.ConfirmFlags.TryGetValue("library_in_cloud", out var lic) && lic == "acceptCloud" && !real.ConfirmFlags.ContainsKey("library_bad_format"),
+        "shared tables: library confirms come from the same table; accept_ui codes (drive picker) stay out of the generic confirm");
+    Check(real.UpdateReasonKey("libGen") == "update.hint.reason.shader" && real.UpdateReasonKey("shaderMiss") == "update.hint.reason.shader" && real.UpdateReasonKey("other") is null,
+        "shared tables: libGen / shaderMiss have a reason text, unknown reasons show nothing");
+}
 var languageKeys = new SharedText("""
 {"schema":1,"contract":"s2a.experience.v1","launcher":{"items":[{"id":"language.zh-Hans","zh-Hans":"简体中文","en":"Simplified Chinese"},{"id":"language.en","zh-Hans":"英文","en":"English"}]},"errors":{"items":[]}}
 """);
@@ -126,12 +140,43 @@ var advisory = EnvironmentReport.Parse("""
 """, 0);
 Check(advisory.Ready && !advisory.Checks[0].Blocking, "signing tool is advisory and does not block");
 Check(report.Checks[1].Blocking, "reports without the field still block on anything not ok");
+// D-97FT：设置页输入框还没画出来（Text 为 null）或被清空时，空值不覆盖原路径；原先抄成空串，环境检查 GetFullPath("") 抛异常、界面停在「正在检查」。期望手写
+var defaults = LauncherPaths.Defaults(Path.Combine(Path.GetTempPath(), "s2arm-paths"));
+Check(defaults.Edited(null, null, null) == defaults, "blank settings boxes keep the existing launcher paths");
+Check(defaults.Edited("", "  ", null) == defaults, "empty or whitespace settings never become empty paths");
+var edited = defaults.Edited("D:\\E", null, "D:\\S");
+Check(edited == new LauncherPaths("D:\\E", defaults.Runtime, "D:\\S"), "filled settings boxes replace only their own path");
+Check(!string.IsNullOrEmpty(Path.GetFullPath(defaults.Edited("", "", "").Engine)), "edited paths stay usable by the environment check");
+// D-W2H5：已有 Impactor 在跑（新拉起的打「Another instance is already running; exiting.」就退）时怎么办。期望手写
+{
+    var own = Path.Combine(Path.GetTempPath(), "S2Arm", "ThirdParty", "Impactor", "Impactor-windows-x86_64-portable.exe");
+    var other = Path.Combine(Path.GetTempPath(), "Downloads", "Impactor.exe");
+    ImpactorInstance.Running R(string path, bool win, string name) => new(path, win, name);
+    Check(ImpactorInstance.Decide([], own).Step == ImpactorInstance.Step.Launch, "no Impactor running: launch");
+    Check(ImpactorInstance.Decide([R(own, true, "Impactor-windows-x86_64-portable")], own).Step == ImpactorInstance.Step.Focus, "own Impactor with a window: bring it to front");
+    var focusOwn = ImpactorInstance.Decide([R(other, true, "Impactor"), R(own, true, "Impactor-windows-x86_64-portable")], own);
+    Check(focusOwn.Step == ImpactorInstance.Step.Focus && focusOwn.Target!.Path == own, "two with windows: the bundled one is focused");
+    Check(ImpactorInstance.Decide([R(own.ToUpperInvariant(), false, "Impactor-windows-x86_64-portable")], own).Step == ImpactorInstance.Step.RestartOwn,
+        "only the bundled one, no window (case-insensitive path): restart it");
+    var ask = ImpactorInstance.Decide([R(other, false, "plumeimpactor")], own);
+    Check(ask.Step == ImpactorInstance.Step.AskClose && ask.Target!.Name == "plumeimpactor", "another copy without a window: ask the player to end it, never kill it");
+    Check(ImpactorInstance.Decide([R(own, false, "a"), R("", false, "plumeimpactor")], own).Step == ImpactorInstance.Step.AskClose,
+        "bundled plus an unreadable-path one, no windows: ask (do not kill what we cannot identify)");
+    Check(ImpactorInstance.IsImpactorName("plumeimpactor") && ImpactorInstance.IsImpactorName("Impactor-windows-x86_64-portable") && !ImpactorInstance.IsImpactorName("explorer"),
+        "process names that look like Impactor");
+    Check(ImpactorInstance.SaysAlreadyRunning("[2026-11-24T04:46:44.007Z INFO  plumeimpactor] Another instance is already running; exiting.\n")
+        && !ImpactorInstance.SaysAlreadyRunning("[x INFO  plumeimpactor] Setting locale to zh-CN...\n"), "the already-running log line is recognised");
+}
 LibraryJobCases.Run(Check);
+PhoneOverviewCases.Run(Check);
+ExportChoiceCases.Run(Check);
 LibraryFolderCases.Run(Check);
 MetalFolderCases.Run(Check);
+JsonOutCases.Run(Check);
 LauncherLanguageCases.Run(Check);
 SGradeVersionsCases.Run(Check);
 PackCases.Run(Check);
+UpdateRepackCases.Run(Check);
 BatchCases.Run(Check);
 ExportStreamCases.Run(Check);
 BackendTextCases.Run(Check);

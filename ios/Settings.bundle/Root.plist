@@ -86,9 +86,9 @@
             <key>DefaultValue</key>
             <string>Bilinear</string>
             <key>Titles</key>
-            <array><string>Standard</string><string>For 2D Games</string><string>Sharp Upscaling (MetalFX)</string></array>
+            <array><string>Standard</string><string>For 2D Games</string><string>Sharp Upscaling (MetalFX)</string><string>FSR</string></array>
             <key>Values</key>
-            <array><string>Bilinear</string><string>Nearest</string><string>MetalFX</string></array>
+            <array><string>Bilinear</string><string>Nearest</string><string>MetalFX</string><string>Fsr</string></array>
         </dict>
         <dict>
             <key>Type</key>

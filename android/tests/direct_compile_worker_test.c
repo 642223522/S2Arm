@@ -1,10 +1,11 @@
 #define _GNU_SOURCE 1
-// F4.4 宿主回归：单槽需求编译 worker —— 同请求去重、不同请求排队、Stop 取消、
+// 需求编译 worker 宿主回归 —— 同请求去重、不同请求排队、Stop 取消、
 // 超时放弃后丢弃迟到结果、可重启、pause/resume 在等待前后成对出现。
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "direct/compile_worker.h"
@@ -37,6 +38,16 @@ static int compile_fn(void *ctx, uint64_t session, uint64_t generation, const ch
     memcpy(*bytes, json, len);
     (*bytes)[len] = 0;
     *bytes_len = len;
+    return 0;
+}
+// 等测试的编译函数真的开始跑（g_concurrent > 0）：用例要的是「请求在途」这个状态，不靠固定睡几十毫秒去赌提交线程已经把它交出去
+//   （负载高的门禁主机上提交线程 30 ms 内可能还没轮到，后面的断言就打在空闲的 worker 上）。上限 5 秒。
+static int wait_compiling(void) {
+    for (int waited = 0; waited < 5000; waited++) {
+        pthread_mutex_lock(&g_fn_mu); int n = g_concurrent; pthread_mutex_unlock(&g_fn_mu);
+        if (n > 0) return 1;
+        usleep(1000);
+    }
     return 0;
 }
 
@@ -77,7 +88,7 @@ static int gated_compile(void *ctx, uint64_t session, uint64_t generation,
                          const char *json, size_t len, uint8_t **bytes,
                          size_t *bytes_len, char *why, size_t why_size) {
     pthread_mutex_lock(&gate_mu);
-    gate_entered = 1;
+    gate_entered++;
     pthread_cond_broadcast(&gate_cv);
     while (!gate_release) pthread_cond_wait(&gate_cv, &gate_mu);
     pthread_mutex_unlock(&gate_mu);
@@ -236,8 +247,175 @@ static void test_pause_oom(void) {
 }
 #endif
 
-int main(void) {
+static void test_workers_overlap(void) {
+    const uint8_t first[32] = {0x21}, second[32] = {0x22};
+    char why[192] = "";
+    gate_entered = gate_release = 0;
+    g_delay_ms = 0;
+    CHECK(s2a_compile_worker_start_pool(gated_compile, NULL, 2, why, sizeof why) == 0,
+          "start worker for the two-identity probe");
+    CHECK(s2a_compile_worker_submit_async(19, 1, "a", 1, first, why, sizeof why) == 0,
+          "submit first foreground request");
+    pthread_mutex_lock(&gate_mu);
+    while (gate_entered < 1) pthread_cond_wait(&gate_cv, &gate_mu);
+    pthread_mutex_unlock(&gate_mu);
+    CHECK(s2a_compile_worker_submit_async(19, 1, "b", 1, second, why, sizeof why) == 0,
+          "submit second foreground identity while the first is running");
+    struct timespec deadline;
+    clock_gettime(CLOCK_REALTIME, &deadline);
+    deadline.tv_sec += 2;
+    pthread_mutex_lock(&gate_mu);
+    while (gate_entered < 2)
+        if (pthread_cond_timedwait(&gate_cv, &gate_mu, &deadline)) break;
+    printf("parallel probe: expected compiler entries 2, observed %d before release\n", gate_entered);
+    CHECK(gate_entered == 2, "distinct identities enter before either compile is released");
+    gate_release = 1;
+    pthread_cond_broadcast(&gate_cv);
+    pthread_mutex_unlock(&gate_mu);
+    uint8_t *bytes = NULL;
+    size_t len = 0;
+    CHECK(s2a_compile_worker_wait_async(first, 2000, &bytes, &len, why, sizeof why) == 0 &&
+          len == 1 && bytes[0] == 'a', "first foreground result belongs to its identity");
+    free(bytes);
+    CHECK(s2a_compile_worker_wait_async(second, 2000, &bytes, &len, why, sizeof why) == 0 &&
+          len == 1 && bytes[0] == 'b', "second foreground result belongs to its identity");
+    free(bytes);
+    s2a_compile_worker_stop();
+}
+
+struct schedule_gate {
+    pthread_mutex_t mu;
+    pthread_cond_t cv;
+    unsigned calls[6];
+    unsigned release;
+};
+
+static int ordered_compile(void *ctx, uint64_t session, uint64_t generation, const char *json, size_t len,
+                           uint8_t **bytes, size_t *bytes_len, char *why, size_t why_size) {
+    (void)session;
+    (void)generation;
+    (void)why;
+    (void)why_size;
+    struct schedule_gate *gate = ctx;
+    unsigned job = (unsigned)(json[0] - 'a');
+    if (len != 1 || job >= sizeof gate->calls / sizeof gate->calls[0]) return -1;
+    pthread_mutex_lock(&gate->mu);
+    gate->calls[job]++;
+    pthread_cond_broadcast(&gate->cv);
+    while (!(gate->release & (1u << job))) pthread_cond_wait(&gate->cv, &gate->mu);
+    pthread_mutex_unlock(&gate->mu);
+    *bytes = malloc(len);
+    if (!*bytes) return -1;
+    (*bytes)[0] = (uint8_t)json[0];
+    *bytes_len = len;
+    return 0;
+}
+
+static unsigned calls_for(struct schedule_gate *gate, unsigned job, int wait_for_entry) {
+    struct timespec deadline;
+    clock_gettime(CLOCK_REALTIME, &deadline);
+    deadline.tv_sec += 2;
+    pthread_mutex_lock(&gate->mu);
+    while (wait_for_entry && !gate->calls[job])
+        if (pthread_cond_timedwait(&gate->cv, &gate->mu, &deadline)) break;
+    unsigned calls = gate->calls[job];
+    pthread_mutex_unlock(&gate->mu);
+    return calls;
+}
+
+static void release_jobs(struct schedule_gate *gate, unsigned mask) {
+    pthread_mutex_lock(&gate->mu);
+    gate->release |= mask;
+    pthread_cond_broadcast(&gate->cv);
+    pthread_mutex_unlock(&gate->mu);
+}
+
+static int result_matches(const uint8_t sha[32], char expected) {
+    uint8_t *bytes = NULL;
+    size_t len = 0;
+    int rc = s2a_compile_worker_wait_async(sha, 2000, &bytes, &len, NULL, 0);
+    int match = rc == 0 && len == 1 && bytes && bytes[0] == expected;
+    free(bytes);
+    return match;
+}
+
+static void test_pool_schedule(void) {
+    struct schedule_gate gate = {.mu = PTHREAD_MUTEX_INITIALIZER, .cv = PTHREAD_COND_INITIALIZER};
+    const uint8_t a[32] = {0x31}, b[32] = {0x32}, c[32] = {0x33}, d[32] = {0x34};
+    CHECK(s2a_compile_worker_start_pool(ordered_compile, &gate, 2, NULL, 0) == 0, "start two-slot priority probe");
+    CHECK(s2a_compile_worker_submit_background(19, 1, "a", 1, a, NULL, 0) == 0 &&
+          calls_for(&gate, 0, 1) == 1, "background occupies one slot");
+    CHECK(s2a_compile_worker_submit_background(19, 1, "b", 1, b, NULL, 0) == 0,
+          "different background work can queue");
+    CHECK(s2a_compile_worker_submit_async(19, 1, "c", 1, c, NULL, 0) == 0 &&
+          calls_for(&gate, 2, 1) == 1, "foreground enters while background compiler is blocked");
+    CHECK(s2a_compile_worker_submit_async(19, 1, "d", 1, d, NULL, 0) == 0, "second foreground request queues");
+    release_jobs(&gate, 1u << 0);
+    CHECK(calls_for(&gate, 3, 1) == 1 && calls_for(&gate, 1, 0) == 0,
+          "queued foreground starts before older queued background");
+    release_jobs(&gate, 1u << 2);
+    CHECK(result_matches(c, 'c'), "foreground completes while other lane is blocked");
+    CHECK(calls_for(&gate, 1, 0) == 0, "reserved lane does not start background");
+    s2a_compile_worker_promote(b);
+    CHECK(calls_for(&gate, 1, 1) == 1, "match promoted from background to free foreground slot");
+    CHECK(s2a_compile_worker_submit_async(19, 1, "b", 1, b, NULL, 0) == 0,
+          "duplicate foreground attaches to the promoted request");
+    release_jobs(&gate, (1u << 1) | (1u << 3));
+    CHECK(result_matches(a, 'a') && result_matches(b, 'b') && result_matches(d, 'd'),
+          "in-flight work retains the correct result for each identity");
+    CHECK(calls_for(&gate, 1, 0) == 1, "promoted request compiles exactly once");
+    s2a_compile_worker_stop();
+
+    const uint8_t e[32] = {0x35}, f[32] = {0x36};
+    uint8_t *bytes = NULL;
+    size_t len = 0;
+    CHECK(s2a_compile_worker_start_pool(ordered_compile, &gate, 2, NULL, 0) == 0, "start pool for stop probe");
+    CHECK(!s2a_compile_worker_submit_async(19, 2, "e", 1, e, NULL, 0) &&
+          !s2a_compile_worker_submit_async(19, 2, "f", 1, f, NULL, 0) &&
+          calls_for(&gate, 4, 1) == 1 && calls_for(&gate, 5, 1) == 1, "two compile lanes are both blocked");
+    CHECK(s2a_compile_worker_stop_bounded(1, NULL, 0) == 1, "stop bounded while both jobs are active");
+    CHECK(s2a_compile_worker_poll(e, &bytes, &len, NULL, 0) == 3 && !bytes && !len &&
+          s2a_compile_worker_poll(f, &bytes, &len, NULL, 0) == 3 && !bytes && !len,
+          "stop withdraws both identities immediately");
+    CHECK(s2a_compile_worker_start_pool(ordered_compile, &gate, 2, NULL, 0) != 0,
+          "restart cannot admit work while old slots execute");
+    release_jobs(&gate, (1u << 4) | (1u << 5));
+    CHECK(s2a_compile_worker_stop_bounded(2000, NULL, 0) == 0, "retire both old slots");
+    CHECK(s2a_compile_worker_start_pool(ordered_compile, &gate, 2, NULL, 0) == 0, "pool can restart after retirement");
+    CHECK(s2a_compile_worker_poll(e, &bytes, &len, NULL, 0) == 3 && !bytes && !len &&
+          s2a_compile_worker_poll(f, &bytes, &len, NULL, 0) == 3 && !bytes && !len,
+          "neither late result survives into the new pool");
+    s2a_compile_worker_stop();
+    pthread_cond_destroy(&gate.cv);
+    pthread_mutex_destroy(&gate.mu);
+
+    const unsigned dual[] = {400, 400, 400, 800, 800, 800};
+    const unsigned tri[] = {800, 400, 1024, 800, 400, 800};
+    const unsigned equal[] = {800, 800, 800, 800};
+    const unsigned missing[] = {800, 0, 1024, 800};
+    CHECK(s2a_compile_worker_capacity_slots(dual, sizeof dual / sizeof dual[0]) == 2,
+          "two tiers reserve a big core for the game");
+    CHECK(s2a_compile_worker_capacity_slots(tri, sizeof tri / sizeof tri[0]) == 3,
+          "three tiers count prime and big cores");
+    CHECK(s2a_compile_worker_capacity_slots(equal, sizeof equal / sizeof equal[0]) == 1 &&
+          s2a_compile_worker_capacity_slots(missing, sizeof missing / sizeof missing[0]) == 1,
+          "missing or indistinguishable topology uses one slot");
+    CHECK(s2a_compile_worker_start(compile_fn, NULL, NULL, 0) == 0 &&
+          s2a_compile_worker_submit_background(19, 2, "e", 1, e, NULL, 0) == 1,
+          "a single-slot configuration preserves foreground capacity");
+    s2a_compile_worker_stop();
+}
+
+int main(int argc, char **argv) {
     alarm(30); // harness watchdog only; never an expected success/failure oracle
+    if (argc == 2 && !strcmp(argv[1], "--parallel-only")) {
+        test_workers_overlap();
+        test_pool_schedule();
+        printf("parallel probe: %d checks, %d failures\n", checks, fails);
+        return fails ? 1 : 0;
+    }
+    test_workers_overlap();
+    test_pool_schedule();
     test_pause_contract();
     g_delay_ms = 40;
 #ifdef S2A_WORKER_TEST_MALLOC
@@ -319,7 +497,7 @@ int main(void) {
     g_pause_count = g_resume_count = 0;
     pthread_t td;
     pthread_create(&td, NULL, run_thread, &d);
-    usleep(50 * 1000);
+    CHECK(wait_compiling(), "the slow request is being compiled before stop");
     s2a_compile_worker_stop();
     pthread_join(td, NULL);
     CHECK(d.rc != 0 && strstr(d.why, "stop"), "stop fails the waiting request accurately");
@@ -381,7 +559,7 @@ int main(void) {
         i.json = "{\"long\":1}"; sha_of("long-request", i.sha); i.deadline = 5000;
         pthread_t ti;
         pthread_create(&ti, NULL, run_thread, &i);
-        usleep(30 * 1000);
+        CHECK(wait_compiling(), "the long request is being compiled before the bounded stop");
         char bwhy[192] = "";
         int brc = s2a_compile_worker_stop_bounded(30, bwhy, sizeof bwhy);
         CHECK(brc == 1, "bounded stop reports a still-running compile instead of joining forever");
@@ -405,7 +583,7 @@ int main(void) {
         j.json = "{\"pump\":1}"; sha_of("pump-request", j.sha); j.deadline = 5000;
         pthread_t tj;
         pthread_create(&tj, NULL, run_thread, &j);
-        usleep(30 * 1000);
+        CHECK(wait_compiling(), "the pumped request is being compiled before pump");
         CHECK(s2a_compile_worker_pump(10) == 1, "pump reports an in-flight demand after one 10 ms slice");
         pthread_join(tj, NULL);
         CHECK(j.rc == 0, "the pumped request still completes");
@@ -527,6 +705,6 @@ int main(void) {
 
     s2a_compile_worker_stop();
     if (fails) { printf("direct compile worker: %d FAILURES\n", fails); return 1; }
-    printf("direct compile worker: %d checks ok (dedupe, capacity 1, pause contract, stop, timeout, bounded stop, pump, restart, async queue/ring)\n", checks);
+    printf("direct compile worker: %d checks ok (dedupe, priority, parallel slots, pause contract, stop, timeout, bounded stop, pump, restart, async queue/ring)\n", checks);
     return 0;
 }

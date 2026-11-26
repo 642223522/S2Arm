@@ -1,0 +1,56 @@
+--- mesa-24.3.4/src/gallium/frontends/lavapipe/lvp_device.c	2025-01-23 04:42:23
++++ mesa-24.3.4/src/gallium/frontends/lavapipe/lvp_device.c	2026-11-16 21:13:10
+@@ -1593,11 +1593,14 @@
+    }
+ }
+ 
++PFN_vkVoidFunction lvp_ohos_proc(const char *name);
+ VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL lvp_GetInstanceProcAddr(
+    VkInstance                                  _instance,
+    const char*                                 pName)
+ {
+    VK_FROM_HANDLE(vk_instance, instance, _instance);
++   PFN_vkVoidFunction ohos = lvp_ohos_proc(pName);
++   if (ohos) return ohos;
+    return vk_instance_get_proc_addr(instance,
+                                     &lvp_instance_entrypoints,
+                                     pName);
+--- mesa-24.3.4/src/gallium/frontends/lavapipe/meson.build	2025-01-23 04:42:23
++++ mesa-24.3.4/src/gallium/frontends/lavapipe/meson.build	2026-11-16 21:13:10
+@@ -14,6 +14,7 @@
+ liblvp_files = files(
+     'lvp_acceleration_structure.c',
+     'lvp_device.c',
++  'lvp_ohos.c',
+     'lvp_device_generated_commands.c',
+     'lvp_cmd_buffer.c',
+     'lvp_descriptor_set.c',
+--- mesa-24.3.4/src/gallium/targets/lavapipe/meson.build	2025-01-23 04:42:23
++++ mesa-24.3.4/src/gallium/targets/lavapipe/meson.build	2026-11-16 21:24:07
+@@ -8,7 +8,7 @@
+   link_whole : [ liblavapipe_st ],
+   link_with : [libpipe_loader_static, libgallium, libwsw, libswdri, libws_null, libswkmsdri ],
+   gnu_symbol_visibility : 'hidden',
+-  link_args : [ld_args_bsymbolic, ld_args_gc_sections],
++  link_args : ['-lnative_window', ld_args_bsymbolic, ld_args_gc_sections],
+   # On Apple systems, "weak" is actually "weak_import", which is slightly different.
+   # The linker still expects a definition for weak symbols at build time, just not at runtime.
+   # We have to forcibly ignore undefined symbols, which unfortunately applies to all symbols.
+--- mesa-24.3.4/src/vulkan/runtime/vk_instance.c	2025-01-23 04:42:23
++++ mesa-24.3.4/src/vulkan/runtime/vk_instance.c	2026-11-16 21:28:08
+@@ -557,10 +557,15 @@
+ /* With version 4+ of the loader interface the ICD should expose
+  * vk_icdGetPhysicalDeviceProcAddr()
+  */
++PFN_vkVoidFunction lvp_ohos_proc(const char *name) __attribute__((weak));
+ PUBLIC VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
+ vk_icdGetPhysicalDeviceProcAddr(VkInstance  _instance,
+                                 const char *pName)
+ {
++   if (lvp_ohos_proc) {
++      PFN_vkVoidFunction ohos = lvp_ohos_proc(pName);
++      if (ohos) return ohos;
++   }
+    VK_FROM_HANDLE(vk_instance, instance, _instance);
+    return vk_instance_get_physical_device_proc_addr(instance, pName);
+ }

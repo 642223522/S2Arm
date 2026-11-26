@@ -15,6 +15,8 @@ static NSString *const keys[] = {@"S2AResolutionScale", @"S2AAntiAliasing", @"S2
 static void clear_environment(void) {
     for (size_t i = 0; i < 4; i++) unsetenv(variables[i]);
     unsetenv("S2A_WIDESCREEN"); unsetenv("S2A_FPS60"); unsetenv("S2A_CPATCH_ON"); unsetenv("S2A_DOCKED"); unsetenv("MTL_HUD_ENABLED");
+    unsetenv("S2A_AUDIO_DEVICE"); unsetenv("S2A_AUDIO_VS_SPEAKERS"); unsetenv("S2A_AUDIO_VS_HEADPHONES");   // 输出设备类型 + 两个虚拟环绕开关（#189 后续，5.1 虚拟环绕第二片）
+    unsetenv("S2A_BRIGHTNESS");   // 游戏内亮度（#1699）
 }
 
 static int reload_checks(BOOL explicit) {
@@ -88,6 +90,57 @@ int main(int argc, char **argv) {
         if (argc == 3 && (!strcmp(argv[2], "--reload-owned") || !strcmp(argv[2], "--reload-explicit")))
             return reload_checks(!strcmp(argv[2], "--reload-explicit"));
         if (argc != 2) return 2;
+        {
+            NSString *suite = [@"local.s2arm.ldn." stringByAppendingString:NSUUID.UUID.UUIDString];
+            NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:suite];
+            const char *ldn[] = {"S2A_LDN_SERVER", "S2A_LDN_RELAY", "S2A_LDN_LISTEN"};
+            for (int i = 0; i < 3; i++) unsetenv(ldn[i]);
+            s2a_ios_apply_ldn_settings(d);
+            check(!getenv(ldn[0]) && !getenv(ldn[1]) && !getenv(ldn[2]), @"联机默认不写环境，保留现有自动发现");
+            [d setObject:@"manual" forKey:@"S2ALdnMode"];
+            [d setBool:YES forKey:@"S2ALdnHost"];
+            s2a_ios_apply_ldn_settings(d);
+            check(getenv(ldn[0]) && !strcmp(getenv(ldn[0]), "127.0.0.1") &&
+                  getenv(ldn[1]) && !strcmp(getenv(ldn[1]), "1") &&
+                  getenv(ldn[2]) && !strcmp(getenv(ldn[2]), "0.0.0.0"), @"本机托管：回环连接，全部网卡监听");
+            for (int i = 0; i < 3; i++) unsetenv(ldn[i]);
+            [d setBool:NO forKey:@"S2ALdnHost"];
+            [d setObject:@" 100.64.0.2 \n" forKey:@"S2ALdnAddress"];
+            s2a_ios_apply_ldn_settings(d);
+            check(getenv(ldn[0]) && !strcmp(getenv(ldn[0]), "100.64.0.2") &&
+                  getenv(ldn[1]) && !strcmp(getenv(ldn[1]), "0") && !getenv(ldn[2]), @"指定IP裁空白且不托管");
+            setenv(ldn[0], "203.0.113.8", 1);
+            s2a_ios_apply_ldn_settings(d);
+            check(!strcmp(getenv(ldn[0]), "203.0.113.8"), @"显式启动服务器优先");
+            for (int i = 0; i < 3; i++) unsetenv(ldn[i]);
+            [d setObject:@"manual" forKey:@"S2ALdnMode"];
+            [d setObject:@"" forKey:@"S2ALdnAddress"];
+            s2a_ios_apply_ldn_settings(d);
+            check(getenv(ldn[0]) && !strcmp(getenv(ldn[0]), "0.0.0.0") &&
+                  getenv(ldn[1]) && !strcmp(getenv(ldn[1]), "0"), @"空地址不自动发现、不托管、不拦起局");
+            for (int i = 0; i < 3; i++) unsetenv(ldn[i]);
+            [d setObject:@"auto" forKey:@"S2ALdnMode"];
+            s2a_ios_apply_ldn_settings(d);
+            check(!getenv(ldn[0]) && !getenv(ldn[1]) && !getenv(ldn[2]), @"切回自动后忽略保存的手动地址");
+            [d removePersistentDomainForName:suite];
+        }
+        {   // 游戏内亮度：按款偏好 S2ABrightness（0–1，字符串）→ 起局导出 S2A_BRIGHTNESS；没选过 = 跟随系统不导出；显式启动环境优先。
+            //   期望手算，不依赖被测实现：存 0.85 就该是 0.85；存无效值应清除并回退不导出。
+            NSString *suite = [@"local.s2arm.settings-brightness." stringByAppendingString:NSUUID.UUID.UUIDString];
+            NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:suite];
+            clear_environment(); [d removeObjectForKey:@"S2ABrightness"];
+            s2a_ios_apply_graphics_settings(d);
+            check(getenv("S2A_BRIGHTNESS") == NULL, @"没选过亮度 → 不导出 S2A_BRIGHTNESS（跟随系统，不改现有行为）");
+            [d setObject:@"0.85" forKey:@"S2ABrightness"]; s2a_ios_apply_graphics_settings(d);
+            check(getenv("S2A_BRIGHTNESS") && !strcmp(getenv("S2A_BRIGHTNESS"), "0.85"), @"存 0.85 → 导出 S2A_BRIGHTNESS=0.85");
+            [d setObject:@"0.4" forKey:@"S2ABrightness"]; setenv("S2A_BRIGHTNESS", "0.7", 1); s2a_ios_apply_graphics_settings(d);
+            check(!strcmp(getenv("S2A_BRIGHTNESS"), "0.7"), @"显式 S2A_BRIGHTNESS=0.7 优先于偏好 0.4");
+            [d setObject:@"不合法" forKey:@"S2ABrightness"]; clear_environment(); s2a_ios_apply_graphics_settings(d);
+            check(getenv("S2A_BRIGHTNESS") == NULL && [d objectForKey:@"S2ABrightness"] == nil, @"无效亮度值 → 清除保存值、不导出");
+            [d setObject:@"system" forKey:@"S2ABrightness"]; s2a_ios_apply_graphics_settings(d);
+            check(getenv("S2A_BRIGHTNESS") == NULL && [[d objectForKey:@"S2ABrightness"] isEqual:@"system"], @"跟随系统档 → 不导出、保留选择");
+            clear_environment(); [d removePersistentDomainForName:suite];
+        }
         {   // 开着社区宽屏 / 自适应满屏补丁（11-12）：S2Arm 满屏让开（S2A_WIDESCREEN=0）；只开别类补丁不动；显式给了 S2A_WIDESCREEN 的照它
             NSString *suite = [@"local.s2arm.settings-cpws." stringByAppendingString:NSUUID.UUID.UUIDString];
             NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:suite];
@@ -284,6 +337,43 @@ int main(int argc, char **argv) {
             unsetenv("S2A_HUD"); [a removeObjectForKey:@"S2ADevHUD"];
         }
 
+        // 输出设备类型 + 两个虚拟环绕开关（#189 后续，5.1 虚拟环绕第二片）：按游戏存的 S2AAudioDevice / S2AAudioVsSpeakers /
+        //   S2AAudioVsHeadphones（游戏库每款设置页经 ios/game_options.m 写）→ S2A_AUDIO_*（compat/tree 的 Apple 后端读）。
+        //   没选过不设（= auto 按设备真实声道判，5.1 直通缺省不变）；开关只转拨过的（开 1 / 关 0，各存各的、只在对应显式
+        //   类型下生效——驱动侧判）；启动环境显式给的优先；非法值不转。起局语义按新进程走，每步先清环境
+        {
+            [a removeObjectForKey:@"S2AAudioDevice"]; [a removeObjectForKey:@"S2AAudioVsSpeakers"]; [a removeObjectForKey:@"S2AAudioVsHeadphones"];
+            clear_environment();
+            s2a_ios_apply_graphics_settings(a);
+            check(getenv("S2A_AUDIO_DEVICE") == NULL && getenv("S2A_AUDIO_VS_SPEAKERS") == NULL && getenv("S2A_AUDIO_VS_HEADPHONES") == NULL,
+                  @"没选过、没拨过：不设任何 S2A_AUDIO_*（= auto 按设备真实声道判，5.1 直通缺省不变）");
+            [a setObject:@"builtin" forKey:@"S2AAudioDevice"];
+            clear_environment();
+            s2a_ios_apply_graphics_settings(a);
+            check(getenv("S2A_AUDIO_DEVICE") && !strcmp(getenv("S2A_AUDIO_DEVICE"), "builtin"), @"选了内置扬声器：S2A_AUDIO_DEVICE=builtin");
+            [a setObject:@"bogus" forKey:@"S2AAudioDevice"];
+            clear_environment();
+            s2a_ios_apply_graphics_settings(a);
+            check(getenv("S2A_AUDIO_DEVICE") == NULL, @"非法值不转（游戏库侧已拒收，这里再拦一道）");
+            [a setObject:@"headphones" forKey:@"S2AAudioDevice"];
+            clear_environment();
+            s2a_ios_apply_graphics_settings(a);
+            check(getenv("S2A_AUDIO_DEVICE") && !strcmp(getenv("S2A_AUDIO_DEVICE"), "headphones"), @"选了耳机：S2A_AUDIO_DEVICE=headphones");
+            setenv("S2A_AUDIO_DEVICE", "external", 1);
+            s2a_ios_apply_graphics_settings(a);
+            check(!strcmp(getenv("S2A_AUDIO_DEVICE"), "external"), @"启动环境显式给的优先于按游戏存的值");
+            [a setBool:YES forKey:@"S2AAudioVsSpeakers"]; [a setBool:NO forKey:@"S2AAudioVsHeadphones"];
+            clear_environment();
+            s2a_ios_apply_graphics_settings(a);
+            check(getenv("S2A_AUDIO_VS_SPEAKERS") && !strcmp(getenv("S2A_AUDIO_VS_SPEAKERS"), "1") &&
+                  getenv("S2A_AUDIO_VS_HEADPHONES") && !strcmp(getenv("S2A_AUDIO_VS_HEADPHONES"), "0"),
+                  @"拨过的开关照拨的值转（开 1 / 关 0，各存各的）");
+            setenv("S2A_AUDIO_VS_HEADPHONES", "1", 1);
+            s2a_ios_apply_graphics_settings(a);
+            check(!strcmp(getenv("S2A_AUDIO_VS_HEADPHONES"), "1"), @"显式 S2A_AUDIO_VS_HEADPHONES=1 优先于按游戏存的值");
+            [a removeObjectForKey:@"S2AAudioDevice"]; [a removeObjectForKey:@"S2AAudioVsSpeakers"]; [a removeObjectForKey:@"S2AAudioVsHeadphones"];
+        }
+
         // 缺口扫描族 2：设置页「完成」时掌机 / 主机运行中直接切（返回要切的值，交 s2a_console_mode_set），不算重启项；别的画面设置变了照旧要重启
         {
             BOOL restart = YES;
@@ -360,7 +450,7 @@ int main(int argc, char **argv) {
         //   ⓑ 用户在设置里关了 60 帧与宽屏（审计 #854 F-caps-beats-settings）→ 设置赢：S2A_FPS60=0、S2A_WIDESCREEN=0（widen.c 设置关先于清单判）
         {
             NSString *caps = [NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:@"s2a_caps.tsv"];
-            check([@"widen\t1\t# 单测\nfps60\t1\t# 默认开：来源 社区帧率补丁\n" writeToFile:caps atomically:YES encoding:NSUTF8StringEncoding error:nil], @"能力清单写进包目录");   // 11-11：原因是速度已验证的来源（11-14 起我方帧率表不算，用社区帧率补丁），清单才替玩家开
+            check([@"widen\t1\t# 单测\nfps60\t1\t# 默认开：来源 社区帧率补丁，逻辑速度同局 A/B 绿（ρ 1.00、q 1.00，2026-11-20）\n" writeToFile:caps atomically:YES encoding:NSUTF8StringEncoding error:nil], @"能力清单写进包目录");   // 11-11：原因是速度已验证的来源（11-14 起我方帧率表不算，用社区帧率补丁），清单才替玩家开
             NSUserDefaults *std = NSUserDefaults.standardUserDefaults;
             for (int k = 0; k < 2; k++) {
                 [std removeObjectForKey:@"S2AFps60"]; [std removeObjectForKey:@"S2AWidescreen"];
@@ -402,20 +492,22 @@ int main(int argc, char **argv) {
             check(s2a_ios_caps_value("fps60") == -1, @"没有清单读到 -1");
         }
         // 60 帧开关如实显示（11-13：清单写 1 但来源没验证速度时，开关原先缺省显示开、起局却按原帧率，玩家以为开了）。期望按 settings.m 口径手写：
-        //   ① 清单原因「社区帧率补丁」、没选过 → 显示开（11-13 起：补丁要逐字节对上这个构建才进包，进了包就默认开）；①b 原因「引擎通用」、没选过 → 显示关；② 原因「fps.tsv」（速度已验证）、没选过 → 显示开；
+        //   ① 清单原因「社区帧率补丁 + 逻辑速度同局 A/B 绿」、没选过 → 显示开（11-23 #2120 起：只写补丁的老清单不再默认开，caps.c s2a_caps_fps60_verified）；①b 原因「引擎通用」、没选过 → 显示关；② 原因「fps.tsv」（速度已验证）、没选过 → 显示开；
         //   ③ 社区来源、玩家拨开（s2a_ios_set_fps60）→ 显示开、起局 S2A_FPS60=1；④ 再拨关 → 显示关、起局 S2A_FPS60=0
         {
             NSString *caps = [NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:@"s2a_caps.tsv"];
             NSUserDefaults *std = NSUserDefaults.standardUserDefaults;
             NSString *(^val)(void) = ^{ const char *e = getenv("S2A_FPS60"); return e ? @(e) : @"未设"; };
-            [@"fps60\t1\t# 默认开：来源 社区帧率补丁\n" writeToFile:caps atomically:YES encoding:NSUTF8StringEncoding error:nil];
+            [@"fps60\t1\t# 默认开：来源 社区帧率补丁，逻辑速度同局 A/B 绿（ρ 1.00、q 1.00，2026-11-20）\n" writeToFile:caps atomically:YES encoding:NSUTF8StringEncoding error:nil];
             [std removeObjectForKey:@"S2AFps60"]; [std removeObjectForKey:@"S2AFps60Manual"];
-            check(s2a_ios_fps60_on(), @"60 帧显示①社区帧率补丁没选过（11-13：版本精确命中才进得了包，默认开）：期望开");
+            check(s2a_ios_fps60_on(), @"60 帧显示①社区帧率补丁 + 同局 A/B 绿没选过（11-23 #2120：A/B 绿才默认开）：期望开");
             [@"fps60\t1\t# 默认开：来源 引擎通用第一层（Unity / UE4 放开交换间隔）\n" writeToFile:caps atomically:YES encoding:NSUTF8StringEncoding error:nil];
             check(!s2a_ios_fps60_on(), @"60 帧显示①b 引擎通用来源没选过（速度没验证）：期望关");
             [@"fps60\t1\t# 默认开：来源 社区帧率补丁\n" writeToFile:caps atomically:YES encoding:NSUTF8StringEncoding error:nil];
+            check(!s2a_ios_fps60_on(), @"60 帧显示①c 只写「社区帧率补丁」的老清单没选过（11-23 #2120：只字节命中不算速度验过）：期望关");
+            [@"fps60\t1\t# 默认开：来源 社区帧率补丁，逻辑速度同局 A/B 绿（ρ 1.00、q 1.00，2026-11-20）\n" writeToFile:caps atomically:YES encoding:NSUTF8StringEncoding error:nil];
             check(s2a_ios_fps60_on(), @"60 帧显示②速度已验证来源没选过：期望开");
-            [@"fps60\t1\t# 默认开：来源 社区帧率补丁\n" writeToFile:caps atomically:YES encoding:NSUTF8StringEncoding error:nil];
+            [@"fps60\t1\t# 默认开：来源 社区帧率补丁，逻辑速度同局 A/B 绿（ρ 1.00、q 1.00，2026-11-20）\n" writeToFile:caps atomically:YES encoding:NSUTF8StringEncoding error:nil];
             s2a_ios_set_fps60(YES); clear_environment(); s2a_ios_load_graphics_settings();
             check(s2a_ios_fps60_on() && [val() isEqual:@"1"], [@"60 帧显示③玩家拨开：期望 显示开、S2A_FPS60=1 → 真结果 " stringByAppendingString:val()]);
             s2a_ios_set_fps60(NO); clear_environment(); s2a_ios_load_graphics_settings();
@@ -441,7 +533,7 @@ int main(int argc, char **argv) {
         //   旧实现第 2 项红（重读只撤设置页登记的名字，清单写的 1 留着，设置那条「未设才写」写不进）
         {
             NSString *caps = [NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:@"s2a_caps.tsv"];
-            check([@"fps60\t1\t# 默认开：来源 社区帧率补丁\n" writeToFile:caps atomically:YES encoding:NSUTF8StringEncoding error:nil], @"fps60 1 清单写进包目录");   // 11-11：验证过的来源清单才写 1，立刻重启才有东西可撤
+            check([@"fps60\t1\t# 默认开：来源 社区帧率补丁，逻辑速度同局 A/B 绿（ρ 1.00、q 1.00，2026-11-20）\n" writeToFile:caps atomically:YES encoding:NSUTF8StringEncoding error:nil], @"fps60 1 清单写进包目录");   // 11-11：验证过的来源清单才写 1，立刻重启才有东西可撤
             NSUserDefaults *std = NSUserDefaults.standardUserDefaults; [std removeObjectForKey:@"S2AFps60"]; [std removeObjectForKey:@"S2AFps60Manual"];
             // 先清空设置页的登记表（进程级，前面 ⓓ 登记过 S2A_FPS60=1）：否则旧实现②会因为登记表里恰好是 1 被撤掉而碰巧过
             NSString *empty = [@"local.s2arm.settings-p180." stringByAppendingString:NSUUID.UUID.UUIDString];
@@ -566,6 +658,73 @@ int main(int argc, char **argv) {
             [game removePersistentDomainForName:[@"S2AGame." stringByAppendingString:gid]];
             unsetenv("S2A_LAUNCH_GAME_ID"); clear_environment();
         }
+        // S4「SDR 转 HDR」（#625 第二阶段 PR-B；评审终稿：不联动 S2A_HDR——PQ 层载体由引擎侧层视角开关补
+        //   （nvn2_hdr_layer_sw，S4 开而玩家未设 ⇒ 层按 auto 进/持 PQ），设置面只落 S2A_HDR_SDR_MAP）：
+        //   按款键 S2AHdrSdrMap（s2a_ios_per_game_keys）只转玩家明确拨过的（开 1 / 关 0，没拨过不设——缺省关，字节级回现状）；
+        //   读写族按款（s2a_ios_hdr_sdr_map_on_for / s2a_ios_set_hdr_sdr_map_for，游戏库每款设置页行同款）；
+        //   S2A_HDR 不被本翻译设置或覆盖（玩家显式给的照旧）。期望按规则手写
+        {   clear_environment(); unsetenv("S2A_LAUNCH_GAME_ID"); unsetenv("S2A_HDR"); unsetenv("S2A_HDR_SDR_MAP");
+            NSUserDefaults *app = NSUserDefaults.standardUserDefaults;
+            [app removeObjectForKey:@"S2AHdrSdrMap"];
+            NSString *gid = [@"01000000000" stringByAppendingString:[NSUUID.UUID.UUIDString substringToIndex:5]];
+            NSUserDefaults *game = [[NSUserDefaults alloc] initWithSuiteName:[@"S2AGame." stringByAppendingString:gid]];
+            NSString *gid2 = [@"01000000001" stringByAppendingString:[NSUUID.UUID.UUIDString substringToIndex:5]];
+            NSUserDefaults *game2 = [[NSUserDefaults alloc] initWithSuiteName:[@"S2AGame." stringByAppendingString:gid2]];
+            [game removePersistentDomainForName:[@"S2AGame." stringByAppendingString:gid]];
+            [game2 removePersistentDomainForName:[@"S2AGame." stringByAppendingString:gid2]];
+            setenv("S2A_LAUNCH_GAME_ID", gid.UTF8String, 1);
+            NSUserDefaults *d = s2a_ios_settings_defaults();
+            s2a_ios_apply_graphics_settings(d);
+            check(getenv("S2A_HDR_SDR_MAP") == NULL && getenv("S2A_HDR") == NULL,
+                  @"S4 没拨过：不设 S2A_HDR_SDR_MAP、不碰 S2A_HDR（缺省关，字节级回现状）");
+            [d setBool:YES forKey:@"S2AHdrSdrMap"];   // 按款写只写这款（游戏库每款设置页行同款）
+            clear_environment(); unsetenv("S2A_HDR"); unsetenv("S2A_HDR_SDR_MAP");
+            s2a_ios_apply_graphics_settings(d);
+            check(getenv("S2A_HDR_SDR_MAP") && !strcmp(getenv("S2A_HDR_SDR_MAP"), "1") && getenv("S2A_HDR") == NULL,
+                  @"S4 开：S2A_HDR_SDR_MAP=1，S2A_HDR 不被设置（终稿不联动——层载体由引擎层视角开关补，vi 照玩家 off 口径回答）");
+            check([game boolForKey:@"S2AHdrSdrMap"] && ![app boolForKey:@"S2AHdrSdrMap"],
+                  @"S4 按款写只写这款（S2AGame.<游戏号> 层，App 级不串）");
+            check(s2a_ios_hdr_sdr_map_on_for(gid) && !s2a_ios_hdr_sdr_map_on_for(gid2),
+                  @"S4 读写族按款：这款开、另一款没拨过（按款隔离）");
+            [d setBool:NO forKey:@"S2AHdrSdrMap"];
+            clear_environment(); unsetenv("S2A_HDR"); unsetenv("S2A_HDR_SDR_MAP");
+            s2a_ios_apply_graphics_settings(d);
+            check(getenv("S2A_HDR_SDR_MAP") && !strcmp(getenv("S2A_HDR_SDR_MAP"), "0") && getenv("S2A_HDR") == NULL,
+                  @"S4 关：S2A_HDR_SDR_MAP=0、不碰 S2A_HDR");
+            [d setBool:YES forKey:@"S2AHdrSdrMap"];
+            clear_environment(); unsetenv("S2A_HDR_SDR_MAP"); setenv("S2A_HDR", "off", 1);
+            s2a_ios_apply_graphics_settings(d);
+            check(getenv("S2A_HDR") && !strcmp(getenv("S2A_HDR"), "off") &&
+                  getenv("S2A_HDR_SDR_MAP") && !strcmp(getenv("S2A_HDR_SDR_MAP"), "1"),
+                  @"显式 S2A_HDR=off 原样保留（翻译不碰 S2A_HDR）；这款 S4 选择照转");
+            setenv("S2A_HDR", "auto", 1);
+            s2a_ios_apply_graphics_settings(d);
+            check(getenv("S2A_HDR") && !strcmp(getenv("S2A_HDR"), "auto") &&
+                  getenv("S2A_HDR_SDR_MAP") && !strcmp(getenv("S2A_HDR_SDR_MAP"), "1"),
+                  @"显式 S2A_HDR=auto 原样保留（以玩家为准）；这款 S4 选择照转");
+            unsetenv("S2A_HDR");
+            setenv("S2A_HDR_SDR_MAP", "1", 1); [d setBool:NO forKey:@"S2AHdrSdrMap"];
+            s2a_ios_apply_graphics_settings(d);
+            check(!strcmp(getenv("S2A_HDR_SDR_MAP"), "1") && getenv("S2A_HDR") == NULL,
+                  @"显式启动环境 S2A_HDR_SDR_MAP=1 优先于这款的选择（关）；S2A_HDR 仍不被碰");
+            unsetenv("S2A_HDR_SDR_MAP"); unsetenv("S2A_HDR");
+            setenv("S2A_LAUNCH_GAME_ID", gid2.UTF8String, 1);   // 另一款：没拨过不受这款影响
+            NSUserDefaults *d2 = s2a_ios_settings_defaults();
+            s2a_ios_apply_graphics_settings(d2);
+            check(getenv("S2A_HDR_SDR_MAP") == NULL && getenv("S2A_HDR") == NULL,
+                  @"S4 按款隔离：另一款没拨过不受这款影响");
+            s2a_ios_set_hdr_sdr_map_for(gid2, YES);   // 写族按款（游戏库每款设置页行同款写法）
+            check(s2a_ios_hdr_sdr_map_on_for(gid2) && [game2 boolForKey:@"S2AHdrSdrMap"] && ![app boolForKey:@"S2AHdrSdrMap"],
+                  @"S4 写族按款写这款（S2AGame.<另一款> 层）");
+            s2a_ios_set_hdr_sdr_map(NO);   // 无款号读写族（当前款写法）：定义经本单测链进（无款号形态只有工作台编链才链得到——R3 实测定义缺失只有 ios_lab_link_test 抓到，本套件补上）
+            check(!s2a_ios_hdr_sdr_map_on() && ![game2 boolForKey:@"S2AHdrSdrMap"], @"S4 无款号读写族：关当前款（S2A_LAUNCH_GAME_ID=另一款）");
+            s2a_ios_set_hdr_sdr_map(YES);
+            check(s2a_ios_hdr_sdr_map_on(), @"S4 无款号读写族：重新开当前款");
+            [game removePersistentDomainForName:[@"S2AGame." stringByAppendingString:gid]];
+            [game2 removePersistentDomainForName:[@"S2AGame." stringByAppendingString:gid2]];
+            [app removeObjectForKey:@"S2AHdrSdrMap"];
+            unsetenv("S2A_LAUNCH_GAME_ID"); unsetenv("S2A_HDR"); unsetenv("S2A_HDR_SDR_MAP"); clear_environment();
+        }
         // 满屏（11-13 合并「宽屏」与「宽屏强制启用」；自适应满屏补丁跟开关）：期望按规则手写——
         //   没选过：清单 widen 1 / 验证名单 / 表里缺省开的 wsauto: 补丁 → 开，否则关；明确开 = 没验证过也铺满；清单原因「强信号」= 改不动
         {
@@ -581,6 +740,13 @@ int main(int argc, char **argv) {
             check(r == 0 && on && [g9 boolForKey:@"S2AWidescreen"], @"满屏：明确开 → 开（写这款的 S2AWidescreen）");
             [strong writeToFile:[gdir stringByAppendingPathComponent:@"s2a_caps.tsv"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
             r = s2a_ios_fullscreen_state(@"G9", &on); check(r == 1 && !on, @"满屏：清单原因强信号 → 改不动、显示关");
+            // #2205：清单 widen 1、包里带 widen_verified.tsv（已验证名单）、没选过 → 关：我方通用满屏缺省不开（11-15「手动打开满屏走通用方案」），
+            //   起局也不设 S2A_WIDEN_VERIFIED（下面起局段 k 3），显示必须和起局一致（原先这里显示开、实际 16:9）
+            [@"widen\t1\t# 默认开：widen_verified.tsv\n" writeToFile:[gdir stringByAppendingPathComponent:@"s2a_caps.tsv"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
+            [@"x\n" writeToFile:[gdir stringByAppendingPathComponent:@"widen_verified.tsv"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
+            [g9 removeObjectForKey:@"S2AWidescreen"];
+            r = s2a_ios_fullscreen_state(@"G9", &on); check(r == 0 && !on, @"满屏：清单 widen 1 + 已验证名单、没选过 → 关（同起局，#2205）");
+            [NSFileManager.defaultManager removeItemAtPath:[gdir stringByAppendingPathComponent:@"widen_verified.tsv"] error:nil];
             [plain writeToFile:[gdir stringByAppendingPathComponent:@"s2a_caps.tsv"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
             [tsv writeToFile:[gdir stringByAppendingPathComponent:@"cpatch.tsv"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
             [g9 removeObjectForKey:@"S2AWidescreen"];
@@ -599,9 +765,13 @@ int main(int argc, char **argv) {
             setenv("S2A_LAUNCH_GAME_ID", "G9", 1);
             // 11-15 维护者「没补丁的游戏手动打开满屏就走咱们通用方案」：旧键转成满屏明确开、没有自适应满屏补丁 → 我方通用满屏（VERIFIED / WIDESCREEN 都是 1），
             //   不再看 S2A_CAPS_OWN（k 0 没设、k 2 设了，结果一样）；k 1 有自适应满屏补丁 → 补丁铺满、S2Arm 让开
-            for (int k = 0; k < 3; k++) {
+            NSString *wv = [bundle stringByAppendingPathComponent:@"widen_verified.tsv"];
+            for (int k = 0; k < 5; k++) {
                 [g9 removePersistentDomainForName:@"S2AGame.G9"];
                 if (k == 1) { [tsv writeToFile:ctsv atomically:YES encoding:NSUTF8StringEncoding error:nil]; s2a_ios_set_fullscreen(nil, YES); }
+                else if (k == 3) { [@"widen\t1\t# 默认开：widen_verified.tsv\n" writeToFile:caps atomically:YES encoding:NSUTF8StringEncoding error:nil]; [@"x\n" writeToFile:wv atomically:YES encoding:NSUTF8StringEncoding error:nil]; }
+                else if (k == 4) { [plain writeToFile:caps atomically:YES encoding:NSUTF8StringEncoding error:nil]; [NSFileManager.defaultManager removeItemAtPath:wv error:nil];
+                                   unsetenv("S2A_LAUNCH_GAME_ID"); [NSUserDefaults.standardUserDefaults setBool:YES forKey:@"S2AWidescreen"]; }
                 else [g9 setBool:YES forKey:@"S2AWidenForce"];
                 clear_environment(); unsetenv("S2A_WIDEN_VERIFIED"); unsetenv("S2A_WIDEN_CAPS");
                 if (k == 2) setenv("S2A_CAPS_OWN", "1", 1); else unsetenv("S2A_CAPS_OWN");
@@ -610,10 +780,16 @@ int main(int argc, char **argv) {
                 const char *v = getenv("S2A_WIDEN_VERIFIED"), *ws = getenv("S2A_WIDESCREEN"), *cpo = getenv("S2A_CPATCH_ON");
                 NSString *(^val)(const char *) = ^(const char *e) { return e ? @(e) : @"未设"; };
                 NSString *got = [NSString stringWithFormat:@"VERIFIED=%@ WIDESCREEN=%@ CPATCH_ON=%@", val(v), val(ws), val(cpo)];
-                NSString *want = k == 1 ? @"VERIFIED=未设 WIDESCREEN=0 CPATCH_ON=wsauto:fam" : k == 2 ? @"VERIFIED=1 WIDESCREEN=1 CPATCH_ON=未设" : @"VERIFIED=1 WIDESCREEN=1 CPATCH_ON=未设";
-                check([got isEqual:want] && (k == 1 || ([g9 boolForKey:@"S2AWidescreen"] && ![g9 objectForKey:@"S2AWidenForce"])),
-                      [NSString stringWithFormat:@"起局满屏%@：期望 %@ → 真结果 %@", k == 1 ? @"（有自适应满屏补丁）" : k == 2 ? @"（旧键宽屏强制启用，旧口径）" : @"（旧键宽屏强制启用，没设旧口径径不强开）", want, got]);
+                NSString *want = k == 1 ? @"VERIFIED=未设 WIDESCREEN=0 CPATCH_ON=wsauto:fam" : k == 3 ? @"VERIFIED=未设 WIDESCREEN=未设 CPATCH_ON=未设" : @"VERIFIED=1 WIDESCREEN=1 CPATCH_ON=未设";
+                BOOL shown = NO; int sr = s2a_ios_fullscreen_state(nil, &shown);
+                BOOL keys = k == 1 || k == 3 || k == 4 || ([g9 boolForKey:@"S2AWidescreen"] && ![g9 objectForKey:@"S2AWidenForce"]);
+                // 显示 = 起局（#2205）：设置页读到的生效值开 ⇔ 起局设了 VERIFIED=1 或由自适应满屏补丁铺满
+                BOOL same = sr == 0 && shown == ((v && !strcmp(v, "1")) || (cpo && strstr(cpo, "wsauto:")));
+                check([got isEqual:want] && keys && same,
+                      [NSString stringWithFormat:@"起局满屏%@：期望 %@、显示与起局一致 → 真结果 %@、显示 %@", k == 1 ? @"（有自适应满屏补丁）" : k == 2 ? @"（旧键宽屏强制启用，旧口径）" : k == 3 ? @"（清单 widen 1 + 已验证名单、没选过，#2205）" : k == 4 ? @"（单款壳 App 级明确开）" : @"（旧键宽屏强制启用，没设旧口径径不强开）", want, got, shown ? @"开" : @"关"]);
+                if (k == 4) { [NSUserDefaults.standardUserDefaults removeObjectForKey:@"S2AWidescreen"]; setenv("S2A_LAUNCH_GAME_ID", "G9", 1); }
             }
+            [NSFileManager.defaultManager removeItemAtPath:wv error:nil];
             [g9 removePersistentDomainForName:@"S2AGame.G9"]; unsetenv("S2A_LAUNCH_GAME_ID"); unsetenv("S2A_WIDEN_VERIFIED"); unsetenv("S2A_WIDEN_CAPS");
             [NSFileManager.defaultManager removeItemAtPath:caps error:nil]; [NSFileManager.defaultManager removeItemAtPath:ctsv error:nil];
         }

@@ -20,7 +20,7 @@ public final class PlayService {
         guard current == nil else { throw JobClientError("已有一局在运行，请先停止。") }
         var extra = arguments ?? [:]
         extra["gameId"] = gameId
-        if let uiLanguage, ["zh-Hans", "en"].contains(uiLanguage) { extra["uiLanguage"] = uiLanguage }
+        if let uiLanguage, !uiLanguage.isEmpty { extra["uiLanguage"] = uiLanguage }   // 照原样带，作业层认（build.py 六门之外不设宿主界面语言）
         let handle = try client.start(operation: "launch", extra: extra, onEvent: onEvent, onFinish: { [weak self] outcome in
             if self?.current?.id == outcome.taskId { self?.current = nil }
             onFinish(outcome)

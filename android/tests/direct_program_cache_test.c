@@ -10,6 +10,7 @@
 #include <unistd.h>
 
 #include "direct/program_cache.h"
+#include "direct/sha256.h"
 
 static int fails, checks;
 #define CHECK(cond, what) do { checks++; if (!(cond)) { printf("FAIL: %s\n", what); fails++; } } while (0)
@@ -129,6 +130,108 @@ static void sync_failure_tests(void) {
         if (fault == 1) CHECK(access(path, F_OK) != 0, "failed async file sync does not publish");
         else check_payload(id, next, sizeof next);
     }
+}
+
+// 只读头（s2a_program_cache_probe，结果合并 #1355 用）：给出的结果摘要 / 负载长度必须与正式读取一致；
+// 不动命中 / 未命中 / 失败三个计数；坏头逐项拒绝；负载被改时头仍可读（探针不校验负载，是合同的一部分），正式读取照旧拒绝。
+static void independent_sha(const uint8_t *p, size_t n, uint8_t out[32]) {
+    s2a_sha256 c;
+    s2a_sha256_init(&c);
+    s2a_sha256_update(&c, p, n);
+    s2a_sha256_final(&c, out);
+}
+static void probe_tests(void) {
+    uint8_t id[32], other[32], zero[32] = {0}, sha[32], want[32], lsha[32];
+    static uint8_t payload[777];
+    fill(id, sizeof id, 201);      // 身份种子避开本文件其它用例用过的（1 / 2 / 77 / 92..99 / 131 / 133），免得串到它们的文件
+    fill(other, sizeof other, 203);
+    fill(payload, sizeof payload, 41);
+    independent_sha(payload, sizeof payload, want);
+    char path[640], why[256] = "";
+    path_for(id, path, sizeof path);
+    uint64_t plen = 99;
+
+    // 未命中：1（与「文件坏」的 -1 分开），输出清零，原因「未命中」，不计 misses / failures
+    {
+        uint64_t m0 = s2a_program_cache_misses(), f0 = s2a_program_cache_failures();
+        memset(sha, 0xAA, sizeof sha);
+        CHECK(s2a_program_cache_probe(g_dir, id, sha, &plen, why, sizeof why) == 1, "probe of a missing entry returns 1 (no file), not -1 (bad file)");
+        CHECK(!memcmp(sha, zero, 32) && plen == 0, "probe miss leaves outputs zeroed");
+        CHECK(strstr(why, "未命中") != NULL, "probe miss is reported as a miss");
+        CHECK(s2a_program_cache_misses() == m0 && s2a_program_cache_failures() == f0, "probe miss touches neither miss nor failure counters");
+    }
+
+    // 往返：摘要 = 独立算出的负载 SHA-256，长度 = 负载字节数，与正式读取给出的已校验摘要一致；计数不动
+    CHECK(s2a_program_cache_store(g_dir, id, payload, sizeof payload, why, sizeof why) == 0, "probe fixture stored");
+    {
+        uint64_t h0 = s2a_program_cache_hits(), m0 = s2a_program_cache_misses(), f0 = s2a_program_cache_failures();
+        CHECK(s2a_program_cache_probe(g_dir, id, sha, &plen, why, sizeof why) == 0, "probe of a stored entry hits");
+        CHECK(!memcmp(sha, want, 32), "probe digest equals the independently computed payload SHA-256");
+        CHECK(plen == sizeof payload, "probe length equals the payload size");
+        CHECK(s2a_program_cache_hits() == h0 && s2a_program_cache_misses() == m0 && s2a_program_cache_failures() == f0,
+              "probe hit touches no counter");
+        uint8_t *got = NULL; size_t glen = 0;
+        CHECK(s2a_program_cache_load(g_dir, id, &got, &glen, lsha, why, sizeof why) == 0, "formal load of the same entry hits");
+        CHECK(!memcmp(lsha, sha, 32) && glen == plen, "probe and formal load agree on digest and length");
+        free(got);
+    }
+
+    // 参数防御
+    CHECK(s2a_program_cache_probe(NULL, id, sha, &plen, why, sizeof why) != 0, "probe null dir rejected");
+    CHECK(s2a_program_cache_probe(g_dir, NULL, sha, &plen, why, sizeof why) != 0, "probe null identity rejected");
+    CHECK(s2a_program_cache_probe(g_dir, id, NULL, &plen, why, sizeof why) != 0, "probe null digest out rejected");
+    CHECK(s2a_program_cache_probe(g_dir, id, sha, NULL, why, sizeof why) != 0, "probe null length out rejected");
+    CHECK(s2a_program_cache_probe(g_dir, id, sha, &plen, NULL, 0) == 0, "probe accepts a NULL why when it hits");
+
+    // 坏头逐项拒绝（每项：改坏 → 探针必须拒、输出清零、原因对得上 → 复原）
+    struct { const char *name; const char *needle; } bad[] = {
+        {"short-header", "短于头部"}, {"magic", "magic"}, {"version", "版本"}, {"inner-identity", "身份"},
+        {"zero-length", "越界"}, {"huge-length", "越界"}, {"truncated", "长度"}, {"extended", "长度"},
+    };
+    for (unsigned k = 0; k < sizeof bad / sizeof bad[0]; k++) {
+        CHECK(s2a_program_cache_store(g_dir, id, payload, sizeof payload, why, sizeof why) == 0, "restore probe fixture");
+        FILE *f = NULL;
+        if (!strcmp(bad[k].name, "short-header")) CHECK(truncate(path, 40) == 0, "shorten file below the header");
+        else if (!strcmp(bad[k].name, "truncated")) CHECK(truncate(path, 88 + 10) == 0, "truncate payload");
+        else if (!strcmp(bad[k].name, "extended")) CHECK(truncate(path, 88 + (off_t)sizeof payload + 5) == 0, "extend file past declared length");
+        else if ((f = fopen(path, "r+b")) != NULL) {
+            if (!strcmp(bad[k].name, "magic")) { fputc('X', f); }
+            else if (!strcmp(bad[k].name, "version")) { uint8_t one = 1; fseek(f, 8, SEEK_SET); fwrite(&one, 1, 1, f); }
+            else if (!strcmp(bad[k].name, "inner-identity")) { fseek(f, 16, SEEK_SET); fwrite(other, 1, 32, f); }
+            else if (!strcmp(bad[k].name, "zero-length")) { uint8_t z[8] = {0}; fseek(f, 80, SEEK_SET); fwrite(z, 1, 8, f); }
+            else if (!strcmp(bad[k].name, "huge-length")) { uint8_t h[8] = {0, 0, 0, 0, 0, 1, 0, 0}; fseek(f, 80, SEEK_SET); fwrite(h, 1, 8, f); }   // 2^40
+            fclose(f);
+        } else CHECK(0, "open entry for header damage");
+        why[0] = 0; memset(sha, 0xAA, sizeof sha); plen = 99;
+        char what[96];
+        snprintf(what, sizeof what, "probe rejects a damaged header: %s", bad[k].name);
+        CHECK(s2a_program_cache_probe(g_dir, id, sha, &plen, why, sizeof why) == -1, what);   // 坏文件是 -1，不是「没有文件」的 1
+        snprintf(what, sizeof what, "probe damage leaves outputs zeroed: %s", bad[k].name);
+        CHECK(!memcmp(sha, zero, 32) && plen == 0, what);
+        snprintf(what, sizeof what, "probe damage is reported with its reason: %s", bad[k].name);
+        CHECK(strstr(why, bad[k].needle) != NULL, what);
+    }
+
+    // 负载里一个字节坏了：探针只读头，照常给出头里记的摘要（合同：不校验负载）；正式读取必须拒绝并报摘要不符
+    CHECK(s2a_program_cache_store(g_dir, id, payload, sizeof payload, why, sizeof why) == 0, "restore probe fixture");
+    {
+        FILE *f = fopen(path, "r+b");
+        CHECK(f != NULL, "open entry for payload corruption");
+        if (f) {
+            uint8_t bad_byte = (uint8_t)(payload[100] ^ 0xFF);
+            fseek(f, 88 + 100, SEEK_SET);
+            fwrite(&bad_byte, 1, 1, f);
+            fclose(f);
+        }
+        CHECK(s2a_program_cache_probe(g_dir, id, sha, &plen, why, sizeof why) == 0 && !memcmp(sha, want, 32) && plen == sizeof payload,
+              "probe still reports the header digest when only the payload is damaged (it does not read the payload)");
+        uint8_t *got = NULL; size_t glen = 0;
+        why[0] = 0;
+        CHECK(s2a_program_cache_load(g_dir, id, &got, &glen, lsha, why, sizeof why) != 0 && strstr(why, "摘要") != NULL,
+              "formal load of the same damaged entry is rejected as a digest mismatch");
+        free(got);
+    }
+    CHECK(s2a_program_cache_store(g_dir, id, payload, sizeof payload, why, sizeof why) == 0, "restore probe fixture");
 }
 
 int main(void) {
@@ -282,6 +385,7 @@ int main(void) {
     CHECK(s2a_program_cache_store(g_dir, id, payload, 0, why, sizeof why) != 0, "zero length rejected");
     CHECK(s2a_program_cache_store_async(NULL, id, payload, 10) != 0, "async null dir rejected");
 
+    probe_tests();
     sync_failure_tests();
 
     // 清场

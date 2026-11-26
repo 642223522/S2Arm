@@ -47,7 +47,8 @@ parser.add_argument('--request', required=True)
 args = parser.parse_args()
 with open(args.request, encoding='utf-8') as source:
     request = json.load(source)
-assert set(request) == {'schema', 'target', 'shell'} and request['schema'] == 1 and request['target'] == 'ios'
+assert set(request) == {'schema', 'target', 'shell', 'resources'} and request['schema'] == 1 and request['target'] == 'ios'
+assert os.path.isdir(request['resources']), 'launcher resources folder (community patch snapshot, #7) reaches backend'
 assert os.path.normcase(request['shell']) == os.path.normcase(os.path.join(os.path.dirname(os.getcwd()), 'Shell')), 'configured shell reaches backend'
 assert os.path.realpath(os.getcwd()) == os.path.realpath(os.path.join(os.path.dirname(__file__), '..', '..'))
 assert os.path.normcase(os.environ['S2A_ENGINE']) == os.path.normcase(os.getcwd())

@@ -155,6 +155,29 @@ static void rt_preload(void) {
     pthread_mutex_unlock(&g_rt_mu); closedir(dp);
     if (n) GLOG("现编：开机预编上次缓存的 %d 支（%s）", n, d);
 }
+// 翻译失败的源码进日志（D-YYEQ 11-25：暗黑地牢片元报「0:54: 'sampler/image' : cannot construct this type」，日志只有报错行、没有源码，
+//   本机没有这款，定不了第 54 行写的是什么）。按行编号「  54| …」写成一段，诊断包里的日志就带着；有界：一局最多 GL_SRC_LOG_MAX 支、每支最多 6 KB、
+//   每行最多 200 字。纯函数（t_gl_rt C 测）：把 src 写成带行号的文本，回写入字节数（不含结尾 0）
+enum { GL_SRC_LOG_MAX = 8 };
+uint64_t gl_rt_src_logged;   // 已写进日志的失败源码支数（单测读）
+size_t s2a_gl_src_numbered(const char *src, size_t len, char *out, size_t cap) {
+    size_t o = 0; int line = 1; const char *p = src, *end = src + len;
+    if (!cap) return 0;
+    while (p < end && o + 16 < cap) {
+        const char *nl = memchr(p, '\n', (size_t)(end - p)); size_t n = nl ? (size_t)(nl - p) : (size_t)(end - p);
+        int w = snprintf(out + o, cap - o, "%4d| %.*s%s\n", line++, (int)(n > 200 ? 200 : n), p, n > 200 ? "…" : "");
+        if (w < 0 || (size_t)w >= cap - o) { o = cap - 1; break; }
+        o += (size_t)w; p = nl ? nl + 1 : end;
+    }
+    out[o] = 0; return o;
+}
+static void rt_log_src(const char *key, int frag, const char *src, size_t len) {
+    if (__atomic_fetch_add(&gl_rt_src_logged, 1, __ATOMIC_RELAXED) >= GL_SRC_LOG_MAX) return;
+    char *buf = malloc(6144); if (!buf) return;
+    s2a_gl_src_numbered(src, len, buf, 6144);
+    GLOG("现编：%s %s 翻译失败的源码（%zu 字节，按行编号）：\n%s", key, frag ? "片元" : "顶点", len, buf);
+    free(buf);
+}
 // 库里没有的一支：有就复用（同源码同阶段只翻一次），没有先读缓存、再交后台翻译 + Metal 编译
 static struct gl_rt *rt_get(const gl_shader *s) {
     int frag = s->type == GL_FRAGMENT_SHADER;
@@ -172,9 +195,11 @@ static struct gl_rt *rt_get(const gl_shader *s) {
     char *src = strdup(s->src); size_t n = s->len;   // 游戏随后可能改源码：拷一份交后台
     dispatch_async(rt_queue(), ^{
         char *msl = NULL, *fields = NULL, err[600] = ""; uint64_t t0 = mach_absolute_time();
-        int rc = s2a_gl_xlate(src, n, frag, e->key, &msl, &fields, err, sizeof err); free(src);
+        int rc = s2a_gl_xlate(src, n, frag, e->key, &msl, &fields, err, sizeof err);
         double ms_x = rt_ms(t0, mach_absolute_time());
-        if (rc) { snprintf(e->why, sizeof e->why, "翻译失败：%.560s", err); GLOG("【红】 现编：%s %s %s", e->key, frag ? "片元" : "顶点", e->why); gl_bad_err++; g_rt_bad++; free(msl); free(fields); rt_set(e, 3); return; }
+        if (rc) { snprintf(e->why, sizeof e->why, "翻译失败：%.560s", err); GLOG("【红】 现编：%s %s %s", e->key, frag ? "片元" : "顶点", e->why); rt_log_src(e->key, frag, src, n); free(src);
+            gl_bad_err++; g_rt_bad++; free(msl); free(fields); rt_set(e, 3); return; }
+        free(src);
         e->fields = fields; rt_set(e, 1);
         rt_metal(e, msl, 0, ms_x);
     });
@@ -246,6 +271,16 @@ GL(glGetShaderiv, void, GLuint name, GLenum what, GLint *v) {
         default: gl_set_error(GL_INVALID_ENUM); break;
     }
 }
+// glGetShaderPrecisionFormat（ES 3.2 §7.13；D-S6VQ 开局调它，原先是核心函数空实现、range / precision 不写）：本层着色器一律按 Metal 32 位 float / int 编，
+//   精度限定符不降精度，所以 LOW / MEDIUM / HIGH 三档同值——浮点 range {127, 127}、precision 23（IEEE 单精度），整数 range {31, 30}、precision 0。
+//   着色器类型只收 VERTEX / FRAGMENT、精度类型只收 0x8DF0–0x8DF5，别的置 INVALID_ENUM 且不写输出
+GL(glGetShaderPrecisionFormat, void, GLenum stype, GLenum ptype, GLint *range, GLint *precision) {
+    CTX();
+    if ((stype != GL_VERTEX_SHADER && stype != GL_FRAGMENT_SHADER) || ptype < 0x8DF0 || ptype > 0x8DF5) { gl_set_error(GL_INVALID_ENUM); return; }
+    int flt = ptype <= 0x8DF2;   // LOW / MEDIUM / HIGH_FLOAT；其后三个是 LOW / MEDIUM / HIGH_INT
+    if (range) { range[0] = flt ? 127 : 31; range[1] = flt ? 127 : 30; }
+    if (precision) *precision = flt ? 23 : 0;
+}
 GL(glGetShaderInfoLog, void, GLuint name, GLsizei cap, GLsizei *len, GLchar *log) {
     CTX(); gl_shader *s = gl_name_get(&gl_shaders, name); int n = 0;
     if (cap > 0) n = snprintf(log, (size_t)cap, "%s", s && !shader_ok(s) ? (s->rt && s->rt->why[0] ? s->rt->why : SHADER_LOG) : "");
@@ -256,7 +291,7 @@ GL(glGetShaderInfoLog, void, GLuint name, GLsizei cap, GLsizei *len, GLchar *log
 GL(glCreateProgram, GLuint, void) { CTX(0); struct gl_program *p = calloc(1, sizeof *p); return gl_name_new(&gl_programs, p); }
 static void program_destroy(void *object) {
     struct gl_program *p = object;
-    p->fn[0] = p->fn[1] = nil; p->pso = nil; free(p->ub[0]); free(p->ub[1]); free(p->u); free(p);
+    p->fn[0] = p->fn[1] = nil; p->pso = nil; free(p->ub[0]); free(p->ub[1]); free(p->u); free(p->lsrc[0]); free(p->lsrc[1]); free(p);
 }
 GL(glDeleteProgram, void, GLuint name) {
     CTX(); struct gl_program *p = gl_name_del(&gl_programs, name); if (!p) return;
@@ -306,6 +341,7 @@ GLB(glLinkProgram, void, GLuint name) { @autoreleasepool {
         gl_shader *s = gl_name_get(&gl_shaders, p->sh[st]); const librow *r = s && !s->rt && s->compiled ? lib_find(s->key, st) : NULL;
         struct gl_rt *rt = s && s->rt && shader_ok(s) ? s->rt : NULL;
         if (!r && !rt) { GLOG("【红】 链接程序 %u：%s着色器没有、不在库里也没现编成", name, st ? "片元" : "顶点"); return; }
+        memcpy(p->lkey[st], s->key, sizeof p->lkey[st]); free(p->lsrc[st]); p->lsrc[st] = rt ? strdup(s->src) : NULL;
         if (r) {
             p->fn[st] = [g_lib newFunctionWithName:[NSString stringWithFormat:@"gl_%s_%c", r->key, st ? 'f' : 'v']];
             if (!p->fn[st]) { GLOG("【红】 链接程序 %u：库里没有函数 gl_%s_%c", name, r->key, st ? 'f' : 'v'); return; }
@@ -447,7 +483,9 @@ GL(glGetAttribLocation, GLint, GLuint name, const GLchar *nm) {
 enum { ELEM = 4096 };   // 位置编码：成员号 < 4096，数组元素号放高位
 GL(glGetUniformLocation, GLint, GLuint name, const GLchar *nm) {
     CTX(-1); struct gl_program *p = gl_name_get(&gl_programs, name); if (!p || !p->linked) { gl_set_error(GL_INVALID_OPERATION); return -1; }
-    char base[64]; strlcpy(base, nm, sizeof base); int elem = 0; char *br = strchr(base, '[');
+    // 结构体数组展开出的成员（「Lights[1].color」）按全名登记：先比全名；再按 GL 规则只认末尾的「[n]」是数组下标（「Lights[1].pos[2]」= 成员数组 Lights[1].pos 的第 2 项）
+    for (int i = 0; i < p->nu && i < ELEM; i++) if (!strcmp(p->u[i].name, nm)) return i;
+    char base[64]; strlcpy(base, nm, sizeof base); int elem = 0; char *br = strrchr(base, '[');
     if (br) { char *end; long e = strtol(br + 1, &end, 10); if (end == br + 1 || *end != ']' || end[1] || e < 0) return -1; elem = (int)e; *br = 0; }
     for (int i = 0; i < p->nu; i++) if (!strcmp(p->u[i].name, base)) return elem < (p->u[i].count ? p->u[i].count : 1) && i < ELEM ? i + elem * ELEM : -1;
     for (int i = 0; i < p->nsmp; i++) if (!strcmp(p->smp[i].name, base) && p->smp[i].elem == elem && (!br || p->smp[i].arr > 1)) return p->nu + i;   // 采样器数组：「tex」=「tex[0]」，「tex[i]」= 第 i 项
@@ -525,6 +563,10 @@ static void ivwrite(GLint loc, GLsizei count, const GLint *v, int comps) {
 GL(glUniform2iv, void, GLint loc, GLsizei n, const GLint *v) { CTX(); ivwrite(loc, n, v, 2); }
 GL(glUniform3iv, void, GLint loc, GLsizei n, const GLint *v) { CTX(); ivwrite(loc, n, v, 3); }
 GL(glUniform4iv, void, GLint loc, GLsizei n, const GLint *v) { CTX(); ivwrite(loc, n, v, 4); }
+// 标量版本（D-FTA8：游戏调 glUniform2i，原先只有 iv 版本、标量版交空实现，uniform 没写进去）：同 iv 版本写一个元素
+GL(glUniform2i, void, GLint loc, GLint a, GLint b) { CTX(); const GLint v[2] = {a, b}; ivwrite(loc, 1, v, 2); }
+GL(glUniform3i, void, GLint loc, GLint a, GLint b, GLint c) { CTX(); const GLint v[3] = {a, b, c}; ivwrite(loc, 1, v, 3); }
+GL(glUniform4i, void, GLint loc, GLint a, GLint b, GLint c, GLint d) { CTX(); const GLint v[4] = {a, b, c, d}; ivwrite(loc, 1, v, 4); }
 // mat2 / mat3：默认 uniform 块按 std140（glslang -R 的 gl_DefaultUniformBlock），每列占 16 字节（列内 2 / 3 个 float），数组元素步长取反射的 stride；
 //   transpose = 源按行主序给（GL ES 3.0 起允许），换成列主序写
 //   非方阵（GL 2.1 glUniformMatrixCxRfv：C 列 R 行）同样每列 16 字节、列内 R 个 float
@@ -638,4 +680,66 @@ int s2a_gl_lib_ready(const char *game_data) {
     fclose(f);
     if (ok && rows) { snprintf(p, sizeof p, "%s/shaders/direct/gl/gl_shaders.metallib", game_data); if (stat(p, &st) || !st.st_size) { GLOG("【红】 直连 OpenGL 表有 %d 行却没有库 %s：不算就绪", rows, p); return 0; } }
     return ok;
+}
+
+// ---------- 即时存档：着色器与程序 ----------
+// 着色器：类型、源码、编译 / 挂接 / 删除标记；现编的按源码重新交兜底（同键读上次缓存，不再翻译）。程序：链接结果整份存（反射出的槽、uniform 表与 CPU 影子、
+//   采样器单元、块绑定、属性号），函数按链接时记下的键重取（库里的 newFunctionWithName，现编的交兜底、第一次画时等），不重新链接（游戏链接后常删掉着色器）
+enum { GH_NAME = 1, GH_TYPE, GH_SRC, GH_COMPILED, GH_ATTACHED, GH_DELETED,
+       GG_NAME = 1, GG_SH, GG_LINKED, GG_VALID, GG_UBSLOT, GG_UBSIZE, GG_UB0, GG_UB1, GG_SMP, GG_NSMP, GG_U, GG_NU, GG_WDEPTH, GG_BLK, GG_NBLK, GG_ATTR, GG_NATTR, GG_BIND, GG_NBIND, GG_LKEY, GG_LSRC0, GG_LSRC1 };
+static void sh_key(gl_shader *s) { uint8_t md[CC_SHA256_DIGEST_LENGTH]; CC_SHA256(s->src, (CC_LONG)s->len, md); for (int i = 0; i < 8; i++) snprintf(s->key + 2 * i, 3, "%02x", md[i]); }
+int gl_prog_snap_save(FILE *f) {
+    sfw w; sfw_sec(&w, f, "gl.shader", 1);
+    for (GLuint i = 1; i < gl_shaders.n; i++) { gl_shader *s = gl_shaders.v[i]; if (!s) continue;
+        sfw_rec(&w); GLSF_W(&w, GH_NAME, i); GLSF_W(&w, GH_TYPE, s->type); if (s->src) sfw_blob(&w, GH_SRC, s->src, (uint32_t)s->len);
+        GLSF_W(&w, GH_COMPILED, s->compiled); GLSF_W(&w, GH_ATTACHED, s->attached); GLSF_W(&w, GH_DELETED, s->deleted); sfw_end_rec(&w); }
+    if (sfw_end(&w)) return -1;
+    sfw_sec(&w, f, "gl.program", 1); uint32_t np = 0;
+    for (GLuint i = 1; i < gl_programs.n; i++) { struct gl_program *p = gl_programs.v[i]; if (!p) continue;
+        sfw_rec(&w); GLSF_W(&w, GG_NAME, i); GLSF_W(&w, GG_SH, p->sh); GLSF_W(&w, GG_LINKED, p->linked); GLSF_W(&w, GG_VALID, p->validated); GLSF_W(&w, GG_UBSLOT, p->ub_slot); GLSF_W(&w, GG_UBSIZE, p->ub_size);
+        if (p->ub[0]) sfw_blob(&w, GG_UB0, p->ub[0], (uint32_t)p->ub_size[0]); if (p->ub[1]) sfw_blob(&w, GG_UB1, p->ub[1], (uint32_t)p->ub_size[1]);
+        GLSF_W(&w, GG_SMP, p->smp); GLSF_W(&w, GG_NSMP, p->nsmp); if (p->nu) sfw_blob(&w, GG_U, p->u, (uint32_t)(p->nu * sizeof *p->u)); GLSF_W(&w, GG_NU, p->nu);
+        GLSF_W(&w, GG_WDEPTH, p->writes_depth); GLSF_W(&w, GG_BLK, p->blk); GLSF_W(&w, GG_NBLK, p->nblk); GLSF_W(&w, GG_ATTR, p->attr); GLSF_W(&w, GG_NATTR, p->nattr);
+        GLSF_W(&w, GG_BIND, p->bind); GLSF_W(&w, GG_NBIND, p->nbind); GLSF_W(&w, GG_LKEY, p->lkey);
+        if (p->lsrc[0]) sfw_blob(&w, GG_LSRC0, p->lsrc[0], (uint32_t)strlen(p->lsrc[0])); if (p->lsrc[1]) sfw_blob(&w, GG_LSRC1, p->lsrc[1], (uint32_t)strlen(p->lsrc[1]));
+        sfw_end_rec(&w); np++; }
+    GLOG("即时存档：GL 程序 %u 个", np);
+    return sfw_end(&w);
+}
+static char *blob_str(const sfr *r, uint16_t id, size_t *len) { uint32_t n; const char *p = sfr_get(r, id, &n); if (!p) return NULL; char *s = malloc(n + 1); memcpy(s, p, n); s[n] = 0; if (len) *len = n; return s; }
+int gl_prog_snap_restore(FILE *f) {
+    lib_load();
+    sfr r; if (sfr_sec(&r, f, "gl.shader", 1)) return -1; int bad = 0, nfn = 0, nrt = 0, nmiss = 0;
+    while (sfr_rec(&r) == 1) {
+        GLuint nm = 0; GLSF_R(&r, GH_NAME, nm); gl_shader *s = calloc(1, sizeof *s); if (!nm || !s) { free(s); continue; }
+        GLSF_R(&r, GH_TYPE, s->type); s->src = blob_str(&r, GH_SRC, &s->len); GLSF_R(&r, GH_COMPILED, s->compiled); GLSF_R(&r, GH_ATTACHED, s->attached); GLSF_R(&r, GH_DELETED, s->deleted);
+        if (s->src) { s->len = strlen(s->src); sh_key(s); }
+        if (s->compiled && s->src && !lib_find(s->key, s->type == GL_FRAGMENT_SHADER)) s->rt = rt_get(s);
+        if (!gl_name_put(&gl_shaders, nm, s)) { shader_destroy(s); bad = 1; }
+    }
+    sfr_done(&r);
+    if (bad || sfr_sec(&r, f, "gl.program", 1)) return -1;
+    while (sfr_rec(&r) == 1) {
+        GLuint nm = 0; GLSF_R(&r, GG_NAME, nm); struct gl_program *p = calloc(1, sizeof *p); if (!nm || !p) { free(p); continue; }
+        GLSF_R(&r, GG_SH, p->sh); GLSF_R(&r, GG_LINKED, p->linked); GLSF_R(&r, GG_VALID, p->validated); GLSF_R(&r, GG_UBSLOT, p->ub_slot); GLSF_R(&r, GG_UBSIZE, p->ub_size);
+        for (int st = 0; st < 2; st++) if (p->ub_size[st] > 0) { p->ub[st] = calloc(1, (size_t)p->ub_size[st]); sfr_into(&r, st ? GG_UB1 : GG_UB0, p->ub[st], (uint32_t)p->ub_size[st]); }
+        GLSF_R(&r, GG_SMP, p->smp); GLSF_R(&r, GG_NSMP, p->nsmp); GLSF_R(&r, GG_NU, p->nu);
+        if (p->nu > 0) { p->u = calloc((size_t)p->nu, sizeof *p->u); sfr_into_conv(&r, GG_U, p->u, (uint32_t)(p->nu * sizeof *p->u), "gl.uniform", (uint32_t)sizeof *p->u); }
+        GLSF_R(&r, GG_WDEPTH, p->writes_depth); GLSF_R(&r, GG_BLK, p->blk); GLSF_R(&r, GG_NBLK, p->nblk); GLSF_R(&r, GG_ATTR, p->attr); GLSF_R(&r, GG_NATTR, p->nattr);
+        GLSF_R(&r, GG_BIND, p->bind); GLSF_R(&r, GG_NBIND, p->nbind); GLSF_R(&r, GG_LKEY, p->lkey); p->lsrc[0] = blob_str(&r, GG_LSRC0, NULL); p->lsrc[1] = blob_str(&r, GG_LSRC1, NULL);
+        if (p->linked) {
+            for (int st = 0; st < 2; st++) {
+                const librow *lr = lib_find(p->lkey[st], st);
+                if (lr) { p->fn[st] = [g_lib newFunctionWithName:[NSString stringWithFormat:@"gl_%s_%c", lr->key, st ? 'f' : 'v']]; nfn += p->fn[st] != nil; if (!p->fn[st]) nmiss++; }
+                else if (p->lsrc[st]) { gl_shader tmp = {0}; memcpy(tmp.key, p->lkey[st], sizeof tmp.key); tmp.type = st ? GL_FRAGMENT_SHADER : GL_VERTEX_SHADER; tmp.src = p->lsrc[st]; tmp.len = strlen(p->lsrc[st]);
+                    p->rt[st] = rt_get(&tmp); nrt++; }
+                else nmiss++;
+            }
+            p->pso = [NSMutableDictionary new];
+        }
+        if (!gl_name_put(&gl_programs, nm, p)) { program_destroy(p); bad = 1; }
+    }
+    sfr_done(&r);
+    GLOG("%s即时存档恢复：GL 程序函数 库里取 %d 支、交现编 %d 支、取不到 %d 支", nmiss ? "【红】 " : "", nfn, nrt, nmiss);
+    return bad ? -1 : 0;
 }

@@ -20,6 +20,8 @@ namespace S2A.Services.Tests
     {
         // Real LibHac clients, server and host files. This path runs before FakeNative.Install
         // and does not construct a renderer, emulated process, game fixture or mocked service.
+        // 服务单测独立模式（启动前、FakeNative.Install 之前）：services/test.sh 按 --list-modes 自动跑，与已编好的服务测试程序同一次编译
+        [SoloTest("--filesystem-restart")]
         internal static int FileSystemRestart()
         {
             string root = Path.Combine(Path.GetTempPath(), $"s2a-fs-restart-{Guid.NewGuid():N}");

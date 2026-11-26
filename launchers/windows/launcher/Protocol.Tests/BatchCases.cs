@@ -97,5 +97,15 @@ public static class BatchCases
         check(ImportOutcome.MissingBase(import).Count == 0, "import: no missingBase key = nothing missing");
         check(ImportOutcome.MissingBase(Json("""{"imports":[{"id":"0100CCCC00000000","missingBase":true},{"id":"0100CCCC00000000","missingBase":true},{"id":"0100DDDD00000000","missingBase":false}]}"""))
             .SequenceEqual(["0100CCCC00000000"]), "import: missingBase ids deduped, false skipped");
+        // 导入后选中哪一款（玩家反馈：添加游戏后总跳到上一款的出包页）。期望手写：库里已有 A（排第一）再导入 B → 选中 B、不进欢迎页；
+        //   空库导入 B → 选中 B、欢迎页带 B；导入结果号大小写和目录不同 → 按目录里的写法；导入的款在库里是隐藏的 / 结果为空 → 都是 null
+        static LibraryGame G(string id, bool hidden = false) => new(id, id, "", "", hidden, []);
+        var libAB = new[] { G("0100AAAA00000000"), G("0100BBBB00000000") };
+        var importB = Json("""{"imports":[{"id":"0100BBBB00000000","name":"b.nsp"}]}""");
+        check(ImportOutcome.AfterImport(importB, libAB, wasEmpty: false) == ("0100BBBB00000000", null), "after import: library had A, imported B → select B, no welcome");
+        check(ImportOutcome.AfterImport(importB, new[] { G("0100BBBB00000000") }, wasEmpty: true) == ("0100BBBB00000000", "0100BBBB00000000"), "after import: empty library → select B and welcome B");
+        check(ImportOutcome.AfterImport(Json("""{"imports":[{"id":"0100bbbb00000000"}]}"""), libAB, wasEmpty: false) == ("0100BBBB00000000", null), "after import: id case follows the catalogue");
+        check(ImportOutcome.AfterImport(importB, new[] { G("0100AAAA00000000"), G("0100BBBB00000000", hidden: true) }, wasEmpty: false) == (null, null), "after import: imported game hidden → nothing chosen");
+        check(ImportOutcome.AfterImport(Json("""{"imports":[]}"""), libAB, wasEmpty: true) == (null, null), "after import: nothing imported → nothing chosen");
     }
 }

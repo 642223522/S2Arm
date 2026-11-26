@@ -120,6 +120,25 @@ class Yaz0Tests(unittest.TestCase):
         self.assertTrue(os.path.isfile(lib))
         self.assertFalse(os.path.exists(lib + '.%d.tmp' % os.getpid()))   # 本进程的临时文件删掉了
 
+    def test_c_path_leaves_no_reference_cycles(self):
+        # 11-18：C 路径原先用 ctypes.cast 取指针，cast 的结果与源缓冲区互相引用成环，压缩数据副本与整份解压结果要等循环垃圾回收才放；
+        #   回收按新建容器对象数触发、不看字节数，抽取进程连解几百个 Yaz0 文件常驻涨到 600+ MB。期望：关掉自动回收连解 5 次，循环垃圾里的数据缓冲（ctypes 数组实例）= 0 个
+        #   （create_string_buffer 每种长度新建的数组类型本身是自引用的小对象，不算）
+        import ctypes, gc
+        if nxfmt._load_lib() is None:
+            self.skipTest('C Yaz0 library did not build')
+        packed, raw = _hand_yaz0_overlap()
+        was = gc.isenabled(); gc.disable()
+        try:
+            gc.collect(); gc.set_debug(gc.DEBUG_SAVEALL)
+            for _ in range(5): self.assertEqual(nxfmt.yaz0_decompress(packed), raw)
+            gc.collect()
+            bufs = [o for o in gc.garbage if isinstance(o, ctypes.Array)]
+            self.assertEqual(len(bufs), 0)
+        finally:
+            gc.set_debug(0); gc.garbage.clear()
+            if was: gc.enable()
+
     def test_rejects_bad_input(self):
         self.assertEqual(nxfmt.yaz0_decompress_py(b'Yaz0' + b'\0' * 12), b'')
         with self.assertRaises(ValueError):

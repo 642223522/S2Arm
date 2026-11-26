@@ -1,0 +1,113 @@
+diff --git a/src/Ryujinx.HLE/HOS/Services/Fs/FileSystemProxy/IFileSystem.cs b/src/Ryujinx.HLE/HOS/Services/Fs/FileSystemProxy/IFileSystem.cs
+index 1b651aacbeeeebf1ced94f8d58ebaa9ea5ca5ab5..1c8b3ebec2fbefc37804696aa3281f6b0ad3740f 100644
+--- a/src/Ryujinx.HLE/HOS/Services/Fs/FileSystemProxy/IFileSystem.cs
++++ b/src/Ryujinx.HLE/HOS/Services/Fs/FileSystemProxy/IFileSystem.cs
+@@ -20,6 +20,37 @@ namespace Ryujinx.HLE.HOS.Services.Fs.FileSystemProxy
+             _s2aGameSave = s2aGameSave;
+         }
+ 
++        // S2Arm instant snapshot: while the request log is replayed, an open that is in the log succeeded back then; if the path is gone
++        //   now (deleted later, before the snapshot), create an empty one so the open succeeds and the object numbering after it stays
++        //   the same, and register its removal for the end of the replay (S2AHooks.SnapReplayUndo).
++        private bool S2AReplayPlaceholder(in Path name, bool directory)
++        {
++            if (!S2AHooks.SnapReplaying)
++            {
++                return false;
++            }
++
++            Result made = directory ? _fileSystem.Get.CreateDirectory(in name) : _fileSystem.Get.CreateFile(in name, 0, 0);
++
++            if (made.IsFailure())
++            {
++                return false;
++            }
++
++            Path path = name;
++            SharedRef<LibHac.FsSrv.Sf.IFileSystem> fs = SharedRef<LibHac.FsSrv.Sf.IFileSystem>.CreateCopy(in _fileSystem);
++
++            S2AHooks.SnapReplayUndo.Add(() =>
++            {
++                Result r = directory ? fs.Get.DeleteDirectory(in path) : fs.Get.DeleteFile(in path);
++                fs.Destroy();
++
++                return r.IsSuccess();
++            });
++
++            return true;
++        }
++
+         public SharedRef<LibHac.FsSrv.Sf.IFileSystem> GetBaseFileSystem()
+         {
+             return SharedRef<LibHac.FsSrv.Sf.IFileSystem>.CreateCopy(in _fileSystem);
+@@ -119,6 +150,11 @@ namespace Ryujinx.HLE.HOS.Services.Fs.FileSystemProxy
+ 
+             Result result = _fileSystem.Get.OpenFile(ref file.Ref, in name, mode);
+ 
++            if (result.IsFailure() && S2AReplayPlaceholder(in name, false))
++            {
++                result = _fileSystem.Get.OpenFile(ref file.Ref, in name, mode);
++            }
++
+             if (result.IsSuccess())
+             {
+                 IFile fileInterface = new(ref file.Ref, name.ToString());   // S2Arm：带上路径，读失败 / 静默短读的黄字点名文件
+@@ -140,6 +176,11 @@ namespace Ryujinx.HLE.HOS.Services.Fs.FileSystemProxy
+ 
+             Result result = _fileSystem.Get.OpenDirectory(ref dir.Ref, in name, mode);
+ 
++            if (result.IsFailure() && S2AReplayPlaceholder(in name, true))
++            {
++                result = _fileSystem.Get.OpenDirectory(ref dir.Ref, in name, mode);
++            }
++
+             if (result.IsSuccess())
+             {
+                 IDirectory dirInterface = new(ref dir.Ref);
+diff --git a/src/Ryujinx.HLE/HOS/Services/IpcService.cs b/src/Ryujinx.HLE/HOS/Services/IpcService.cs
+index bbeb68441d1177763a8d0dc51ebc8ccccc368b0e..930f087238ef35d72b40ae9cb12f5304e53e3320 100644
+--- a/src/Ryujinx.HLE/HOS/Services/IpcService.cs
++++ b/src/Ryujinx.HLE/HOS/Services/IpcService.cs
+@@ -337,6 +337,21 @@ namespace Ryujinx.HLE.HOS.Services
+ 
+         private int Add(IpcService obj)
+         {
++            // S2Arm instant snapshot replay: take the id this object had when the request was logged (S2AHooks.SnapForceDomainIds)
++            var forced = S2AHooks.SnapForceDomainIds;
++
++            if (forced != null && forced.Count > 0)
++            {
++                int id = forced.Dequeue();
++
++                if (DomainObjects.Add(id, obj))
++                {
++                    return id;
++                }
++
++                S2AHooks.SnapForceDomainIdMiss++;
++            }
++
+             return DomainObjects.Add(obj);
+         }
+ 
+diff --git a/src/Ryujinx.HLE/S2AHooks.cs b/src/Ryujinx.HLE/S2AHooks.cs
+index eff7e1585cfe22ec5d938731676e06d1ef89ab1c..d4c784e40a12ef7571808401912ea6ccc78309d7 100644
+--- a/src/Ryujinx.HLE/S2AHooks.cs
++++ b/src/Ryujinx.HLE/S2AHooks.cs
+@@ -59,6 +59,16 @@ namespace Ryujinx.HLE
+         // A command under Services.Fs failed (S2AFsFail): command name, result + path(s), and whether it is red
+         // (false = a probing result the game is expected to handle: path not found / already exists, save data not found)
+         public static System.Action<string, string, bool> FsFailed;
++        // S2Arm instant snapshot: set while the request log is being replayed. An open that succeeded when it was logged but finds no
++        //   such path now (the file was deleted later, before the snapshot) gets an empty placeholder so the object numbering stays the
++        //   same; each placeholder registers its removal here and the replayer runs them once the log is done.
++        public static bool SnapReplaying;
++        public static readonly System.Collections.Generic.List<System.Func<bool>> SnapReplayUndo = new();
++        // S2Arm instant snapshot: domain object ids a replayed request must hand out (the ids it got when it was logged). Requests of
++        //   several threads on one domain finish in a different order than they were logged, so allocating lowest-free on replay can
++        //   number the objects differently, and the game memory holds the logged ids. Set by the replayer for one request at a time.
++        [System.ThreadStatic] public static System.Collections.Generic.Queue<int> SnapForceDomainIds;
++        public static int SnapForceDomainIdMiss;
+         // Service-owned physical memory. Null preserves upstream allocation; a supplied
+         // factory transfers a block of the requested size to Switch's lifetime.
+         public static System.Func<ulong, Ryujinx.Memory.MemoryBlock> CreateServiceMemory;

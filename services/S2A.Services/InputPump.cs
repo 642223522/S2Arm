@@ -15,6 +15,15 @@ namespace S2A.Services
     {
         // 苹果侧手柄 / 触屏输入源（苹果侧接）：填按键位（HidNpadButton 位序）与左右摇杆
         public static delegate*<ref GamepadInput, void> InputHook;
+        // 平台登记的手柄反馈入口（震动 / 六轴，runtime/include/s2a_pad.h 同名函数的地址，ControllerFeedback 用）：
+        //   安卓宿主库以 RTLD_LOCAL 载入，主程序句柄查不到它的导出（docs/架构_多终端.md：按名查导出的几处接核心时改成函数指针），
+        //   由平台装配在起服务前登记（android/core-runtime/AndroidGameRuntime.cs）；没登记的（iOS / Mac）全为 0，照旧按名查主程序导出
+        [StructLayout(LayoutKind.Sequential)]
+        public struct HostFeedback
+        {
+            public nint RumbleSession, SetRumblePair, StopRumble, SetMotionEnabled, ReadMotion;
+        }
+        public static HostFeedback Feedback;
         // Optional platform touch consumer, on this same HID owner thread.
         // Absent on Apple and other hosts; no second sampler or HID writer.
         public static Action<Switch> TouchHook;
@@ -48,6 +57,14 @@ namespace S2A.Services
         //   第二个手柄镜像第一个的输入（触屏 / 外接手柄同一份），两人的角色同步动；自动玩家接管二号手柄后（s2a_autoplay_pads ≥ 2），
         //   二号只收自动玩家的「2:键」、自动玩家给一号的键不镜像（双人成行选角色：镜像时两人总挪到同一个角色）
         private static readonly int EnvPads = Environment.GetEnvironmentVariable("S2A_AP_PADS") == "2" ? 2 : 1;
+        // -1 由原来的连续虚拟手柄策略决定；非负值按实体玩家槽位图配置与更新 Npad，允许中间有空槽（断连不挤乱其他玩家位）
+        private static volatile int _physicalMask = -1;
+        // 本局实体手柄占过的槽（宿主位图逐拍或上）：只有「占过、现在空了」的槽才断开 Npad；从没被实体手柄占过的槽（手柄设置小程序要「至少 2 人」
+        //   而只接一只、自动玩家接管二号）照旧配上——那时第二格镜像一号 / 收自动玩家的键，拆掉就过不了那道界面
+        private static int _everLive;
+        internal static delegate* unmanaged<int> PlayerMask;
+        private static delegate* unmanaged<int, void> _vpadSetCap;   // 宿主分槽按游戏人数上限压缩名次（runtime/src/pad.c s2a_vpad_set_cap；没导出的宿主为空）
+        private static void PublishCap() { if (_vpadSetCap != null) _vpadSetCap(_padCap < MaxPads ? _padCap : 0); }
         private static volatile int _pads = EnvPads;
         private static volatile PlayerIndex _second = PlayerIndex.Unknown;
         // 手柄设置小程序最近一次给的人数上限（缺省 MaxPads）：真机上多连的手柄不分给游戏，直到下次小程序放宽或这局结束。
@@ -127,15 +144,15 @@ namespace S2A.Services
             type == ControllerType.Handheld ? (styles & type) != 0 && !device.System.State.DockedMode
             : device.Hid.Npads.StyleSupported(type, styles) || (type == ControllerType.ProController && (styles & ControllerType.JoyconPair) != 0)
                                    || (type == ControllerType.JoyconPair && (styles & ControllerType.ProController) != 0);   // 这一对 Remap 自己会换
-        // 单只 Joy-Con（#520 A，照真机）：连着单只 Joy-Con 2（宿主 s2a_vpad_joycon_style 报它那一侧的 JoyconLeft / JoyconRight）、
-        //   游戏收这个样式、只有一个手柄 → 改成 Player1 的这个样式，游戏按 NpadJoyHoldType 自己转竖 / 横；
-        //   Joy-Con 断开 / 换成别的、或游戏不收了 → 换回改之前的。返回要改成的 (手柄号, 样式)，不改为 (Unknown, None)。纯函数，单测 --joycon-style
-        internal static (PlayerIndex, ControllerType) JoyconPick(ControllerType styles, ControllerType single, int pads, ControllerType current,
+        // 单只或成对的 Joy-Con，游戏收实体样式时按原样报告。断开或游戏改换允许的样式时恢复原配置。
+        internal static (PlayerIndex, ControllerType) JoyconPick(ControllerType styles, ControllerType physical, int pads, ControllerType current,
                                                                 ControllerType before, PlayerIndex playerBefore)
         {
-            if (single != ControllerType.None && (styles & single) != 0 && pads == 1)
-                return current == single ? (PlayerIndex.Unknown, ControllerType.None) : (PlayerIndex.Player1, single);
-            if (before != ControllerType.None && current is ControllerType.JoyconLeft or ControllerType.JoyconRight)
+            if (physical != ControllerType.None && (styles & physical) != 0 && pads == 1)
+                return current == physical ? (PlayerIndex.Unknown, ControllerType.None) : (PlayerIndex.Player1, physical);
+            // 换回改之前的样式只在游戏收它时（#2225 / D-Q5F2 / D-BS3T / D-VVDV）：游戏只收 掌机 / 双 Joy-Con，手柄设置小程序应答成双 Joy-Con 后，
+            //   这里按「实体不是 Joy-Con」换回改之前的 Pro——游戏不收 Pro、又弹手柄设置小程序，应答又配回双 Joy-Con，来回打转、游戏一直等不到画面（黑屏）
+            if (before != ControllerType.None && (styles & before) != 0 && current is ControllerType.JoyconLeft or ControllerType.JoyconRight or ControllerType.JoyconPair)
                 return (playerBefore, before);
             return (PlayerIndex.Unknown, ControllerType.None);
         }
@@ -146,6 +163,8 @@ namespace S2A.Services
         private static delegate* unmanaged<int, int, void> _setSlotStyle;   // 每一格的样式（#520：玩家 2 起的单只 Joy-Con 也照它那一格定原始方向 / 横握，同玩家 1）
         private static readonly ControllerType[] _slotTypes = new ControllerType[MaxPads];
         private static delegate* unmanaged<int, int> _slotStyle;   // 每一格的实体手柄样式（Mac 宿主 s2a_vpad_slot_style，#520）：多手柄时照它配格
+        internal static bool PrefersJoyconPair => _pads == 1 && _slotStyle != null &&
+                                                  _slotStyle(0) == (int)ControllerType.JoyconPair;
         // 多手柄时这一格配什么样式（同原机：手柄号的样式由连着的那只手柄定）：实体是单只 Joy-Con（左 / 右只）、游戏收这一侧 → 就用它
         //   （改前一律「一号右只、二号左只」交替或同一种，拆开的左只当 P1 时游戏以为是右只：按 A 确认不了、震动给错侧）；
         //   别的（Pro / 一对 / 系统手柄 / 游戏不收这一侧）照原来的配法 fallback。纯函数，单测 --joycon-style
@@ -161,18 +180,20 @@ namespace S2A.Services
         }
         private static bool FollowJoyconStyle(Switch device, ControllerType styles)
         {
-            ControllerType single = _joyconStyle != null ? (ControllerType)_joyconStyle() : ControllerType.None;
-            (PlayerIndex player, ControllerType type) = JoyconPick(styles, single, _pads, _type, _joyconBefore, _joyconPlayerBefore);
-            if (type == ControllerType.None) return single != ControllerType.None && _type == single;
-            if (type == single)
+            ControllerType physical = _joyconStyle != null ? (ControllerType)_joyconStyle() : ControllerType.None;
+            if (PrefersJoyconPair && device.Hid.Npads.IsSupportedPlayer(PlayerIndex.Player1))
+                physical = ControllerType.JoyconPair;
+            (PlayerIndex player, ControllerType type) = JoyconPick(styles, physical, _pads, _type, _joyconBefore, _joyconPlayerBefore);
+            if (type == ControllerType.None) return physical != ControllerType.None && (styles & physical) != 0 && _type == physical;
+            if (type == physical)
             {
                 if (_joyconBefore == ControllerType.None) { _joyconBefore = _type; _joyconPlayerBefore = _player; }
-                Console.Error.WriteLine($"S2A 虚拟手柄：连着单只 Joy-Con、游戏收 {single}，改成 {player} 的 {type}（游戏按握法自己转）");
+                Console.Error.WriteLine($"S2A 虚拟手柄：连着 {physical} 且游戏支持，改成 {player} 的 {type}");
             }
             else
             {
                 _joyconBefore = ControllerType.None;
-                Console.Error.WriteLine($"S2A 虚拟手柄：单只 Joy-Con 不在了或游戏不收 {_type}，换回 {player} 的 {type}");
+                Console.Error.WriteLine($"S2A 虚拟手柄：Joy-Con 不在了或游戏不收 {_type}，换回 {player} 的 {type}");
             }
             SetPrimary(device, player, type);
             return true;
@@ -197,8 +218,10 @@ namespace S2A.Services
         {
             if (_slotStyle == null || _pads <= 1 || _type == ControllerType.Handheld) return false;
             // 不用 SlotPick 的委托：lambda 捕获参数时方法一进来就分配闭包（每 250 ms 一次，空闲底噪单测零分配那项红），这里展开成同一判断
+            int mask = _physicalMask;
             for (int i = 0; i < _pads; i++)
             {
+                if (mask >= 0 && (mask & (1 << i)) == 0) continue;
                 ControllerType physical = (ControllerType)_slotStyle(i);
                 if (physical is not (ControllerType.JoyconLeft or ControllerType.JoyconRight)) continue;
                 if (physical != _slotTypes[i] && device.Hid.Npads.StyleSupported(physical, styles)) return true;
@@ -217,7 +240,11 @@ namespace S2A.Services
                 SetPrimary(device, _player, _type);
                 return;
             }
-            if (_styleBefore != ControllerType.None && _type != _styleBefore && Accepts(device, styles, _styleBefore))
+            // 原来是掌机格、被游戏的手柄选择页换成了它要的分离样式（D-JQGC 摇摇乐派对：只收 Pro / 双 Joy-Con → Player1 双 Joy-Con）：之后游戏只是又声明
+            //   「也收掌机」、现在的样式仍收着，就不退回掌机格——退回去游戏看到的是插在主机上的 Joy-Con，体感关掉；真机上拆下来的 Joy-Con 也不会自己插回去。
+            //   现在的样式不收了才退回；原来是 Pro 等外接样式的（#359）照旧换回
+            if (_styleBefore != ControllerType.None && _type != _styleBefore && Accepts(device, styles, _styleBefore)
+                && (_styleBefore != ControllerType.Handheld || !Accepts(device, styles, _type)))
             {
                 Console.Error.WriteLine($"S2A 虚拟手柄：游戏又收 {_styleBefore}，换回去");
                 ControllerType back = _styleBefore; _styleBefore = ControllerType.None;
@@ -254,7 +281,18 @@ namespace S2A.Services
         public static void CapPads(Switch device, int max)
         {
             _padCap = max <= 0 ? MaxPads : Math.Min(max, MaxPads);
-            if (_pads <= _padCap) return;
+            PublishCap();   // 宿主下一次分槽按它压缩名次（Mac 下一拍、iOS 当场重排）；没超也要发：上限从小放大时要撤掉压缩
+            // 在线手柄还有落在名额外的格：等宿主按新上限重排（最多 200 ms，Mac 采样一拍约 8 ms），再按重排后的位图配——
+            //   否则这一次小程序应答配的是旧位图（名额内全空），游戏重验不过还得再弹一次
+            if (_vpadSetCap != null && PlayerMask != null && _padCap < MaxPads)
+            {
+                int outside = ~((1 << _padCap) - 1);
+                for (int i = 0; i < 40 && (PlayerMask() & outside) != 0; i++) Thread.Sleep(5);
+                int live = ClampMask(PlayerMask(), _padCap);
+                if (live > 0) _everLive |= live;
+                _physicalMask = ConfiguredMask(_pads, live, _everLive);
+            }
+            if (_pads <= _padCap) return;   // 没超：小程序应答随后自己 SetPrimary（按上面更新过的位图）
             Console.Error.WriteLine($"S2A 虚拟手柄：游戏这次最多收 {_padCap} 人，从 {_pads} 个收回到 {_padCap} 个（多连的手柄不分给游戏）");
             _pads = _padCap;
             SetPrimary(device, _player, _type);
@@ -291,12 +329,17 @@ namespace S2A.Services
                         _slotTypes[i] = many[i].Type;
                         next = next == PlayerIndex.Player8 ? PlayerIndex.Player1 : next + 1;
                     }
-                    device.Hid.Npads.Configure(many);
+                    int used = 0;
+                    int mask = _physicalMask;
+                    for (int i = 0; i < many.Length; i++)
+                        if (mask < 0 || (mask & (1 << i)) != 0) many[used++] = many[i];
+                    device.Hid.Npads.Configure(many.AsSpan(0, used));
                     if (alternate) Console.Error.WriteLine($"S2A 虚拟手柄：左右单只交替配 {_pads} 格（一号右只、二号左只）");
                 }
                 else
                 {
-                    device.Hid.Npads.Configure(new ControllerConfig { Player = player, Type = type });
+                    if (_physicalMask >= 0 && (_physicalMask & 1) == 0) device.Hid.Npads.Configure();
+                    else device.Hid.Npads.Configure(new ControllerConfig { Player = player, Type = type });
                     _slotTypes[0] = type;
                 }
                 _device = device;
@@ -349,7 +392,9 @@ namespace S2A.Services
             }
 
             // 主 App 的纯 C 查询不加载可选 BLE 模块；只有真实 READY 会话才创建反馈对象。
-            if (NativeLibrary.TryGetExport(NativeLibrary.GetMainProgramHandle(), "s2a_pad_rumble_session", out nint session))
+            if (Feedback.RumbleSession != 0)
+                _rumbleSession = (delegate* unmanaged<ulong>)Feedback.RumbleSession;   // 平台登记（安卓）
+            else if (NativeLibrary.TryGetExport(FeedbackProgram, "s2a_pad_rumble_session", out nint session))
                 _rumbleSession = (delegate* unmanaged<ulong>)session;
             // Mac 宿主只导出六轴、没有震动会话：反馈对象照建，只走六轴
             else _motionOnly = ControllerFeedback.MotionExport(out _);
@@ -370,6 +415,11 @@ namespace S2A.Services
                     _vpadReadPad = (delegate* unmanaged<int, int*, uint>)vpp;
                 if (NativeLibrary.TryGetExport(NativeLibrary.GetMainProgramHandle(), "s2a_vpad_pad_count", out nint vpc))   // 平台例外：同上
                     _vpadPadCount = (delegate* unmanaged<int>)vpc;
+                if (NativeLibrary.TryGetExport(NativeLibrary.GetMainProgramHandle(), "s2a_vpad_player_mask", out nint vpm))   // 平台例外：同上
+                    PlayerMask = (delegate* unmanaged<int>)vpm;
+                // 游戏人数上限告诉宿主：顺序表里的空位不占名额（D-VYNF：「P1 空、P2 空、P3 手柄」+ 游戏只收 1 人 → 一个手柄都没配上，手柄设置小程序无限重弹黑屏）
+                if (NativeLibrary.TryGetExport(NativeLibrary.GetMainProgramHandle(), "s2a_vpad_set_cap", out nint vcap))   // 平台例外：宿主（runtime/src/pad.c）导出，Mac / iOS 同一份
+                    _vpadSetCap = (delegate* unmanaged<int, void>)vcap;
                 // 触屏直通：iOS 壳（ios/vpad.m，仅触屏方案的手指）与 Mac 游戏窗口（macos/front_mac.m，鼠标左键点画面）导出 s2a_vpad_read_touch；没导出的宿主保持为空、不碰触摸屏。
                 if (NativeLibrary.TryGetExport(NativeLibrary.GetMainProgramHandle(), "s2a_vpad_read_touch", out nint vtouch))
                     _vpadTouch = (delegate* unmanaged<int*, uint*, int>)vtouch;
@@ -431,8 +481,11 @@ namespace S2A.Services
             _configurationGeneration = 0;
             _player = PlayerIndex.Handheld;
             _type = ControllerType.Handheld;
+            _physicalMask = -1;
+            _everLive = 0;
             _pads = EnvPads;
             _padCap = MaxPads;   // 上一局小程序给的上限不带进下一局
+            PublishCap();
             _second = PlayerIndex.Unknown;
             _lastSticks = default;
             _movedOffHandheld = false;   // 审计 P1-94：上一局「挪出掌机格」不带进下一局（同进程重启）
@@ -472,6 +525,9 @@ namespace S2A.Services
         // 11-04 维护者定：宿主前端的 s2a_vpad_touch_configured（iOS ios/touch_config.m、Mac macos/front_mac.m）。游戏调了 SetTouchScreenConfiguration
         //   （Ryujinx 补丁 hid-touch-config-mode 记进 Hid.Touchscreen.ConfiguredMode，-1 = 没调过）后每次 HID 提交递一次模式：
         //   壳返回 0 = 还没出首帧，下次再递；返回 1 = 收下了（壳自动切仅触屏，玩家手动选过的不切），清空、之后不再递。只在 HID 线程上读写
+        // 震动导出所在的库：鸿蒙引擎是宿主 dlopen 进来的 .so，导出不在主程序里，由平台在起局时登记这个句柄；为 0 时按主程序查。
+        public static nint FeedbackLibraryHandle;
+        internal static nint FeedbackProgram => FeedbackLibraryHandle != 0 ? FeedbackLibraryHandle : NativeLibrary.GetMainProgramHandle();
         internal static delegate* unmanaged<int, int> VPadTouchConfigured;
         internal static void OfferTouchConfigured(int mode)
         {
@@ -789,13 +845,55 @@ namespace S2A.Services
             }
         }
 
+        internal static int ClampMask(int mask, int cap)
+        {
+            if (mask < 0) return -1;
+            int limit = Math.Clamp(cap, 0, MaxPads);
+            return mask & ((1 << limit) - 1);
+        }
+
+        internal static int HighestSlotCount(int mask)
+        {
+            int highest = 0;
+            for (int i = 0; i < MaxPads; i++) if ((mask & (1 << i)) != 0) highest = i + 1;
+            return highest;
+        }
+
+        // HID 条目的固定写入周期（微秒）。每轮循环都 Npads.Update 一次（采样号 +1），所以输入线程最晚每 5 ms 醒一次，
+        //   输入不变时条目也按这个节奏写，同真机 hid 持续采样（SDK 掉样按 5 ms 补，即 200 Hz，见 NpadImu.cs）。
+        //   D-2T9N：原先输入不变时只按 16 ms 心跳写，条目稀疏，实况力量棒球按采样号判十字键连发，菜单十字键慢半拍；
+        //   玩家实测 4 / 8 ms 消失、12 ms 轻微。反馈心跳（_feedback.Update）仍走 16 ms，不随这个周期变。
+        internal const ulong HidSamplePeriodUs = 5_000;
+
+        // 下一个采样格点（纯函数，单测）：固定时间轴上严格晚于 now 的第一个格点；next = 0（首轮）从 now 起算。处理耗时不让时间轴漂移
+        internal static ulong NextSample(ulong next, ulong now) =>
+            next == 0 ? now + HidSamplePeriodUs
+            : next > now ? next
+            : next + ((now - next) / HidSamplePeriodUs + 1) * HidSamplePeriodUs;
+
+        // 实际配给游戏的槽（纯函数，单测）：前 pads 格里，去掉「本局占过（everLive）、现在不在（live）」的；live &lt; 0（宿主没导出位图）→ -1 走原来的连续配法
+        internal static int ConfiguredMask(int pads, int live, int everLive)
+        {
+            if (live < 0) return -1;
+            int all = pads >= 31 ? -1 : (1 << Math.Max(pads, 1)) - 1;
+            return all & ~(everLive & ~live);
+        }
+
+        internal static void FilterConnectedStates(List<GamepadInput> states, List<GamepadInput> connected, int mask)
+        {
+            connected.Clear();
+            for (int i = 0; i < states.Count; i++)
+                if ((mask & (1 << i)) != 0) connected.Add(states[i]);
+        }
+
         private static void Loop(Switch device)
         {
+            List<GamepadInput> connectedStates = new(MaxPads);   // 稀疏槽位模式下复用，零每帧堆分配
             List<GamepadInput> states = new(MaxPads) { default };   // 最多 MaxPads 格（本地多人），一次分配好，不在每帧扩容
             // 每键在第一次 HID 提交后保持 20 ms，让正常 60 Hz 轮询能看到短按。
             // 同键快速连点仍可能合并；不承诺卡帧或低频采样游戏一定读到。
             ButtonVisibility visibility = new();
-            ulong nextHeartbeat = 0;
+            ulong nextHeartbeat = 0, nextSample = 0;
             PadSnapshot uncommitted = default;
             int configuration = Volatile.Read(ref _configurationGeneration);
             int* st = stackalloc int[4];
@@ -806,9 +904,16 @@ namespace S2A.Services
                 Ryujinx.Common.S2AThreadAlloc.Tick("输入");
                 Lifecycle.Tick(Host.Device?.System);   // 焦点 / 底座变化转给游戏（接口 v2.15）
                 if (AutoplayPads != null && AutoplayPads() > _pads) SetPads(device, AutoplayPads());   // 先改配再取主手柄号：两人时主手柄离开掌机格
-                // 本地多手柄：Mac 前端报告接了几只手柄就开到几格（最多 MaxPads），接上第二只手柄即成为玩家 2
+                // 本地多手柄：Mac 前端报告接了几只手柄就开到几格（最多 MaxPads），接上第二只手柄即成为玩家 2；
+                //   导出玩家槽位图时按位图配置，允许中间有空槽（某位断连时其他玩家留在原位）
                 int livePads = _vpadPadCount != null ? _vpadPadCount() : 0;
-                if (livePads > _pads && livePads <= MaxPads) SetPads(device, livePads);
+                int liveMask = ClampMask(PlayerMask != null ? PlayerMask() : -1, _padCap);
+                if (liveMask > 0) _everLive |= liveMask;
+                int neededPads = Math.Max(livePads, liveMask > 0 ? HighestSlotCount(liveMask) : 0);
+                if (neededPads > _pads && neededPads <= MaxPads) SetPads(device, neededPads);   // SetPads 里按 _physicalMask 配，先开格再定位图
+                int effectiveMask = ConfiguredMask(_pads, liveMask, _everLive);
+                if (effectiveMask != _physicalMask) { _physicalMask = effectiveMask; SetPrimary(device, _player, _type); }
+                device.System.S2ASetLocalMultiplayer(neededPads >= 2);   // 实接 ≥ 2 只（或高槽位仍在玩）：游戏看到主机运行模式；变化时同真机插拔底座发通知
                 if (Environment.TickCount64 >= nextFollow) { FollowNow(device); nextFollow = Environment.TickCount64 + 250; }
 
                 GamepadInput input = new() { PlayerId = _player };
@@ -820,7 +925,7 @@ namespace S2A.Services
                 if (eventInput)
                 {
                     _padReadEx(&snapshot);
-                    if (OperatingSystem.IsIOS() && !_externalController && snapshot.Source is 1 or 2)
+                    if ((OperatingSystem.IsIOS() || OperatingSystem.IsTvOS()) && !_externalController && snapshot.Source is 1 or 2)   // 平台例外：tvOS 同 iOS 走触屏 / 手柄来源判断（Apple TV 一期，遥控器按触屏来源上报）
                     {
                         // 只在首次真实 BLE / 系统手柄出现时改配；断线或后台的触屏快照不撤销偏好。
                         _externalController = true;
@@ -865,8 +970,8 @@ namespace S2A.Services
                 states[0] = input;
                 PlayerIndex second = _second;
                 // 本地多手柄：Mac 前端按槽位各喂一只（槽 0 = 玩家 1），二号起读自己的按键 / 摇杆，不再镜像一号
-                bool realPads = UsePerPadInput(_vpadReadPad != null, _pads, second, livePads);
-                if (realPads)
+                bool realPads = UsePerPadInput(_vpadReadPad != null, _pads, second, neededPads);
+                if (realPads || ((_everLive & ~1) != 0 && _vpadReadPad != null && _pads > 1 && second != PlayerIndex.Unknown))   // 二号起有过实体手柄才按槽读；从没有过（小程序 / 自动玩家开的格）照旧镜像
                 {
                     FillPadStates(states, _pads, second, _vpadReadPad, AutoplayKeys2 != null ? AutoplayKeys2() : 0);
                     for (int k = 1; k < states.Count; k++)
@@ -897,7 +1002,15 @@ namespace S2A.Services
                 //   按着的键在开框这一帧起按松开报，收框后照常
                 if (TextInput.Open)
                     for (int i = 0; i < states.Count; i++) states[i] = new GamepadInput { PlayerId = states[i].PlayerId };
-                device.Hid.Npads.Update(states);
+                if (effectiveMask < 0)
+                {
+                    device.Hid.Npads.Update(states);
+                }
+                else
+                {
+                    FilterConnectedStates(states, connectedStates, effectiveMask);
+                    device.Hid.Npads.Update(connectedStates);
+                }
                 if (_kbRead != null) PushKeyboard(device);   // R5 键盘区：宿主喂了才写（没喂的宿主同改前）
                 Cheats.SetKeys(states[0].Buttons);   // 金手指按键条件码看一号手柄（与 Ryujinx TamperMachine 同口径）
                 // A platform hook owns the HID touch ring (Android stable IDs);
@@ -922,7 +1035,9 @@ namespace S2A.Services
                 }
                 if (eventInput)
                 {
-                    ulong deadline = visibility.Deadline(snapshot.Buttons, _padNow(), nextHeartbeat);
+                    ulong waitNow = _padNow();
+                    nextSample = NextSample(nextSample, waitNow);
+                    ulong deadline = Math.Min(visibility.Deadline(snapshot.Buttons, waitNow, nextHeartbeat), nextSample);
                     // Stop/改配可能发生在本轮 read 后、wait 前，显式检查并由序号兜住此窗口。
                     if (!_stop && configuration == Volatile.Read(ref _configurationGeneration))
                         _padWait(snapshot.NotificationSeq, deadline);

@@ -668,6 +668,31 @@ int s2a_session_prepare(void) {
     return rc ? -1 : 0;
 }
 
+#if defined(__APPLE__)
+// 即时存档恢复中途失败后重新开局（host_main.c）：等当前这次起局 / 重建完成、会话进了运行态，再发一次普通的进程内重启（调用方已清掉 S2A_SNAP_RESTORE，
+//   新局从头起）。会话还在起 / 重建中时 s2a_host_restart 回 -3，隔 100 ms 再试；别的拒绝（宿主终局、缺导出等）没法重开，按原来的做法退出
+static void fresh_restart_done(int result, const char *detail, void *context) {
+    (void)context; LOG("%s即时存档：恢复失败后重新开局%s：%s", result ? "【红】" : "", result ? "失败" : "完成", detail ? detail : "");
+}
+static void *fresh_restart_worker(void *unused) {
+    (void)unused; pthread_setname_np("s2a-重新开局");
+    for (int i = 0; i < 600; i++) {
+        int rc = s2a_host_session_state() == S2A_SESSION_RUNNING ? s2a_host_restart(fresh_restart_done, NULL) : -3;
+        if (rc == 0) return NULL;
+        if (rc != -3) { LOG("【红】即时存档：恢复失败后重新开局没被接受（%d），退出（游戏存档未被改动）", rc); s2a_logcon_flush(); _exit(6); }
+        usleep(100000);
+    }
+    LOG("【红】即时存档：恢复失败后 60 秒内会话没进运行态，没法重新开局，退出（游戏存档未被改动）"); s2a_logcon_flush(); _exit(6);
+}
+void s2a_logcon_flush(void);
+void s2a_session_fresh_restart(void) {
+    pthread_t t; pthread_attr_t a; pthread_attr_init(&a); pthread_attr_setdetachstate(&a, PTHREAD_CREATE_DETACHED);
+    if (pthread_create(&t, &a, fresh_restart_worker, NULL)) { LOG("【红】即时存档：起不了重新开局线程，退出"); s2a_logcon_flush(); _exit(6); }
+    pthread_attr_destroy(&a);
+}
+#else
+void s2a_session_fresh_restart(void) { s2a_logcon_flush(); _exit(6); }
+#endif
 int s2a_host_restart(s2a_restart_callback callback, void *context) {
     if (pthread_mutex_trylock(&g_request_mu)) return -3;
     int state = s2a_host_session_state();

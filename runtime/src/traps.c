@@ -1,10 +1,12 @@
 // 双补丁岛的 brk 兜底（原生层 10-30）：改写器双岛模式下，前岛（基址前）和后岛（键页后）都够不着的必改点原地写成 brk #(0x8000 + 序号)，
 //   点表在 fixups.tsv 的 # TRAP 行（loader.c 读进 module_t.traps）。执行到时 SIGTRAP（crash.c 先问这里）：按序号查表、核模块与偏移，
-//   照补丁区里那个点本来的块模拟原指令（与 runtime/rewriter/rewriter.c gensite 同语义），然后 pc += 4：
+//   照补丁区里那个点本来的块模拟原指令（与 native/rewriter/rewriter.c gensite 同语义），然后 pc += 4：
 //     tpidr_r   mrs xN, tpidr_el0    → xN = 线程槽 KTLS（线程槽基址 + 键页 KTLS 偏移，与块里 tp() + slot() 同一取法）
 //     tpidrro_r mrs xN, tpidrro_el0  → xN = 线程槽 KTLR
 //     tpidr_w   msr tpidr_el0, xN    → 线程槽 KTLS = xN
 //     ctr       mrs xN, ctr_el0      → xN = Switch 常数 0x8444C004
+//     as_aslr_lo / as_aslr_hi   36 位老 SDK 构造可随机区分配器的起点 / 终点常数（原 [0x8000000, 2^36)）→ xN = 本局可随机区起 / 止
+//     as_stack_lo / as_stack_hi 同上线程栈区（原 [0x8000000, 0x80000000)）→ xN = 本局栈区起 / 止（改写器 sdk_as36_ranges，#1503；起局各走一次）
 //   N = 31 时读丢弃、写 0（xzr）。每点记命中次数，收局打一行（s2a_trap_report）；热点要另想办法（单次陷入约几 µs）。
 #include "native.h"
 #include <signal.h>
@@ -14,7 +16,7 @@
 static uint64_t slot_base(void) {
 #if defined(__aarch64__)
     uint64_t t;
-#if defined(__ANDROID__)
+#if (defined(__ANDROID__) || defined(__OHOS__))
     __asm__ volatile("mrs %0, tpidr_el0" : "=r"(t));
     return *(const uint64_t *)(t - 8);
 #else
@@ -25,7 +27,7 @@ static uint64_t slot_base(void) {
     return 0;
 #endif
 }
-#if defined(__ANDROID__)
+#if (defined(__ANDROID__) || defined(__OHOS__))
 #define REG(uc, n) ((uc)->uc_mcontext.regs[n])
 #define PC(uc) ((uc)->uc_mcontext.pc)
 #else
@@ -89,6 +91,11 @@ int s2a_trap_brk(void *ctx) {
     case S2A_TRAP_CTR:
         if (n != 31) REG(uc, n) = 0x8444C004u;
         break;
+    case S2A_TRAP_ASLR_LO: case S2A_TRAP_ASLR_HI: case S2A_TRAP_STACK_LO: case S2A_TRAP_STACK_HI: {   // 信号里不打日志；命中次数收局报（s2a_trap_report）
+        uint64_t lo, hi;
+        if (s2a_mem_as_region(t->kind >= S2A_TRAP_STACK_LO, &lo, &hi)) return 0;   // 布局没定不认领：照游戏 brk 走崩溃报告，写明点位
+        if (n != 31) REG(uc, n) = t->kind == S2A_TRAP_ASLR_HI || t->kind == S2A_TRAP_STACK_HI ? hi : lo;
+        break; }
     default:
         return 0;
     }
@@ -119,7 +126,7 @@ static void far_report(const char *when, module_t *m) {   // 远跳：入口被�
 }
 
 void s2a_trap_report(const char *when) {
-    static const char *const kn[] = {"tpidr_r", "tpidrro_r", "tpidr_w", "ctr"};
+    static const char *const kn[S2A_TRAP_NKIND] = {"tpidr_r", "tpidrro_r", "tpidr_w", "ctr", "as_aslr_lo", "as_aslr_hi", "as_stack_lo", "as_stack_hi"};
     for (int i = 0; i < g_nmod; i++) {
         module_t *m = &g_mod[i];
         if (m->nfar) far_report(when, m);
@@ -128,9 +135,9 @@ void s2a_trap_report(const char *when) {
         for (unsigned j = 0; j < m->ntrap; j++) {
             uint64_t h = __atomic_load_n(&m->traps[j].hits, __ATOMIC_RELAXED); sum += h;
             if (j < 48 && k < sizeof b - 64)
-                k += (size_t)snprintf(b + k, sizeof b - k, " +%#llx/%s×%llu", (unsigned long long)m->traps[j].off, kn[m->traps[j].kind & 3], (unsigned long long)h);
+                k += (size_t)snprintf(b + k, sizeof b - k, " +%#llx/%s×%llu", (unsigned long long)m->traps[j].off, m->traps[j].kind < S2A_TRAP_NKIND ? kn[m->traps[j].kind] : "?", (unsigned long long)h);
         }
         b[k] = 0;
-        LOG("%s：%s 双补丁岛 brk 兜底 %u 处，共命中 %llu 次：%s%s", when, m->name, m->ntrap, (unsigned long long)sum, b, m->ntrap > 48 ? " …" : "");
+        LOG("%s：%s brk 兜底 %u 处，共命中 %llu 次：%s%s", when, m->name, m->ntrap, (unsigned long long)sum, b, m->ntrap > 48 ? " …" : "");
     }
 }

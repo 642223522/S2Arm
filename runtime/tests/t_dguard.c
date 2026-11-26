@@ -116,6 +116,18 @@ int main(void) {
     CASE("反证：不 arm 的起局崩了不算（计数只靠 arm 落盘）", {
         LAUNCH({ s2a_dguard_begin(PID, "aaaa", "h1"); CRASHED; });
         WANT(begin_count(PID, "aaaa", "h1") == 0); });
+    CASE("已知归因（D-GYNE：游戏地址超出窗口）的崩溃不计连续失败；最后一局是它时起局前要起界面（换说明页），之后一局真崩照常计", {
+        for (int i = 0; i < 3; i++) LAUNCH({ s2a_dguard_begin(PID, "aaaa", "h1"); s2a_dguard_arm(0); s2a_dguard_known("地址超出窗口"); });
+        WANT(begin_count(PID, "aaaa", "h1") == 0);   // 3 次都是已知归因：一次不计，不弹「更新后重新出包」
+        char why[48] = ""; WANT(s2a_dguard_known_last(why, sizeof why)); WANT(strstr(why, "地址超出窗口") != NULL);
+        WANT(s2a_dguard_needs_ui());   // 换说明页：起局前要起界面
+        LAUNCH({ s2a_dguard_begin(PID, "aaaa", "h1"); s2a_dguard_arm(0); CRASHED; });
+        WANT(begin_count(PID, "aaaa", "h1") == 1); WANT(!s2a_dguard_known_last(NULL, 0));   // 最后一局是直连崩溃：计 1，不再是已知归因
+        WANT(!s2a_dguard_needs_ui()); });
+    CASE("已知归因之后玩满 60 秒清零：已知归因也一起清掉", {
+        LAUNCH({ s2a_dguard_begin(PID, "aaaa", "h1"); s2a_dguard_arm(0); s2a_dguard_known("地址超出窗口"); });
+        LAUNCH({ s2a_dguard_begin(PID, "aaaa", "h1"); s2a_dguard_arm(0); s2a_dguard_frame(0); s2a_dguard_frame(61 * S); });
+        WANT(begin_count(PID, "aaaa", "h1") == 0); WANT(!s2a_dguard_known_last(NULL, 0)); WANT(!s2a_dguard_needs_ui()); });
     if (fails) { printf("✗ t_dguard：%d 例不通\n", fails); return 1; }
-    printf("✓ t_dguard：16 例全过\n"); return 0;
+    printf("✓ t_dguard：18 例全过\n"); return 0;
 }

@@ -14,6 +14,8 @@
 #include "direct/s2a_direct.h"
 #include "direct/vk_device.h"
 #include "gfx_plat/nvk_session.h"
+#include "nvn/nvn_vk_frame_log.h"
+#include "nvk_land_auto_fixture.h"
 #include "provider_context.h"
 #define TAG "test"
 #define ANDROID_LOG_INFO 4
@@ -31,6 +33,7 @@ static void pause_ms(void) { struct timespec t = {0, 1000000}; nanosleep(&t, NUL
 static int __android_log_print(int level, const char *tag, const char *fmt, ...) { (void)level; (void)tag; va_list ap; va_start(ap, fmt); int r = vsnprintf(last_log, sizeof last_log, fmt, ap); va_end(ap); return r; }
 int nvk_session_wait_compiles(void) { return 0; }
 void nvk_session_flush_pipe_cache(void) {}
+void nvn_vk_frame_log_dump_retained(void) {}  // 实际转储由 nvk_compile_stop_test 验证
 void nvk_session_request_stop(void) { if (!test_deadline) test_deadline = (uint64_t)ctl_now_ns() + NVK_SHUTDOWN_BUDGET_NS; }
 uint64_t nvk_session_stop_deadline(void) { return test_deadline; }
 static void diag_log_manifest(const char *a, const char *b) { (void)a; (void)b; }
@@ -59,7 +62,13 @@ int main(int argc, char **argv) {
     struct provider_context *ctx = calloc(1, sizeof *ctx); if (!ctx) return 2;
     ctx->state = S2A_DIRECT_ACTIVE; ctx->engine_ok = !strcmp(argv[1], "active"); ctx->device_ok = 1; g_active_context = ctx;
     if (ctx->engine_ok) {
+        g.land_auto = g.land_readback = 1;
+        pthread_mutex_lock(&g_mu);  // A retained renderer may still own the backend lock.
         int rc = destroy_impl(ctx);
+        pthread_mutex_unlock(&g_mu);
+        if (lines != 1 || !strstr(decision, "phase=exit mode=0 reason=insufficient_samples ")) {
+            fprintf(stderr, "FAIL: retained destroy must emit the auto exit decision\n"); return 1;
+        }
         printf("active: rc=%d close=%d idle=%d destroy=%d free=%d retained=%d\n", rc, atomic_load(&close_calls), atomic_load(&idle_entered), atomic_load(&device_destroys), atomic_load(&frees), g_retained_context == ctx);
         if (rc != S2A_DIRECT_RES_RETIREMENT || atomic_load(&close_calls) || atomic_load(&idle_entered) || atomic_load(&device_destroys) || atomic_load(&frees) || g_retained_context != ctx) {
             fprintf(stderr, "FAIL: active session must retain backend and device until process exit\n"); return 1;

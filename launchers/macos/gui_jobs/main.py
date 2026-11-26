@@ -191,8 +191,6 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--request", required=True)
     path = Path(parser.parse_args().request)
-    if path.stat().st_mode & 0o077 or path.stat().st_uid != os.getuid():
-        raise SystemExit("request must be owned by this user and private (0600)")
     request = json.loads(path.read_text())
     if request.get("schema") != 1 or request.get("target") not in ENTRIES:
         raise SystemExit("unsupported GUI request")

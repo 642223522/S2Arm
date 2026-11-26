@@ -16,8 +16,10 @@ int main(void) { @autoreleasepool {
         CK(S2APlaySplitEnabled(S2APlaySplitOn,half),"开启不受姿态限制");
         CK(!S2APlaySplitEnabled(S2APlaySplitOff,half),"关闭不受姿态限制");
     }
+    // #2179「自动」不半折时：竖着且 16:9 画面按安全区宽放得进上半区（上半区高 ≥ 安全区宽 × 9/16）就分屏。期望手算：
+    //   669×951、安全区顶 62：上半区 475.5 − 62 = 413.5 ≥ 669 × 0.5625 = 376.3 → 分；带着横向折痕区（455.5 起 40 高）就按折痕分：上 0,62 669×393.5、下 0,495.5 669×421.5
     S2APlayLayout l=S2APlayLayoutMake(b,safe,S2APlaySplitAuto,NO,fold);
-    CK(!l.split && CGRectEqualToRect(l.game,b),"竖屏和折痕区域本身都不触发自动分屏");
+    CK(l.split && rect(l.game,0,62,669,393.5) && rect(l.controls,0,495.5,669,421.5),"竖着、上半区放得下 16:9：自动也分屏（不再只看半折），有折痕按折痕分");
     l=S2APlayLayoutMake(b,safe,S2APlaySplitAuto,YES,fold);
     CK(l.split && rect(l.game,0,62,669,393.5),"半折上区扣除顶部安全区及折痕");
     CK(rect(l.controls,0,495.5,669,421.5),"半折下区扣除折痕及底部安全区");
@@ -87,14 +89,34 @@ int main(void) { @autoreleasepool {
     S2APlayPublishSplit(NO);
     [d setObject:@"on" forKey:@"splitScreen"]; S2APlayReadSplit(d);
     CGRect phone=CGRectMake(0,0,420,912), phoneSafe=CGRectMake(0,62,420,816);
-    for (S2APlaySplitMode mode=S2APlaySplitAuto;mode<=S2APlaySplitOff;mode+=2) {
-        l=S2APlayLayoutMake(phone,phoneSafe,mode,NO,CGRectNull);
-        CK(!l.split && CGRectEqualToRect(l.game,phone) && CGRectEqualToRect(l.controls,phoneSafe) && S2APlayPortrait(S2APlayOrientationPortrait,l.split),"普通手机手动竖屏、自动或关闭分屏时仍为整竖屏画面与叠加按键");
-    }
+    l=S2APlayLayoutMake(phone,phoneSafe,S2APlaySplitOff,NO,CGRectNull);
+    CK(!l.split && CGRectEqualToRect(l.game,phone) && CGRectEqualToRect(l.controls,phoneSafe) && S2APlayPortrait(S2APlayOrientationPortrait,l.split),"普通手机竖屏、分屏关：仍为整竖屏画面与叠加按键");
+    // 五种「自动」情况（期望手算，上半区高 = 视图中线 − 安全区顶，要 ≥ 安全区宽 × 9/16）：
+    //   ① 普通 iPhone 竖屏（#2179 iPhone 18 Pro Max 真机读数 440×956、安全区 上 62 下 34）：478 − 62 = 416 ≥ 247.5 → 分，上 0,62 440×416、下 0,478 440×444
+    l=S2APlayLayoutMake(CGRectMake(0,0,440,956),CGRectMake(0,62,440,860),S2APlaySplitAuto,NO,CGRectNull);
+    CK(l.split && rect(l.game,0,62,440,416) && rect(l.controls,0,478,440,444),"① 普通 iPhone 竖屏，自动：上画面下按键");
+    //   ② 普通 iPhone 横屏（同机 956×440、安全区 左右 62 下 20）：不竖 → 不分，整屏画面
+    l=S2APlayLayoutMake(CGRectMake(0,0,956,440),CGRectMake(62,0,832,420),S2APlaySplitAuto,NO,CGRectNull);
+    CK(!l.split && rect(l.game,0,0,956,440),"② 普通 iPhone 横屏，自动：不分屏");
+    //   ③ 折叠屏半开：照旧分（上面「半折上区」那组）；④ 折叠屏全开内屏近方（如 900×960、安全区顶 24）：480 − 24 = 456 < 900 × 0.5625 = 506.25 → 不分
+    l=S2APlayLayoutMake(CGRectMake(0,0,900,960),CGRectMake(0,24,900,916),S2APlaySplitAuto,NO,CGRectNull);
+    CK(!l.split,"④ 近方的大屏全开，自动：上半区放不下 16:9，不分");
+    //   ⑤ iPad 竖屏（768×1024、安全区顶 24 下 20）：512 − 24 = 488 ≥ 432 → 分，上 0,24 768×488、下 0,512 768×492
+    l=S2APlayLayoutMake(CGRectMake(0,0,768,1024),CGRectMake(0,24,768,980),S2APlaySplitAuto,NO,CGRectNull);
+    CK(l.split && rect(l.game,0,24,768,488) && rect(l.controls,0,512,768,492),"⑤ iPad 竖屏，自动：同一规则，上画面下按键");
+    //   iPad 横屏（1024×768）：不竖 → 不分
+    l=S2APlayLayoutMake(CGRectMake(0,0,1024,768),CGRectMake(0,24,1024,724),S2APlaySplitAuto,NO,CGRectNull);
+    CK(!l.split,"iPad 横屏，自动：不分屏");
     l=S2APlayLayoutMake(phone,phoneSafe,S2APlaySplitOn,NO,CGRectNull);
     CK(l.split && rect(l.game,0,62,420,394) && rect(l.controls,0,456,420,422) && S2APlayPortrait(S2APlayOrientationAuto,l.split),"普通手机强制分屏也可自动竖屏、上画面下按键");
     CK(!s2a_ios_split_active(),"读取偏好和纯几何预览不提前发布运行时分屏");
+    // 倒着拿（期望按定义手算；内屏数据取自 iPhone Duo 模拟器 iOS 27.1：设备 2 → 界面 3、设备 1 → 界面 4、设备 3 → 界面 1，设备 4 时界面不转）
+    CK(S2APlayLearnK(2,3)==270 && S2APlayLearnK(1,4)==270 && S2APlayLearnK(3,1)==-1 && S2APlayLearnK(5,3)==-1,"学差值：内屏横屏两次都学到 270°；竖屏、平放不学");
+    CK(S2APlayLearnK(3,3)==0 && S2APlayLearnK(4,4)==0,"学差值：普通手机 / 外屏横屏是 0°");
+    CK(S2APlayHoldAction(4,1,270)==1 && S2APlayHoldAction(3,1,270)==0 && S2APlayHoldAction(4,3,270)==2,"内屏：设备 4 该倒置竖屏、停在正竖屏转 180°、停在横屏先申请竖屏；设备 3 正常");
+    CK(S2APlayHoldAction(2,1,0)==1 && S2APlayHoldAction(1,1,0)==0 && S2APlayHoldAction(2,2,0)==0 && S2APlayHoldAction(3,3,0)==0,"外屏：倒着拿停在正竖屏转 180°；系统真转了倒置、正着、横屏都不动");
+    CK(S2APlayHoldAction(5,1,0)==-1 && S2APlayHoldAction(2,1,-1)==-1,"平放 / 差值没学到：保持原样");
     [d removePersistentDomainForName:suite];
-    printf("%s t_play_layout：%d/%d 项符合（开关、区域、方向、上区宽屏比例）\n",bad?"✗":"✓",checks-bad,checks);
+    printf("%s t_play_layout：%d/%d 项符合（开关、区域、方向、上区宽屏比例、倒着拿）\n",bad?"✗":"✓",checks-bad,checks);
     return bad?1:0;
 } }

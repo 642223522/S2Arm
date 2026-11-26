@@ -22,6 +22,27 @@ rewriter = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(rewriter)
 
 
+# test_real_inputs_enter_the_key 的仓库副本：改写阶段与能力清单阶段实际读的文件（逐个列，不拷整目录）
+STAGE_INPUTS = (
+    "pack/stage_rewrite.sh", "pack/stage_caps.sh", "pack/gen_caps.sh", "pack/roots.sh", "pack/stage_keyfiles.sh",
+    "pack/stage_inputs/equiv.tsv", "pack/patch_ship.sh", "pack/rewriter.py", "pack/cpatch.py", "pack/pkg_srcs.py",
+    "pack/resource_input_key.py", "pack/rewrite_degrade.py", "pack/orch/current.py",
+    "runtime/rewriter/CMakeLists.txt", "runtime/rewriter/main.c", "runtime/rewriter/rewriter.c", "runtime/rewriter/rewriter.h",
+    "runtime/rewriter/prepare_deps.py", "runtime/rewriter/nro_to_nso.py",
+    "runtime/src/caps.c", "runtime/src/cpatch.c", "runtime/src/fps.c", "runtime/src/widen.c",
+    "graphics/metal/fit_judge.h", "graphics/metal/gal_present.m",
+    "graphics/nvn/games/profile_guess.py", "graphics/nvn/tools/gfx_api.py", "graphics/nvn/tools/lz4blk.py",
+    "graphics/nvn/tools/nso_syms.py", "graphics/nvn/tools/romfs_list.py",
+    "graphics/widen/WidenFrame.cs", "graphics/widen/WidenSession.cs", "graphics/widen/export/s2a_widen.h",
+    "graphics/widen/scan/auto_pkg.sh", "graphics/widen/scan/wide_scan.py", "graphics/widen/tables/verified.tsv",
+    "tools/.gitignore", "tools/machine.sh", "tools/plock.sh", "tools/stage_deps.py",
+    "tools/stage_deps_hook/sitecustomize.py",
+    "tools/addr_need.py", "tools/caps_policy.py", "tools/clonedir.py", "tools/direct_shards.py", "tools/flock_hold.py",
+    "tools/fps_generic.py", "tools/fps_relocate.py", "tools/fps_warehouse.py", "tools/nostall.py", "tools/nro_exports.py",
+    "tools/nso_plain.py", "tools/pool_workers.py", "tools/progress.py", "tools/reglist.py", "tools/ue_cvar_loc.py", "tools/widen_accept.py",
+)
+
+
 def hashes(root):
     return {str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest()
             for p in root.rglob("*") if p.is_file()}
@@ -184,9 +205,13 @@ class PackagingRewrite(unittest.TestCase):
         (initial / "exefs/rtld").write_bytes(b"not-an-nso: must be skipped")
         # exefs 里不是代码模块的文件（11-02 普查 010020D01B890000 的文本 main.moduleconfig）：只改写宿主装载的 main / subsdk0–9 / sdk
         (initial / "exefs/main.moduleconfig").write_bytes(b"VIA_MODULE_AUDIORENDER;VIA_MODULE_GRAPHICS")
-        self.link = initial.parent / "probe@现行"
-        self.link.symlink_to(initial.name, target_is_directory=True)
+        self.link = initial.parent / "probe@现行"   # 现行指针文件（pack/orch/current.py）：内容 = 版本目录名
+        self.link.write_text(initial.name + "\n")
         self.env = dict(self.env, S2A_ROOTS=str(initial.parent))
+
+    def cur(self):
+        """现行版本的实际目录：读指针文件"""
+        return self.link.parent / self.link.read_text().strip()
 
     def stage(self, expected=0, **options):
         result = subprocess.run(["bash", str(ROOT / "pack/stage_rewrite.sh"), "probe"],
@@ -202,7 +227,7 @@ class PackagingRewrite(unittest.TestCase):
         return result.stdout.strip()
 
     def artifacts(self):
-        root = self.link.resolve()
+        root = self.cur()
         return {p.name: p.read_bytes() for p in root.iterdir()
                 if p.suffix in (".bin", ".tsv") and p.name.split(".")[0] in ("main", "sdk")}
 
@@ -211,8 +236,8 @@ class PackagingRewrite(unittest.TestCase):
         self.assertNotIn("跳过", text)
         before = self.artifacts()
         self.assertEqual(len(before), 10)
-        self.assertFalse((self.link / "rtld.patched.bin").exists())
-        self.assertFalse((self.link / "main.moduleconfig.patched.bin").exists())
+        self.assertFalse((self.cur() / "rtld.patched.bin").exists())
+        self.assertFalse((self.cur() / "main.moduleconfig.patched.bin").exists())
         self.assertIn("跳过", self.stage())
         self.assertEqual(before, self.artifacts())
         self.assertIn("跳过", self.stage(S2A_REWRITER_DEPS=str(self.base / "absent")))
@@ -221,10 +246,10 @@ class PackagingRewrite(unittest.TestCase):
         # v0.3.1 拿不准不停：改写有缺口（退出码 3、产物照出）不再中止事务；新版本切成现行，缺口按类写进 degrade.rewrite.tsv、打【黄】（v0.3.0 起这里是 rc=1、现行不动）
         good = self.good.read_bytes()
         self.stage()
-        current = self.link.resolve()
+        current = self.cur()
         corpus.nso([0xd503207f, 0xd65f03c0], {}, 8, str(current / "exefs/main"))
         text = self.stage(S2A_TARGET="android")
-        new = self.link.resolve()
+        new = self.cur()
         self.assertNotEqual(current, new)
         self.assertTrue((new / "main.patched.bin").is_file())
         self.assertIn("【黄】probe 改写降级继续：没改写的缺口 1 处", text)
@@ -235,17 +260,17 @@ class PackagingRewrite(unittest.TestCase):
         self.assertEqual(list(new.parent.glob("*.tmp")), [])
         (new / "exefs/main").write_bytes(good)   # 改回无缺口的输入：降级表随新版本消失
         self.stage(S2A_TARGET="android")
-        self.assertFalse((self.link.resolve() / "degrade.rewrite.tsv").exists())
+        self.assertFalse((self.cur() / "degrade.rewrite.tsv").exists())
 
     def test_missing_c_and_invalid_backend_never_fall_back(self):
-        current = self.link.resolve()
+        current = self.cur()
         before = hashes(current)
         self.assertIn("不可执行", self.stage(expected=1, S2A_REWRITER_C=str(self.base / "missing")))
         self.assertIn("只认 c", self.stage(expected=1, S2A_REWRITER="typo"))
         text = self.stage(expected=1, S2A_REWRITER_CACHE=str(self.directory / "empty-cache"),
                           CC=str(self.directory / "missing-compiler"))
         self.assertIn("【红】改写器", text)
-        self.assertEqual(current, self.link.resolve())
+        self.assertEqual(current, self.cur())
         self.assertEqual(before, hashes(current))
         self.assertEqual(list(current.parent.glob("*.tmp")), [])
         # Python 改写器已删除（10-31）：显式要 python 也只报红，不回退
@@ -289,7 +314,7 @@ class PackagingRewrite(unittest.TestCase):
         self.assertIn("指纹不符", self.stage(expected=1, **absent))
 
     def test_key_only_does_not_build_or_write_roots(self):
-        current = self.link.resolve()
+        current = self.cur()
         before = hashes(current)
         keys = self.directory / "keys.tsv"
         cache = self.directory / "not-created"
@@ -302,13 +327,11 @@ class PackagingRewrite(unittest.TestCase):
     def test_real_inputs_enter_the_key(self):
         # 10-30 根修：改写阶段实际跑过的生成器记进 .stage_rewrite.deps 并进键（原先手工列名单，fps_warehouse / profile_guess 等漏了，热出包跳过改写用旧产物）。
         #   在仓库最小副本里跑（git 提交一次，树对象号才取得到），逐个改真实生成器：键必须变、不跳过；只算键模式（P4 快路径比键用）与落盘的键一致
+        #   副本只放这两个阶段实际读的文件（bash 脚本 + .stage_rewrite.deps / .stage_caps.deps 里 R: 那些 + 改写器编译输入），不拷整目录：
+        #   本用例读到的仓库文件都会进门禁缓存键，拷整目录让近千个无关文件的改动也重跑它。拷少了阶段报红（缺模块 / 缺脚本）或下面的清单断言红，不会假绿
         repo = self.directory / "repo"
-        listed = subprocess.run(["git", "-C", str(ROOT), "ls-files", "-co", "--exclude-standard", "--", "pack", "tools", "graphics/widen",
-                                 "graphics/nvn/games", "graphics/nvn/tools", "translator", "runtime/rewriter", "runtime/fps", "runtime/src", "graphics/metal", "graphics/widen", "graphics/cpatch", "docs"],
-                                capture_output=True, text=True, check=True).stdout.splitlines()
-        for name in listed:
-            if (ROOT / name).is_file():
-                (repo / name).parent.mkdir(parents=True, exist_ok=True); shutil.copy2(ROOT / name, repo / name)
+        for name in STAGE_INPUTS:
+            (repo / name).parent.mkdir(parents=True, exist_ok=True); shutil.copy2(ROOT / name, repo / name)
         git = ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@t"]
         subprocess.run(["git", "init", "-q", str(repo)], check=True)
         subprocess.run(git + ["add", "-A"], check=True); subprocess.run(git + ["commit", "-qm", "副本"], check=True)
@@ -320,19 +343,19 @@ class PackagingRewrite(unittest.TestCase):
 
         def key_only():
             keys = self.directory / "keys.tsv"; keys.unlink(missing_ok=True)
-            run(S2A_ROOT_CUR=str(self.link.resolve()), S2A_STAGE_KEYS=str(keys), S2A_REWRITER_DEPS=str(self.base / "absent"))
+            run(S2A_ROOT_CUR=str(self.cur()), S2A_STAGE_KEYS=str(keys), S2A_REWRITER_DEPS=str(self.base / "absent"))
             return keys.read_text().split("\t")[1].strip()
 
-        def stored(): return (self.link / ".stage_rewrite").read_text().strip()
+        def stored(): return (self.cur() / ".stage_rewrite").read_text().strip()
         self.assertNotIn("跳过", run())
-        deps = (self.link / ".stage_rewrite.deps").read_text()
+        deps = (self.cur() / ".stage_rewrite.deps").read_text()
         for name in ("R:tools/fps_generic.py", "R:graphics/nvn/games/profile_guess.py", "R:tools/nro_exports.py", "R:tools/addr_need.py"):
             self.assertIn("f\t" + name + "\t", deps)
-        self.assertNotIn(str(self.link.resolve().parent), deps); self.assertNotIn(str(repo), deps); self.assertNotIn("__pycache__", deps)
+        self.assertNotIn(str(self.cur().parent), deps); self.assertNotIn(str(repo), deps); self.assertNotIn("__pycache__", deps)
         self.assertIn("f\tR:pack/stage_rewrite.sh\t", deps)   # 本阶段脚本也在清单里
         self.assertEqual(key_only(), stored())
         self.assertIn("跳过", run())
-        deps = lambda name="rewrite": (self.link / f".stage_{name}.deps").read_text()
+        deps = lambda name="rewrite": (self.cur() / f".stage_{name}.deps").read_text()
         for gen in ("tools/fps_generic.py", "graphics/nvn/games/profile_guess.py", "tools/nro_exports.py"):
             before, bd = stored(), deps()
             with (repo / gen).open("a") as out:
@@ -347,7 +370,7 @@ class PackagingRewrite(unittest.TestCase):
         self.assertIn("跳过", run())
         # 能力清单阶段同一套：判定代码按实际读入进键（原先手工列 7 个文件）
         self.assertNotIn("跳过", run("caps"))
-        cd = (self.link / ".stage_caps.deps").read_text()
+        cd = (self.cur() / ".stage_caps.deps").read_text()
         self.assertIn("f\tR:tools/caps_policy.py\t", cd); self.assertNotIn("名单_验证账", cd)
         self.assertIn("跳过", run("caps"))
         bd = deps("caps")
@@ -427,7 +450,7 @@ class PackagingRewrite(unittest.TestCase):
         self.assertEqual(len(list(output.iterdir())), 5)
 
     def test_full_stage_comparison_retains_hashes_and_timings(self):
-        source = self.link.resolve()
+        source = self.cur()
         before = hashes(source)
         output = self.directory / "private evidence"
         result = subprocess.run([sys.executable, str(ROOT / "tests/pack_rewrite_compare.py"),

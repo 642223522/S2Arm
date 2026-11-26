@@ -4,45 +4,84 @@
 # 原生层门禁钩子（tools/gate.sh 在仓库根调）：宿主能构建 + 原生层单测全绿。末行「期望 → 真结果」。
 # 子项键（tools/gate.sh 分派 gate-host 用，见本文件头「# 门禁本机：」）：runtime/tests 或 graphics/nvn/tests 下 C / Objective-C 单测的键（如 vawin / nvn_copy_stride），须有 native-test-<键> 构建目标。
 #   GATE_SKIP="<键…>"：不跑这几组（别处另跑），应跑组数相应减少、末行写明；GATE_ONLY="<键…>"：只编跑这几组单测，不构建宿主。键对不上单测文件 = 红。
+#   GATE_BUILD_ONLY=1（11-24 只编步）：每组只构建 native-test-<键> 的先决目标、不运行；构建过 = 绿，编译 / 链接错 = 红；宿主照常构建。
+#     门禁把它作为合入前必跑步（整钩子慢、挪到合入后）：D-92BW 漏桩（dsh_stats 隐式声明、front_layer_race 缺符号）几秒就能编出来，原先跟着整钩子推到合入后、2 小时后才被守望定位。
+#     做法：make 的规则外壳换成 tools/build_only_shell.sh，编 / 链照常、「运行 build/tests/t_<名>」那一行跳过；退出非 0 但没有编译 / 链接报错的组记「只编判不了」，不算红
 # 逐组单独 make、逐组判（10-25）：原先一次 make 全部目标、只数「✓ t_」行，某组没出结果只记成「少一组」、红数 0、看不出是哪组，
 #   且 make 遇第一处错就停、后面的组全没跑。现在每组一个 make（超时 GT 秒），没出结论的组也算红并点名原因：
 #   构建失败（编译 / 链接报错）、超时、判据不符（有「✗ t_」行）、异常退出（rc 非 0、没有判据行）、没打结论行（rc=0 但没有「✓ t_」行）、没有构建目标（有单测文件、build.mk 没登记）。
 #   有单测文件的组要 rc=0 且有「✓ t_」行、没有「✗ t_」行；build.mk 里没有单测文件的目标（ns2pro、touch_compat，打自己的通过行）只要 rc=0。
+# 本机自测排在门禁后面：不在门禁里跑（没有 GATE2_PAR）就把自己降到 nice 15，子进程继承；门禁步的优先级由门禁自己定
+[ -n "${GATE2_PAR:-}" ] || renice 15 -p $$ > /dev/null 2>&1 || true
+# C# 编译串行（同 graphics/gate.sh：门禁 tools/gate.sh 已接则沿用，单独跑本钩子时这里接上）：各组并行时 graphics_session 的 nxaot（dotnet publish）
+#   与别的组同编 compat/tree，共用 obj/ bin/ 互踩（11-23 开发者单独跑本钩子：NU5026 Ryujinx.Common.dll not found on disk；门禁里有锁、11-16 起没出过）
+if [ -z "${S2A_DOTNET_LOCK:-}" ] && [ -f tools/dotnet_lock.c ] && mkdir -p build/dotnet_lock && cc -O2 -o build/dotnet_lock/dotnet tools/dotnet_lock.c 2> /dev/null; then
+  export S2A_DOTNET_REAL=${DOTNET:-$HOME/.dotnet/dotnet} S2A_DOTNET_LOCK=$PWD/build/.dotnet_build.lock DOTNET=$PWD/build/dotnet_lock/dotnet PATH=$PWD/build/dotnet_lock:$PATH
+fi
 set -u
-GT=300
+GT=300   # 每组无进展秒：连续这么久日志不长、进程树 CPU / 磁盘不涨、没有编译子进程才判挂死（tools/nostall.py）
+GHX=${GATE_HARD_X:-4}   # 墙钟保底 = GT × GHX：只兜一直吃 CPU 的死循环。11-21：原先每组固定墙钟 300 秒，本机同时出候选（负载 70）时
+#   graphics_session / nvn_red / nvn_vppack 正常推进只是变慢，被当超时判红；这几条单测本身没有墙钟判据。判据只问输出对不对，负载不造成假红
 has_file() { [ -f "runtime/tests/t_$1.c" ] || [ -f "runtime/tests/t_$1.m" ] || [ -f "graphics/nvn/tests/t_$1.c" ] || [ -f "graphics/nvn/tests/t_$1.m" ]; }
 # 子项键也认只有构建分片、没有单测源文件的组（runtime/tests/mk/<键>.mk：touch_compat、ns2pro 这类打自己通过行的目标；11-14 新门禁按组拆步要能单跑它们）
 is_key() { has_file "$1" || [ -f "runtime/tests/mk/$1.mk" ]; }
 for k in ${GATE_SKIP:-} ${GATE_ONLY:-}; do is_key "$k" || { echo "原生层：子项键 $k 在 runtime/tests 或 graphics/nvn/tests 下没有对应的 C / Objective-C 单测 → 红"; exit 1; }; done
 # 跑一组并判：绿 → G+1；红 → R+1、记「键 原因」进 WHY、把细节行攒进 DET
-G=0; R=0; WHY=; DET=; TM=
+G=0; R=0; WHY=; DET=; TM=; BON=0
 # 组并行（10-28 质量线门禁提速：100 组逐个跑本机 212 秒、gate-host 276 秒，单组最慢 13 秒，瓶颈是串行）：每组一个 make 进后台，同时至多 NATIVE_GATE_J 组
 #   （缺省核数一半），各组输出进临时目录，跑完按原顺序判。NVN 组共用的前置（宿主对象 / libnvn / 宽屏核心）先由 native-test-prereq 建一次，
 #   各组带 NVN_TEST_PREBUILT=1 不再各自 FORCE 重入（并行时会同时写同一个库）。对负载 / 计时敏感、偶发过的组（SER）放最后串行跑
-SER=" thread thread_plat svc_mem vawin vawin_ios26 nvn_bufreg_rate "   # nvn_bufreg_rate：耗时比判据，并行组抢核会抖
+SER=" thread thread_plat svc_mem vawin vawin_ios26 "   # 11-19：nvn_bufreg_rate 改判登记表步数比、不再比墙钟，不怕抢核，移出串行组
 J=${NATIVE_GATE_J:-$(( $(sysctl -n hw.ncpu 2> /dev/null || nproc 2> /dev/null || echo 4) / 2 ))}; [ "$J" -ge 1 ] 2> /dev/null || J=1
 OUT=$(mktemp -d "${TMPDIR:-/tmp}/s2a_native_gate_XXXXXX"); trap 'rm -rf "$OUT"' EXIT
-TF=${BUILD:-build}/.native_gate_times; mkdir -p "${TF%/*}" 2> /dev/null || TF=   # 各组上次耗时（派发排序用，见 run_groups）
+# 整步被外面停掉（门禁无进展看门狗、步时限发 TERM）时先说清还有哪几组在跑、各跑了多久、输出尾巴，再退：原先 EXIT 只删临时目录，
+#   11-19 两轮「挂死：连续 300 秒无进展」的红里看不出是哪一组挂住（每组本有 GT 秒时限，看门狗先到说明那组的进程收不掉）
+hung_report() {
+  local f k n=0
+  for f in "$OUT"/*.start; do [ -e "$f" ] || continue; k=${f##*/}; k=${k%.start}; [ -f "$OUT/$k.rc" ] && continue
+    n=$((n + 1)); echo "✗ 组 ${k}：被停时还在跑（已 $(( $(date +%s) - $(cat "$f") )) 秒），输出尾部："; tail -8 "$OUT/$k.out" 2> /dev/null | sed 's/^/    /'; done
+  [ $n = 0 ] && echo "被停时没有在跑的组（停在组外：前置构建 / 判定 / 记耗时）"
+}
+trap 'echo "原生层单测钩子被停（信号）：$(date +%T)"; hung_report; exit 143' TERM INT
+TF=${S2A_NATIVE_GATE_TIMES:-${S2A_RUN_ROOT:-$HOME/.s2arm/run}/s2arm/cache/native_gate_times}; mkdir -p "${TF%/*}" 2> /dev/null || TF=   # 各组上次耗时（派发排序用，见 run_groups）。放树外：门禁每步 git clean -fdx，放 build/ 下永远读不到、「慢组先派」退回按名字排；只影响派发顺序，不影响判红绿；写法是临时文件 + 原子 mv，多树并发写安全
 # 编译缓存（tools/cc_cache.sh）：门禁入口（tools/gate.sh）已开就不动；单独跑本钩子时这里开。一步编链的单测也经它逐源缓存（tools/ccshim/shim split_link）
 [ -n "${S2A_CCACHE_BIN:-}" ] || { [ -f tools/cc_cache.sh ] && { source tools/cc_cache.sh; s2a_ccache_on "$PWD"; }; }
 # 工具链目录解析一次传给每组的 make（11-14 门禁提速：没设时顶层 Makefile 每次解析都起 bash 跑 tools/toolchain.sh，350 组各一次）。
 #   值就是 make 自己会解出的那个（取自 make -p），与不设时逐字相同
 #   make -p 的变量 / 目标表只取一次，下面的组清单（TG）也从它取；GATE_ONLY 只跑点名的几组，不取
-MP=; [ -n "${GATE_ONLY:-}" ] || MP=$(make -pn 2> /dev/null)
+MP=; { [ -z "${GATE_ONLY:-}" ] || [ "${GATE_BUILD_ONLY:-}" = 1 ]; } && MP=$(make -pn 2> /dev/null)
 [ -n "${S2A_DEVELOPER_DIR:-}${DEVELOPER_DIR:-}" ] || [ -z "$MP" ] || { d=$(sed -n 's/^DEVELOPER_DIR := //p' <<< "$MP" | head -1); [ -n "$d" ] && export DEVELOPER_DIR=$d; }
 exec_group() {   # exec_group <键>：跑一组，输出 / 退出码 / 秒数写进 $OUT
   local k=$1 t0=$SECONDS rc
-  NVN_TEST_PREBUILT=${NVN_TEST_PREBUILT:-} timeout "$GT" make -s "native-test-$k" > "$OUT/$k.out" 2>&1; rc=$?
+  date +%s > "$OUT/$k.start"
+  if [ "${GATE_BUILD_ONLY:-}" = 1 ]; then   # 只编：规则照常编 / 链，「运行单测程序」那一行由 tools/build_only_shell.sh 跳过（多数组在规则里才编，没有先决目标可单独构建）
+    NVN_TEST_PREBUILT=${NVN_TEST_PREBUILT:-} timeout -k 15 "$((GT * GHX))" make -s "native-test-$k" SHELL="$PWD/tools/build_only_shell.sh" > "$OUT/$k.out" 2>&1; rc=$?
+    echo "$rc $((SECONDS - t0))" > "$OUT/$k.rc"; return; fi
+  # -k 15：到时限先 TERM、15 秒后还没退就 KILL（单测进程收不掉时不拖到门禁看门狗把整步停了）
+  if [ -f tools/nostall.py ]; then   # 无进展看门狗（门禁步一级早已在用，tools/gate.sh）；每组一个取证目录：挂死时 nostall 在这里留各进程调用栈
+    mkdir -p "$OUT/$k.ns"; NVN_TEST_PREBUILT=${NVN_TEST_PREBUILT:-} timeout -k 15 "$((GT * GHX))" "${S2A_PY:-python3}" tools/nostall.py --watch "$OUT/$k.ns" "$GT" -- make -s "native-test-$k" > "$OUT/$k.out" 2>&1; rc=$?
+  else NVN_TEST_PREBUILT=${NVN_TEST_PREBUILT:-} timeout -k 15 "$GT" make -s "native-test-$k" > "$OUT/$k.out" 2>&1; rc=$?; fi   # 缺 nostall.py（单测假仓库）= 旧行为
   echo "$rc $((SECONDS - t0))" > "$OUT/$k.rc"
 }
 judge() {   # judge <键>：按 $OUT 里这一组的结果判，绿 G+1 / 红 R+1 并记原因与细节
   local k=$1 o rc sec why=
   o=$(cat "$OUT/$k.out" 2> /dev/null); read -r rc sec < "$OUT/$k.rc" 2> /dev/null || { rc=1; sec=0; o="（没有结果：这一组没跑起来）"; }
   TM="${TM}${sec} ${k}"$'\n'   # 每组墙钟（10-28 梳理：原先只判红绿、不知道慢在哪组）
-  if [ $rc = 124 ]; then why="超时（${GT} 秒）"
+  if [ "${GATE_BUILD_ONLY:-}" = 1 ]; then   # 只编：编过 = 绿；只编不了单列；其余 = 构建失败（列报错行）
+    [ "$rc" = 0 ] && { G=$((G + 1)); return; }
+    # 退出非 0 但没有编译 / 链接报错（规则里别的步骤失败、运行行没认出被跑了）：只编判不了，不算红（只编只证编不编得过，不当运行判据用）
+    grep -av '^ld: warning:' < <(printf '%s\n' "$o") | grep -aqE ': (fatal )?error:|^clang: error:|^ld: |^Undefined symbols' || { BON=$((BON + 1)); return; }
+    R=$((R + 1)); WHY="${WHY}、${k} 构建失败（只编）"
+    DET="${DET}✗ 组 ${k}：构建失败（只编）"$'\n'"$(grep -av '^ld: warning:' < <(printf '%s\n' "$o") | grep -aE ': (fatal )?error:|^clang: error:|^ld: |^Undefined symbols|^  "_|referenced from' | head -16)"$'\n'; return; fi
+  if [ $rc = 124 ] && grep -aq "无进展看门狗" < <(printf '%s\n' "$o"); then why="挂死（连续 ${GT} 秒无进展：日志不长、进程树 CPU / 磁盘不涨）"
+  elif [ $rc = 124 ] && [ -d "$OUT/$k.ns" ]; then why="超时（墙钟保底 $((GT * GHX)) 秒仍没跑完，期间一直有进展）"
+  elif [ $rc = 124 ]; then why="超时（${GT} 秒）"
+  elif [ $rc = 137 ]; then why="超时（TERM 后 15 秒仍不退、补了 KILL）"
   elif [ $rc = 125 ]; then why="没跑（NVN 共用前置构建失败，见上）"
   elif grep -aq '^✗ t_' < <(printf '%s\n' "$o"); then why="判据不符"
-  elif [ $rc != 0 ] && grep -aqE '^[^ ]+:[0-9]+:[0-9]+: (fatal )?error:|^clang: error:|^ld: |^Undefined symbols' < <(printf '%s\n' "$o"); then why="构建失败"
+  # 「ld: warning:」不是构建错误（nvn_texu_pending 每次链接都打 ld: warning: ignoring duplicate libraries）：原先 ^ld: 连它一起认，运行时真失败（rc 非 0、
+  #   没打 ✗ 行）被标成「构建失败」、细节只列报错行，真正的失败输出被藏掉（11-19 守望两次「✗ 组 nvn_texu_pending：构建失败」查不出原因）。先去掉警告行再判
+  elif [ $rc != 0 ] && grep -av '^ld: warning:' < <(printf '%s\n' "$o") | grep -aqE '^[^ ]+:[0-9]+:[0-9]+: (fatal )?error:|^clang: error:|^ld: |^Undefined symbols'; then why="构建失败"
   elif [ $rc != 0 ]; then why="异常退出（rc=${rc}）"
   elif has_file "$k" && ! grep -aq '^✓ t_' < <(printf '%s\n' "$o"); then why="没打结论行（rc=0 但没有「✓ t_」行）"
   fi
@@ -51,11 +90,29 @@ judge() {   # judge <键>：按 $OUT 里这一组的结果判，绿 G+1 / 红 R+
   # 细节：判据不符列全部「✗」行（不只尾部：打得早的判据行会被截掉，10-24 t_thread 偶发三次都看不出是哪条）；构建失败列报错行；其余给尾部
   local d
   case $why in
-    判据不符) d=$(grep -aE '^(✗ |FAIL )' < <(printf '%s\n' "$o") | head -20);;   # FAIL：单测自己的判据行（t_dirty_growth / t_nvn_red 这样打，10-30 列车线：原先只认 ✗ 被丢）
-    构建失败) d=$(grep -aE ': (fatal )?error:|^clang: error:|^ld: |^Undefined symbols|^  "_|referenced from|^      [_A-Za-z].* in ' < <(printf '%s\n' "$o") | head -16);;   # 链接红连缺的符号名 / 谁引用一起带（11-05 nvn_rec_cover 偶发「Undefined symbols」只剩一行、定不了因）
-    *) d=$(tail -10 < <(printf '%s\n' "$o"));;
+    构建失败) d=$(grep -av '^ld: warning:' < <(printf '%s\n' "$o") | grep -aE ': (fatal )?error:|^clang: error:|^ld: |^Undefined symbols|^  "_|referenced from|^      [_A-Za-z].* in ' | head -16);;   # 链接红连缺的符号名 / 谁引用一起带（11-05 nvn_rec_cover 偶发「Undefined symbols」只剩一行、定不了因）
+    *) d=$(printf '%s\n' "$o" | red_excerpt)   # 判据不符 / 超时 / 异常退出 / 没打结论行：同一份摘录
+       local sf; for sf in "$OUT/$k.ns"/nostall_stacks.*.log; do [ -f "$sf" ] && d="$d"$'\n'"--- 挂死取证（各进程调用栈，前 2 KB）"$'\n'"$(head -c 2048 "$sf" | iconv -c -f UTF-8 -t UTF-8)"; done;;
   esac
+  # 红组的整份输出留下（11-23：$OUT 是临时目录、退出就删，摘录只有 4 KB；nvn_hybrid / nvn_rt_rgb9e5_view 时红时绿，摘录里连失败的那条判据都没留下，
+  #   本机连跑 120 次复现不出，查不下去）。留到本树 build/tests/gate_red/，每组只留最近 5 份，路径写进细节
+  local keep="${S2A_GATE_RED_KEEP:-build/tests/gate_red}" kf=
+  if mkdir -p "$keep" 2> /dev/null; then kf="$keep/$k.$(date +%m%d-%H%M%S).$$.out"; cp "$OUT/$k.out" "$kf" 2> /dev/null || kf=
+    ls -t "$keep/$k".*.out 2> /dev/null | tail -n +6 | while read -r old; do rm -f "$old"; done; fi
+  [ -n "$kf" ] && d="$d"$'\n'"（整份输出：$(cd "$(dirname "$kf")" && pwd)/$(basename "$kf")）"
   DET="${DET}✗ 组 ${k}：${why}"$'\n'"$d"$'\n'
+}
+# 红组的输出摘录（11-21 维护者：原先判据不符只取顶格「✗ / FAIL」行、其余只给末尾 10 行，单测缩进打的逐项「FAIL ①…」、崩溃行、
+#   超时组被杀前打的取证都丢了，门禁日志只剩「11 项里 2 项不符」这类汇总，查因要本机连跑碰运气）：
+#   按原顺序取「判据 / 红 / 崩溃」特征行 ∪ 末尾 20 行（不重复），封顶约 4 KB、按字节截后去掉截断的半个字。只用于红组，绿组日志不变
+#   判据行（FAIL / ✗ / 不通）排最前：11-23 nvn_hybrid「19 项 1 项不符」三次红，前面几十行【红】环境噪声（地址窗口、着色器库没建）先占满 4 KB，
+#   那条 FAIL 被截掉，留存日志里查不到是哪一项不符。其余特征行与末尾 20 行照原顺序跟在后面
+red_excerpt() {
+  awk '{ L[NR] = $0 } END { s = NR - 19
+         for (i = 1; i <= NR; i++) if (L[i] ~ /FAIL|✗|不通/) { print L[i]; P[i] = 1 }
+         for (i = 1; i <= NR; i++)
+           if (!(i in P) && (i >= s || L[i] ~ /【红】|unrecognized selector|[Aa]ssertion|[Aa]ssert\(|signal|SIG[A-Z]+|Terminating app|uncaught exception|libc\+\+abi|Abort trap|Segmentation fault|Bus error|EXC_[A-Z_]+|panic|Killed/)) print L[i] }' \
+    | head -c 4096 | iconv -c -f UTF-8 -t UTF-8
 }
 uses_pre() { grep -qs 'NVN_TEST_LIB\|NVN_TEST_HOST_OBJS' "runtime/tests/mk/$1.mk"; }   # 这组用 NVN 共用前置（库 / 宿主目标文件）
 run_groups() {   # run_groups <键…>：前置建一次 → 非 SER 组按上次耗时从长到短并行 → SER 组串行 → 按传入顺序判
@@ -87,14 +144,17 @@ run_groups() {   # run_groups <键…>：前置建一次 → 非 SER 组按上�
 }
 depskip() {   # depskip <键…>：可跳过的组（空格分隔）；不跳就什么都不打。见上方「按源文件跳组」
   [ -n "${GATE_CHANGED:-}" ] && [ "${NATIVE_GATE_DEPSKIP:-1}" != 0 ] || return 0
-  local f c=() st day key cd b k
+  local f c=() h=() st day key cd b k bo=; [ "${GATE_BUILD_ONLY:-}" = 1 ] && bo=1
   for f in $GATE_CHANGED; do case $f in
     runtime/*.c|runtime/*.m|runtime/*.mm|runtime/*.cpp|runtime/*.cc|runtime/*.S|runtime/*.s|graphics/*.c|graphics/*.m|graphics/*.mm|graphics/*.cpp|graphics/*.cc|graphics/*.S|graphics/*.s) c+=("$f");;
+    # 只编（11-24 收窄）：头文件也收窄——按 #include / #import 静态闭包（tools/include_closure.py）求出受影响的源文件，并进 c；跑的组只看编不编得过
+    runtime/*.h|runtime/*.inc|runtime/*.hpp|graphics/*.h|graphics/*.inc|graphics/*.hpp) [ -n "$bo" ] && h+=("$f") || return 0;;
     runtime/*|graphics/*|Makefile|*/build.mk|tests/autoplay/*|tests/build.mk|compat/*) return 0;;   # 非 C 源落在本钩子管的路径下：全跑
   esac; done
-  [ ${#c[@]} -gt 0 ] || return 0
+  if [ ${#h[@]} -gt 0 ]; then local x; while IFS= read -r x; do [ -n "$x" ] && c+=("$x"); done < <(python3 -B tools/include_closure.py "${h[@]}" 2> /dev/null) || return 0; fi
+  [ ${#c[@]} -gt 0 ] || { [ -n "$bo" ] && [ ${#h[@]} -gt 0 ] && echo "$*"; return 0; }   # 只编：改的头文件没有源用到 → 一组都不用编
   st=${S2A_RUN_ROOT:-$HOME/.s2arm/run}/s2arm/gate_depskip; day=$(date +%Y%m%d); mkdir -p "$st" 2> /dev/null || return 0
-  [ -f "$st/full.$day" ] || { : > "$st/full.$day"; return 0; }   # 每天这台机器第一次：全跑
+  [ -n "$bo" ] || [ -f "$st/full.$day" ] || { : > "$st/full.$day"; return 0; }   # 每天这台机器第一次：全跑（只编不做这一步：编译结果不随天变）
   key=$(cat Makefile */build.mk runtime/tests/mk/*.mk 2> /dev/null | shasum | cut -c1-16); cd=$st/src.$key
   if [ ! -f "$cd/.done" ]; then b=$(mktemp -d "${TMPDIR:-/tmp}/s2a_depskip_XXXXXX"); mkdir -p "$cd"
     # 并行算（J 路，同组并行数）：串行 345 组约 400 秒，mk 一变就要重算，不并行会把省下的时间吃回去
@@ -103,17 +163,19 @@ depskip() {   # depskip <键…>：可跳过的组（空格分隔）；不跳就
   # 规则里自己再调 $(MAKE) 的组（graphics_session 编整个带 S2A_CS 的宿主、nvn_abba、input_config_apple）：干跑列不全它们的源（11-14 实测
   #   graphics_session 串行干跑 0 个源、并行干跑 2 个），一律照跑。按规则文本静态认，不靠干跑输出
   local rec; rec=" $(grep -l '\$(MAKE)' runtime/tests/mk/*.mk 2> /dev/null | sed 's#.*/##; s#\.mk$##' | tr '\n' ' ') $(awk '/^native-test-[a-z_0-9]+:/{t=substr($1, 13); sub(/:$/, "", t)} /\$\(MAKE\)/{if (t) print t}' Makefile */build.mk 2> /dev/null | tr '\n' ' ') "
-  local out=; for k in "$@"; do case $rec in *" $k "*) continue;; esac; [ -s "$cd/$k.txt" ] || continue; grep -qxFf <(printf '%s\n' "${c[@]}") "$cd/$k.txt" || out="$out $k"; done
+  # 只编：这几组自己再编整个宿主（graphics_session 一组 776 秒），宿主本身合入前已由「宿主构建」那段编过；拿出只编、留给合入后完整门禁
+  local out=; for k in "$@"; do case $rec in *" $k "*) [ -n "$bo" ] && out="$out $k"; continue;; esac; [ -s "$cd/$k.txt" ] || continue; grep -qxFf <(printf '%s\n' "${c[@]}") "$cd/$k.txt" || out="$out $k"; done
   echo "${out# }"
 }
-summary() { [ $R = 0 ] && echo "绿 $G 组" || echo "绿 $G 组、红 $R 组（${WHY#、}）"; }
+summary() { local b=; [ "$BON" -gt 0 ] && b="；只编判不了 $BON 组"; [ $R = 0 ] && echo "绿 $G 组$b" || echo "绿 $G 组、红 $R 组（${WHY#、}）$b"; }
+BOT=; [ "${GATE_BUILD_ONLY:-}" = 1 ] && BOT="（只编）"
 slowest() { printf '%s' "$TM" | sort -rn | head -5 | awk '{printf "%s%s %s 秒", (NR > 1 ? "、" : ""), $2, $1}'; }
 # 最慢 5 组单独一行，打在末行之前（末行格式 tools/gate.sh 要解析，不动）
 timing() { [ -n "$TM" ] && echo "原生层单测最慢 5 组：$(slowest)；宿主构建 ${HB:-0} 秒"; }
 if [ -n "${GATE_ONLY:-}" ]; then
   n=0; for k in $GATE_ONLY; do n=$((n + 1)); done; run_groups $GATE_ONLY
-  [ $R = 0 ] || { printf '%s' "$DET"; timing; echo "原生层单测（只跑 ${GATE_ONLY}）期望 $n 组全绿 → $(summary)"; exit 1; }
-  timing; echo "原生层单测（只跑 ${GATE_ONLY}）期望 $n 组全绿 → $(summary)"; exit 0
+  [ $R = 0 ] || { printf '%s' "$DET"; timing; echo "原生层单测${BOT}（只跑 ${GATE_ONLY}）期望 $n 组全绿 → $(summary)"; exit 1; }
+  timing; echo "原生层单测${BOT}（只跑 ${GATE_ONLY}）期望 $n 组全绿 → $(summary)"; exit 0
 fi
 # 宿主构建与单测组并行（11-14 门禁提速：原先先串行编完宿主再开组）：只编宿主、不跑它，组不用它的产物；两边都要的地址护栏库先建好，免得同时写同一个文件
 [ "$(uname -s)" = Darwin ] && make -s "${BUILD:-build}/tests/libs2a_vaguard.dylib" > /dev/null 2>&1
@@ -139,5 +201,5 @@ for f in runtime/tests/t_*.c runtime/tests/t_*.m graphics/nvn/tests/t_*.c; do
   n=$((n + 1)); R=$((R + 1)); WHY="${WHY}、${k} 没有构建目标（有 ${f}，build.mk 没登记 native-test-${k}）"
 done
 ex=; [ -n "${GATE_SKIP:-}" ] && ex="（${GATE_SKIP} 另跑）"; [ -n "${NDS:-}" ] && ex="${ex}（本批只改 C 源，按源文件清单跳过 $(wc -w <<< "$NDS" | tr -d ' ') 组）"
-[ $R = 0 ] || { printf '%s' "$DET"; timing; echo "原生层单测 期望 $n 组全绿 → $(summary)$ex"; exit 1; }
-timing; echo "原生层：宿主构建成功；单测 期望 $n 组全绿 → $(summary)$ex"
+[ $R = 0 ] || { printf '%s' "$DET"; timing; echo "原生层单测${BOT} 期望 $n 组全绿 → $(summary)$ex"; exit 1; }
+timing; echo "原生层：宿主构建成功；单测${BOT} 期望 $n 组全绿 → $(summary)$ex"

@@ -139,6 +139,11 @@ private struct LauncherDropdownLayer: View {
 
 /// The rows of an open dropdown: the chosen one with a checkmark, the one under the pointer or the arrow keys lit.
 /// Arrow keys move, Return or Space pick, Esc closes (a local key monitor while it is open, as in the Manage menu).
+package extension Notification.Name {
+    /// 手柄 B：收起这个窗口里开着的下拉选单（object = 窗口；只关选单，不关底下的面板）
+    static let launcherDropdownClose = Notification.Name("S2ALauncherDropdownClose")
+}
+
 package struct LauncherDropdownList: View {
     package init(options: [(value: String, label: String)], selection: String, label: String, artwork: ((String) -> AnyView)? = nil, disabledOptions: Set<String> = [],
                  choose: @escaping (String) -> Void, close: @escaping () -> Void) {
@@ -174,6 +179,7 @@ package struct LauncherDropdownList: View {
             }
         }
         .onDisappear(perform: stopKeys)
+        .onReceive(NotificationCenter.default.publisher(for: .launcherDropdownClose)) { _ in close() }
         .accessibilityElement(children: .contain)
         .accessibilityLabel(label)
         .accessibilityIdentifier("launcher.dropdown")
@@ -199,6 +205,7 @@ package struct LauncherDropdownList: View {
             .contentShape(RoundedRectangle(cornerRadius: 8))
         }
         .controllerButtonStyle(.plain)
+        .controllerRingRadius(8)
         .disabled(disabledOptions.contains(option.value))
         .opacity(disabledOptions.contains(option.value) ? 0.45 : 1)
         .onHover { inside in
@@ -310,6 +317,7 @@ package struct LauncherDropdown: View {
                     }
                 } label: { dropdown.face(open: open, rowWidth: rowWidth) }
                 .controllerButtonStyle(.plain)
+                .controllerRingRadius(LauncherTheme.Metrics.controlRadius)
                 .opacity(enabled ? 1 : 0.55)
                 .anchorPreference(key: LauncherDropdownAnchorKey.self, value: .bounds) { [dropdown.id: $0] }
             )
@@ -326,6 +334,7 @@ package struct LauncherDropdown: View {
             dropdown.accessible(
                 Button { open.toggle() } label: { dropdown.face(open: open, rowWidth: rowWidth) }
                     .controllerButtonStyle(.plain)
+                    .controllerRingRadius(LauncherTheme.Metrics.controlRadius)
                     .opacity(enabled ? 1 : 0.55)
                     .popover(isPresented: $open, arrowEdge: .bottom) {
                         LauncherDropdownList(options: dropdown.options, selection: dropdown.selection, label: dropdown.label, artwork: dropdown.artwork, disabledOptions: dropdown.disabledOptions,
@@ -333,6 +342,7 @@ package struct LauncherDropdown: View {
                             .frame(width: LauncherDropdownLayout.width(labels: dropdown.options.map(\.label), button: 0),
                                    height: min(LauncherDropdownLayout.contentHeight(rows: dropdown.options.count), LauncherDropdownLayout.maxHeight))
                             .preferredColorScheme(.dark)
+                            .controllerBackAction("dropdown.pop.close") { open = false }
                     }
             )
         }

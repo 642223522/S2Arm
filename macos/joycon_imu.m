@@ -3,6 +3,8 @@
 #import <IOKit/hid/IOHIDManager.h>
 #import <GameController/GameController.h>
 #include "joycon_imu.h"
+#include "imu_burst.h"
+#include "hid_generic.h"
 #include <pthread.h>
 #include <stdatomic.h>
 #include <string.h>
@@ -24,6 +26,7 @@ typedef struct {
     char id[64];              // 设备 id（序列号 = 蓝牙地址；启动器 Gen1HIDWatcher.deviceID 同一套），跨进程认同一只
     s2a_pad_motion sample;
     int known;
+    s2a_imu_burst burst;      // 补满采样：0x30 一包 3 组 IMU 按记账时钟入队（macos/imu_burst.h），服务层一拍取走逐笔写进游戏
     int vib_on;               // 发过「开震动」子命令 0x48（#520 E 一代手柄 HID 震动）
     uint64_t rumble_gen;      // 每发一包加一：1 秒后还是这一包就补中性停下
     uint32_t pad_buttons;     // D2：这一只自己的按键 / 摇杆（s2a_joycon1_decode；两只被 macOS 合成一个时也各算一位玩家）
@@ -90,8 +93,7 @@ static void send_attach_sub(jc_dev *d, IOHIDDeviceRef device, uint64_t generatio
     CFRelease(target);
 }
 
-// Joy-Con 报告里的加速度 / 角速度 → 近似 NS2 原始坐标（g、度/秒）。
-// 竖握：L/R 机身轴不同；Fit Boxing 横握挥拳时主要靠角速度幅值，先保证有读数。
+// Joy-Con 报告里的加速度 / 角速度 → 宿主体感坐标（g、度/秒）。
 static void decode_imu(int slot, int product_id, const uint8_t *s, s2a_pad_motion *out) {
     float ax = rd16(s + 0) * 0.000244f;
     float ay = rd16(s + 2) * 0.000244f;
@@ -99,10 +101,10 @@ static void decode_imu(int slot, int product_id, const uint8_t *s, s2a_pad_motio
     float gx = rd16(s + 6) * 0.06103f;
     float gy = rd16(s + 8) * 0.06103f;
     float gz = rd16(s + 10) * 0.06103f;
-    // 映射到「正面法线 = z、上沿 = y、右 = x」的近似：与常见 SDL hidapi_nintendo 竖握一致
+    // 同向竖握时，左右 Joy-Con 的原始 Y、Z 轴符号相反。按右手柄的轴向输出。
     if (product_id == JC_PID_L) {
-        out->acceleration_x = ay; out->acceleration_y = -ax; out->acceleration_z = az;
-        out->gyro_x = gy; out->gyro_y = -gx; out->gyro_z = gz;
+        out->acceleration_x = ay; out->acceleration_y = ax; out->acceleration_z = -az;
+        out->gyro_x = gy; out->gyro_y = gx; out->gyro_z = -gz;
     } else {
         // Joy-Con (R) / Pro
         out->acceleration_x = -ay; out->acceleration_y = ax; out->acceleration_z = az;
@@ -131,12 +133,16 @@ static void apply_report(jc_dev *d, IOHIDDeviceRef source, uint32_t report_id, c
     if (report_id != 0x30) return;
     int off = (len > 0 && report[0] == 0x30) ? 1 : 0;
     if (len - off < 48) return;
-    // 标准全报告带 3 组 IMU（5 ms 间隔）；取最后一组
-    const uint8_t *s = report + off + 36;
-    s2a_pad_motion m = {0};
-    decode_imu(slot, pid, s, &m);
+    // 标准全报告一次带 3 组 IMU（相隔 5 ms）。真机三组全部送进 hid；改前只取最后一组，
+    //   服务层一拍（约 16 ms）才拿到一笔，而游戏每条六轴记录的 DeltaTime 固定 5 ms —— 时间轴被压成 1/3，
+    //   体感瞄准的幅度明显偏小、微调也不跟手。三组按记账时钟入队（条数 × 5 ms = 真实流逝，时间戳单调，见 macos/imu_burst.h），
+    //   由服务层一拍取走、逐笔写进游戏（每笔 5 ms）。单笔接口照旧读最新一组。
+    uint64_t recv_us = now_us();
+    s2a_pad_motion m[3];
+    for (int i = 0; i < 3; i++) { m[i] = (s2a_pad_motion){0}; decode_imu(slot, pid, report + off + 12 + i * 12, &m[i]); }
+    m[2].host_timestamp_us = recv_us;
     pthread_mutex_lock(&g_mu);
-    if (d->device == source) { d->sample = m; d->known = 1; }
+    if (d->device == source) { d->sample = m[2]; d->known = 1; s2a_imu_burst_push(&d->burst, m, recv_us); }
     pthread_mutex_unlock(&g_mu);
 }
 
@@ -202,6 +208,11 @@ static void attach_device(IOHIDDeviceRef device) {
     CFNumberRef pid_cf = IOHIDDeviceGetProperty(device, CFSTR(kIOHIDProductIDKey));
     int pid = 0;
     if (pid_cf) CFNumberGetValue(pid_cf, kCFNumberIntType, &pid);
+    int raw_pid = pid;
+    CFTypeRef pn = IOHIDDeviceGetProperty(device, CFSTR(kIOHIDProductKey));
+    char name[96] = "";
+    if (pn && CFGetTypeID(pn) == CFStringGetTypeID()) CFStringGetCString(pn, name, sizeof name, kCFStringEncodingUTF8);
+    pid = s2a_hidg_jc_body_pid(pid, name);   // 冒用 Joy-Con 产品号的第三方 Pro 按 Pro 认：六轴轴向、震动、拆不拆单只都照 Pro（D-52Z8）
     int slot = side_for_pid(pid);
     if (slot < 0) return;
     CFTypeRef descriptor = IOHIDDeviceGetProperty(device, CFSTR(kIOHIDReportDescriptorKey));
@@ -214,7 +225,7 @@ static void attach_device(IOHIDDeviceRef device) {
     // Public API promises an associated GCController. Prefer that backend for
     // Pro sensor control; retain raw samples independently of calibrated fields.
     // The query is expensive: do it once per attachment, outside the transport lock.
-    int gc_motion_control = pid == JC_PID_PRO && [GCController supportsHIDDevice:device];
+    int gc_motion_control = raw_pid == JC_PID_PRO && [GCController supportsHIDDevice:device];   // 系统传感器控制只给真 Pro 产品号（冒用的照旧自己发子命令开六轴）
 
     pthread_mutex_lock(&g_mu);
     jc_dev *d = NULL;
@@ -323,6 +334,38 @@ void s2a_joycon_imu_set_enabled(int enabled) {
     pthread_mutex_unlock(&g_mu);
     if (on) fprintf(stderr, "[输入] Joy-Con HID 六轴：开启（GameController 无 motion 时的回退）\n");
     else fprintf(stderr, "[输入] Joy-Con HID 六轴：关闭\n");
+}
+
+// 一拍取走累积的 IMU 样本（消费式，时间升序）。返回条数；0 = 这一拍没有新样本。
+//   单笔接口 s2a_joycon_imu_read* 仍读 d->sample（最新一份），不受影响：服务层二选一，不会同时消费。
+static int burst_drain_locked(jc_dev *d, s2a_pad_motion *out, int max) { return s2a_imu_burst_drain(&d->burst, out, max, now_us()); }
+
+// 按左 / 右（Pro 算右）取最先接上的那一只，与 s2a_joycon_imu_read 的选设备规则一致。
+//   返回：>=0 条数；-1 = 这一侧没有可用的 HID 体感设备（调用方据此换下一条来源）。
+int s2a_joycon_imu_read_burst(int side, s2a_pad_motion *out, int max) {
+    if (!out || max <= 0 || (side != JC_L && side != JC_R)) return 0;
+    int n = -1;
+    pthread_mutex_lock(&g_mu);
+    for (int i = 0; i < JC_N; i++) {
+        jc_dev *d = &g_dev[i];
+        if (!d->device || !d->known || d->slot != side || !atomic_load(&g_want) ||
+            now_us() - d->sample.host_timestamp_us > 250000) continue;
+        n = burst_drain_locked(d, out, max);
+        break;
+    }
+    pthread_mutex_unlock(&g_mu);
+    return n;
+}
+
+// 按设备 id（gen1 单元左右各一只）：给 s2a_pad_read_motion_burst 按槽位取。返回 >=0 条数，-1 = 没这只设备。
+int s2a_joycon_imu_read_id_burst(const char *id, s2a_pad_motion *out, int max) {
+    if (!out || max <= 0 || !id) return 0;
+    pthread_mutex_lock(&g_mu);
+    jc_dev *d = find_id_locked(id);
+    int n = !d ? -1 : (d->known && atomic_load(&g_want) && now_us() - d->sample.host_timestamp_us <= 250000
+        ? burst_drain_locked(d, out, max) : 0);
+    pthread_mutex_unlock(&g_mu);
+    return n;
 }
 
 int s2a_joycon_imu_read(s2a_pad_motion *out_l, s2a_pad_motion *out_r) {

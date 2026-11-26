@@ -14,5 +14,3 @@ int nvn_vk_window_action(int attached, uint64_t attached_generation,
     if (lease_width != attached_width || lease_height != attached_height) return NVK_WINDOW_REBUILD;
     return NVK_WINDOW_KEEP;
 }
-
-int nvn_vk_skip_present_unpin_allowed(int flush_rc) { return flush_rc == 0; }

@@ -4,7 +4,7 @@ using Ryujinx.HLE.HOS.SystemState;
 namespace S2A.Services
 {
     // 前后台 / 焦点与底座接线（缺口扫描族 1 / 2，11-01 体验线）：平台壳把焦点、掌机 / 主机写进原生层（接口 v2.15），这里每拍读一次，
-    //   变了就转成游戏收得到的东西——焦点 → AppletState.SetFocus（FocusStateChanged，回前台另入队 ChangeIntoForeground）；
+    //   变了就转成游戏收得到的东西——焦点 → AppletState.SetFocus（只发 FocusStateChanged）；
     //   底座 → Horizon.ChangeDockedModeState（按游戏的通知开关入队 OperationModeChanged / PerformanceModeChanged，点亮分辨率事件）。
     //   睡眠 → psc 各模块的 SleepReady / FullAwake 请求。
     //   游戏的失焦暂停开关反方向写回原生层，平台壳失焦时据此冻结客机（iOS 后台本来整体冻结）。
@@ -58,7 +58,7 @@ namespace S2A.Services
                 if (mode >= 0)
                 {
                     system.ChangeDockedModeState(mode == 1);
-                    Ryujinx.Common.Logging.Logger.Info?.Print(Ryujinx.Common.Logging.LogClass.ServiceAm, $"S2Arm 生命周期：运行中切到{(mode == 1 ? "主机" : "掌机")}模式");
+                    Ryujinx.Common.Logging.Logger.Info?.Print(Ryujinx.Common.Logging.LogClass.ServiceAm, $"S2Arm 生命周期：运行中切到{(mode == 1 ? "主机" : "掌机")}档");
                 }
             }
         }

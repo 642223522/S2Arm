@@ -6,7 +6,7 @@ R=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)
 O=${T_VTG_OUT:-$R/build/t_vtg}; mkdir -p "$O"
 # 各段耗时与退出码进日志末行（10-25：门禁里整步 120 秒超时（退出 124）近期 46 次 12 次，日志被下一轮覆盖，分不清是编译慢还是自检挂住）
 t0=$SECONDS
-dotnet build -c Release "$R/graphics/tools/shbake/S2A.ShBake.csproj" --artifacts-path "$O/art" -p:OutDir="$O/bin/" > "$O/build.log" 2>&1 || { echo "编 S2A.ShBake 失败（$O/build.log）"; tail -5 "$O/build.log"; exit 1; }
+bash "$R/tools/cs_cache.sh" "$O/art" "$O/bin" "$R/graphics/tools/shbake/S2A.ShBake.csproj" -- dotnet build -c Release "$R/graphics/tools/shbake/S2A.ShBake.csproj" --artifacts-path "$O/art" -p:OutDir="$O/bin/" > "$O/build.log" 2>&1 || { echo "编 S2A.ShBake 失败（$O/build.log）"; tail -5 "$O/build.log"; exit 1; }
 tb=$((SECONDS - t0)); echo "t_mat_wait 分段：编译 ${tb} 秒，开始自检"
 t0=$SECONDS; timeout 60 "$O/bin/S2A.ShBake" selftest-matwait; rc=$?
 to=; [ "$rc" = 124 ] && to='，自检 60 秒超时'

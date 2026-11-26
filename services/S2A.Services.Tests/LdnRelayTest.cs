@@ -22,6 +22,45 @@ namespace S2A.Services.Tests
     //   B 进房成功，A 收到同步、人数变 2；A 关网后 B 被断开。虚拟 IP 在 10.114.0.0/16。
     public static unsafe partial class Program
     {
+        [SoloTest("--ldn-manual-client")]
+        private static int LdnManualClient()
+        {
+            Environment.SetEnvironmentVariable("S2A_LDN_SERVER", "127.0.0.1");
+            Environment.SetEnvironmentVariable("S2A_LDN_RELAY", "0");
+            Host.BeginLanDiscoverySession();
+            try
+            {
+                var flags = System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static;
+                typeof(Host).GetMethod("StartLdnRelay", flags).Invoke(null, null);
+                Host.OnLdnInitializing();
+                return Host.LdnRelayHosted || Host.LdnLan || Host.LdnAutoTried ? 1 : 0;
+            }
+            finally { Host.StopLanDiscovery(); }
+        }
+
+        [SoloTest("--ldn-manual-listen")]
+        private static int LdnManualListen()
+        {
+            // 独立进程：在 Host 首次访问前设环境。实际检查 socket 绑定，不只检查配置字符串。
+            Environment.SetEnvironmentVariable("S2A_LDN_SERVER", "127.0.0.1");
+            Environment.SetEnvironmentVariable("S2A_LDN_RELAY", "1");
+            Environment.SetEnvironmentVariable("S2A_LDN_LISTEN", "0.0.0.0");
+            Ryujinx.HLE.S2AHooks.LdnPort = FreeTcpPort(IPAddress.Any);
+            Host.BeginLanDiscoverySession();
+            try
+            {
+                var flags = System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static;
+                typeof(Host).GetMethod("StartLdnRelay", flags).Invoke(null, null);
+                var relay = (LdnRelay)typeof(Host).GetField("_ldnRelay", flags).GetValue(null);
+                if (relay == null || relay.Endpoint is not IPEndPoint endpoint || !endpoint.Address.Equals(IPAddress.Any)) return 1;
+                using TcpClient client = new();
+                client.Connect(IPAddress.Loopback, Ryujinx.HLE.S2AHooks.LdnPort);
+                Console.WriteLine("指定模式：全部网卡监听、回环连接成功、不启动发现");
+                return Host.LdnLan ? 1 : 0;
+            }
+            finally { Host.StopLanDiscovery(); }
+        }
+
         [SoloTest("--lan-provider-lifecycle")]
         private static int LanProviderLifecycle()
         {
@@ -80,8 +119,8 @@ namespace S2A.Services.Tests
             Check($"{mode}: 再停幂等", "1", (FakeNative.LdnLanStops - before).ToString());
         }
 
-        // 本地联机按需自动开（10-28 双人成行：玩家不该先去设置里找开关）：没给 S2A_LDN_SERVER、缺省离线 → 游戏第一次初始化 ldn:u 时
-        //   ① 原生层没有局域网发现（Mac，弱符号回 0）：保持 Disabled，只打一行；
+        // 本地联机按需自动开（10-28 双人成行：玩家不该先去设置里找开关）：没给 S2A_LDN_SERVER、缺省离线 → 游戏初始化 ldn:u 不碰网络（11-26），第一次扫描 / 建房 / 进站点时
+        //   ① 原生层没有局域网发现（Mac，弱符号回 0）：自动模式回退到 ldn_mitm，让 Mac 也能连 Switch；
         //   ② 有（iOS ldn_lan.m）：局域网发现被调（程序号 = 游戏的）、联机模式切 LdnRyu、中继先指本机 127.0.0.1、本进程托管中继（全部网卡，产品 30456、单测临时端口）；
         //   ③ 之后局域网选举改指（S2A_LdnSetServer）→ 建房（OpenAccessPoint）时客户端换到新中继，不等下一次 Initialize；
         //   ④ 本机中继建房 / 解散 → 原生层收到「有房间」标记 1 / 0（Bonjour 发布名加 / 去「!」，选举优先有房间的中继）。
@@ -146,8 +185,8 @@ namespace S2A.Services.Tests
             long red0 = Red.Total;
             Reply i1 = Call(svc, Init());
             Reply oap0 = Call(svc, Msg.Cmif(200));   // OpenAccessPoint：初始化失败后的后续调用
-            Check("联机自动开：原生层provider 返回负 errno → Initialize 回「本地联机不可用」、仍 Disabled、发现被调 1 次、后续调用同回不可用码、发现失败 + 联机不可用各报红一次（不把空客户端往后传）",
-                "0x20CB、Disabled、1 次、0x20CB、+2",
+            Check("联机自动开：原生层provider 返回负 errno → 自动模式回退 ldn_mitm、发现被调 1 次、后续调用成功（不把空客户端往后传）",
+                "0x0、LdnMitm、1 次、0x0、+1",
                 $"0x{i1.Result:X}、{cfg.MultiplayerMode}、{FakeNative.LdnLanStarts} 次、0x{oap0.Result:X}、+{Red.Total - red0}");
             Call(svc, Msg.Cmif(401));   // Finalize
 
@@ -186,9 +225,17 @@ namespace S2A.Services.Tests
             FakeNative.LdnLanAvailable = 1;
             red0 = Red.Total;
             Reply i2 = Call(svc, Init());
-            Check("联机自动开：有局域网发现（iOS）→ 初始化成功、切 LdnRyu、中继 127.0.0.1、发现被调（程序号 = 游戏）、不报红",
+            // ②a 初始化不碰网络（11-26：很多游戏开局就初始化 ldn:u、不进本地联机，原先这一刻起发现 / 中继，玩家一开游戏就被弹「本地网络」授权框）：
+            //   初始化成功、模式仍 Disabled、发现没被调（还是 ① 那 1 次）、没托管中继；旧代码在这里就起了发现 → 2 次、LdnRyu，判红
+            Check("联机按需：有局域网发现（iOS）→ 初始化成功但不碰网络：仍 Disabled、发现不调、不托管中继、不报红",
+                "0x0、Disabled、1 次、没托管、+0",
+                $"0x{i2.Result:X}、{cfg.MultiplayerMode}、{FakeNative.LdnLanStarts} 次、{(Host.LdnRelayHosted ? "托管了" : "没托管")}、+{Red.Total - red0}");
+            // ②b 游戏第一次进站点（OpenStation，找房间的第一步）才起：发现被调（程序号 = 游戏）、切 LdnRyu、中继 127.0.0.1
+            Reply ost0 = Call(svc, Msg.Cmif(300));
+            Check("联机按需：第一次 OpenStation 才起局域网发现 → 切 LdnRyu、中继 127.0.0.1、发现被调（程序号 = 游戏）、不报红",
                 "0x0、LdnRyu、127.0.0.1、2 次 程序号对、+0",
-                $"0x{i2.Result:X}、{cfg.MultiplayerMode}、{cfg.MultiplayerLdnServer}、{FakeNative.LdnLanStarts} 次 程序号{(FakeNative.LdnLanProgramId == FakeNative.ProgramId() ? "对" : $" 0x{FakeNative.LdnLanProgramId:X}")}、+{Red.Total - red0}");
+                $"0x{ost0.Result:X}、{cfg.MultiplayerMode}、{cfg.MultiplayerLdnServer}、{FakeNative.LdnLanStarts} 次 程序号{(FakeNative.LdnLanProgramId == FakeNative.ProgramId() ? "对" : $" 0x{FakeNative.LdnLanProgramId:X}")}、+{Red.Total - red0}");
+            Call(svc, Msg.Cmif(301));   // CloseStation：回到 Initialized，后面的建房用例照旧
             Check("联机 provider 接收实际临时端口而非固定 30456", port.ToString(), FakeNative.LdnLanPort.ToString());
             Check("联机自动开：本进程在单测临时端口托管中继（全部网卡）、客户端连同一端口", $"托管了 0.0.0.0:{port}",
                 Host.LdnRelayHosted ? $"托管了 0.0.0.0:{port}" : "没托管（临时端口被抢）");

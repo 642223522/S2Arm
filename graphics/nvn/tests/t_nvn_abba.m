@@ -82,10 +82,10 @@ static void ab_finish(void) { pthread_mutex_lock(&ab_done_mu); ab_done++; pthrea
 static void *ab_thr_a(void *a) {
     (void)a; ab_tid = 1;
     while (!atomic_load(&ab_core_held)) sched_yield();   // B 先持核
-    pthread_mutex_lock(&g_rmu);
+    os_unfair_lock_lock(&g_rmu);
     atomic_store(&ab_rmu_held, 1);
     ab_core_enter();                                    // 等核：B 不在 g_rmu 之前放核就永远等不到
-    pthread_mutex_unlock(&g_rmu);
+    os_unfair_lock_unlock(&g_rmu);
     ab_core_leave();                                    // 拿到了就放（真宿主里它继续跑 guest，这里到此为止）
     ab_finish();
     return NULL;

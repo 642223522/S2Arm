@@ -3,6 +3,8 @@
 //      3D 贴图进立方体槽 → nil（调用方绑声明类型的零贴图，不再照原样绑）
 //   ② pso_pend_take 有界等待：后台没编完的管线，DM_NVN_PSO_WAIT_MS=150 → 约 150 ms 返回、标超时；同一管线再取立即返回（不再等）；编完后取到那份管线
 //   ⑤ 不能跳的绘制（may_skip = 0）不受单条上限与帧预算约束，等到编完；⑥ 但有自己的上限兜底（DM_NVN_PSO_UNSAFE_WAIT_MS），超了照超时跳过；⑥b 等满过一次的管线之后不再等
+//   「立即返回」按生产计数判，不按墙钟（原判 < 20 ms：负载高时被抢占就假红）：g_pp_wait_n = pso_pend_take 进入等编完的次数，立即返回的不涨。
+//     「约 150 / 100 / 300 ms」那几条是产品承诺的时限，照旧量墙钟
 //   反证：改前的 nvn_mtl.m 立方体→立方体数组返回 nil、pso_pend_take 无上限（且只有一个参数，本单测编不过）；pso_pend_take 没有 may_skip（两个参数）同样编不过
 #include "../gfx/nvn/nvn_mtl.m"
 
@@ -42,8 +44,8 @@ int main(void) {
         pthread_mutex_lock(&g_pp_mu); g_pp[0].k = k; g_pp[0].ps = nil; g_pp[0].done = 0; g_pp[0].late = 0; g_pp[0].used = 1; pthread_mutex_unlock(&g_pp_mu);
         int late = 0; uint64_t t0 = bp_now(); id ps = pso_pend_take(&k, &late, 1); double ms = (bp_now() - t0) / 1e6;
         VERIFY(!ps && late && ms >= 140 && ms < 1000, "② 没编完：约 150 ms 返回并标超时（实得 %.0f ms、超时 %d）", ms, late);
-        late = 0; t0 = bp_now(); ps = pso_pend_take(&k, &late, 1); ms = (bp_now() - t0) / 1e6;
-        VERIFY(!ps && late && ms < 20, "② 同一管线再取：立即返回、仍标超时（实得 %.1f ms）", ms);
+        uint64_t pw0 = g_pp_wait_n; late = 0; t0 = bp_now(); ps = pso_pend_take(&k, &late, 1); ms = (bp_now() - t0) / 1e6;
+        VERIFY(!ps && late && g_pp_wait_n == pw0, "② 同一管线再取：立即返回（进入等待 %llu 次，期望 0；用时 %.1f ms 仅供参考）、仍标超时", (unsigned long long)(g_pp_wait_n - pw0), ms);
         MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
         id<MTLLibrary> lib = [g_dev newLibraryWithSource:@"#include <metal_stdlib>\nusing namespace metal;\nvertex float4 v(uint i [[vertex_id]]) { return float4(0,0,0,1); }\nfragment float4 f() { return float4(1); }\n" options:nil error:nil]; REQUIRE(lib);
         pd.vertexFunction = [lib newFunctionWithName:@"v"]; pd.fragmentFunction = [lib newFunctionWithName:@"f"]; pd.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA8Unorm;
@@ -59,8 +61,8 @@ int main(void) {
         atomic_fetch_add(&g_cur_frame, 1);
         late = 0; t0 = bp_now(); ps = pso_pend_take(&k2, &late, 1); ms = (bp_now() - t0) / 1e6;
         VERIFY(!ps && late == 2 && ms >= 90 && ms < 600 && !g_pp[1].late, "④ 本帧第一条：等满预算约 100 ms 返回、记「预算跳过」不记超时（实得 %.0f ms、类 %d）", ms, late);
-        late = 0; t0 = bp_now(); ps = pso_pend_take(&k3, &late, 1); ms = (bp_now() - t0) / 1e6;
-        VERIFY(!ps && late == 2 && ms < 20, "④ 本帧第二条：预算已尽，立即返回（实得 %.1f ms）", ms);
+        pw0 = g_pp_wait_n; late = 0; t0 = bp_now(); ps = pso_pend_take(&k3, &late, 1); ms = (bp_now() - t0) / 1e6;
+        VERIFY(!ps && late == 2 && g_pp_wait_n == pw0, "④ 本帧第二条：预算已尽，立即返回（进入等待 %llu 次，期望 0；用时 %.1f ms 仅供参考）", (unsigned long long)(g_pp_wait_n - pw0), ms);
         atomic_fetch_add(&g_cur_frame, 1);
         late = 0; t0 = bp_now(); ps = pso_pend_take(&k3, &late, 1); ms = (bp_now() - t0) / 1e6;
         VERIFY(!ps && late == 2 && ms >= 90, "④ 下一帧：预算重置，又能等约 100 ms（实得 %.0f ms）", ms);
@@ -82,13 +84,30 @@ int main(void) {
         late = 0; t0 = bp_now(); ps = pso_pend_take(&k5, &late, 0); ms = (bp_now() - t0) / 1e6;
         VERIFY(!ps && late == 1 && g_pp[4].late && ms >= 280 && ms < 1500, "⑥ 不能跳的绘制等满上限 300 ms 仍没编完：返回、标超时并记 late（实得 %.0f ms、类 %d）", ms, late);
         // ⑥b 同一管线等满过不安全上限（编译服务卡在它上面）：之后不能跳的绘制也立即跳过、不再各等 300 ms（斯普拉遁3 10-27 PSB：同一管线连等 3 次 10 秒 = 31 秒停帧）；编完后照常取到
-        late = 0; t0 = bp_now(); ps = pso_pend_take(&k5, &late, 0); ms = (bp_now() - t0) / 1e6;
-        VERIFY(!ps && late == 1 && ms < 20, "⑥b 等满过不安全上限的管线：再来不能跳的绘制立即返回、标超时（实得 %.1f ms、类 %d）", ms, late);
+        pw0 = g_pp_wait_n; late = 0; t0 = bp_now(); ps = pso_pend_take(&k5, &late, 0); ms = (bp_now() - t0) / 1e6;
+        VERIFY(!ps && late == 1 && g_pp_wait_n == pw0, "⑥b 等满过不安全上限的管线：再来不能跳的绘制立即返回（进入等待 %llu 次，期望 0；用时 %.1f ms 仅供参考）、标超时（类 %d）", (unsigned long long)(g_pp_wait_n - pw0), ms, late);
         pthread_mutex_lock(&g_pp_mu); g_pp[4].ps = real; g_pp[4].done = 1; pthread_cond_broadcast(&g_pp_cv); pthread_mutex_unlock(&g_pp_mu);
         late = 0; ps = pso_pend_take(&k5, &late, 0);
         VERIFY(ps == real && !late, "⑥b 编完后不能跳的绘制取到那份管线");
+
+        // ⑦ 首遇跳过先看本帧等待预算（11-25 入水闪白：一上来就跳，画在每帧重画的中间目标上，物体闪白一两帧）：管线在后台编、本帧预算还有 → 不跳（交给 pso_pend_take 有界等）；
+        //    预算用完 → 跳；下一帧预算重置 → 又不跳。没有颜色 / 深度目标、着色器不写存储，所以前面几条「能不能跳」的规则都放行，只剩预算这一条在判
+        //    反证：改前预算还有时也返回 1（一上来就跳）
+        setenv("DM_NVN_PSO_FRAME_MS", "100", 1); g_pso_frame_ms = -1; atomic_fetch_add(&g_cur_frame, 1);
+        REQUIRE(R.rt.n == 0 && !R.rt.depth && first_skip_on());
+        pso_key k6; memset(&k6, 0x66, sizeof k6);
+        pthread_mutex_lock(&g_pp_mu); g_pp[5].k = k6; g_pp[5].ps = nil; g_pp[5].done = 0; g_pp[5].late = 0; g_pp[5].used = 1; pthread_mutex_unlock(&g_pp_mu);
+        g_first_skipped = 0;
+        VERIFY(first_skip_ok(&k6, NULL, NULL) == 0 && !g_first_skipped, "⑦ 后台在编、本帧预算还有：不跳，先等");
+        late = 0; ps = pso_pend_take(&k6, &late, 1);   // 等满本帧预算（约 100 ms）
+        VERIFY(!ps && late == 2, "⑦ 等满本帧预算仍没编完：预算跳过（类 %d）", late);
+        VERIFY(first_skip_ok(&k6, NULL, NULL) == 1 && g_first_skipped, "⑦ 本帧预算已尽：跳过");
+        atomic_fetch_add(&g_cur_frame, 1); g_first_skipped = 0;
+        VERIFY(first_skip_ok(&k6, NULL, NULL) == 0 && !g_first_skipped, "⑦ 下一帧预算重置：又先等、不跳");
+        pthread_mutex_lock(&g_pp_mu); g_pp[5].ps = real; g_pp[5].done = 1; pthread_cond_broadcast(&g_pp_cv); pthread_mutex_unlock(&g_pp_mu);
+        VERIFY(first_skip_ok(&k6, NULL, NULL) == 0, "⑦ 后台已编完：不跳（直接取）");
     }
     if (failures) { printf("✗ t_nvn_smg3_stall：%u / %u 项不过\n", failures, checks); return 1; }
-    printf("✓ t_nvn_smg3_stall：%u 项全过（立方体→立方体数组视图、后台管线有界等待）\n", checks);
+    printf("✓ t_nvn_smg3_stall：%u 项全过（立方体→立方体数组视图、后台管线有界等待、首遇跳过先用本帧预算等）\n", checks);
     return 0;
 }

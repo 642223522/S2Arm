@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import zipfile
 from unittest.mock import patch
 
 ANDROID = Path(__file__).resolve().parents[1]
@@ -65,15 +66,19 @@ class AppIdTest(unittest.TestCase):
                     self.assertEqual(game_apk.apk_identity(apk), (name, 7, debug))
                     game_apk.validate_apk_package('0100000000ABCDEF', name, debug)
 
-    def test_badging_error_and_ambiguous_identity_fail_closed(self):
-        with patch.object(game_apk.os.path, 'isfile', return_value=True), \
-             patch.object(game_apk.shutil, 'which', return_value='/test/aapt2'):
-            for output, rc in [("package: name='x.y' versionCode='1'\n" * 2, 0), ('', 0), ('', 1)]:
-                with self.subTest(output=output, rc=rc), patch.object(game_apk.subprocess, 'run',
-                        return_value=subprocess.CompletedProcess([], rc, output, 'bad manifest')):
+    def test_unreadable_manifest_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for name, data in (('missing.apk', None), ('garbage.apk', b'not a binary manifest'),
+                               ('truncated.apk', b'\x03\x00\x08\x00\x40\x00\x00\x00')):
+                with self.subTest(name=name):
+                    apk = Path(tmp) / name
+                    with zipfile.ZipFile(apk, 'w') as z:
+                        if data is not None:
+                            z.writestr('AndroidManifest.xml', data)
+                        else:
+                            z.writestr('classes.dex', b'')
                     with self.assertRaises(ValueError):
-                        game_apk.apk_identity('synthetic.apk')
-
+                        game_apk.apk_identity(apk)
 
 if __name__ == '__main__':
     unittest.main()

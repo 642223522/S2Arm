@@ -77,12 +77,16 @@ FORCE:
 # iOS 版：全部 gal_*.m 编成静态库（出包线链进 NativeAOT 主程序；iOS 首遇现编要的 SPIRV-Cross 与翻译段在 build/dsx/ios/libdsx.a，链接方另链）
 IOS_SDK := $(shell DEVELOPER_DIR=$(DEVELOPER_DIR) xcrun --sdk iphoneos --show-sdk-path 2>/dev/null)
 IOS_FLAGS := -arch arm64 -isysroot $(IOS_SDK) -mios-version-min=$(IPHONEOS_DEPLOYMENT_TARGET)
+# 离线辅助库的 Metal 编译 SDK 与系统下限（Apple TV 由顶层 graphics/build.mk 从命令行换成 appletvos / -mtvos-version-min；Metal 3 那份 iOS 固定 18.0）
+METAL_SDK ?= iphoneos
+METAL_MIN ?= -mios-version-min=$(IPHONEOS_DEPLOYMENT_TARGET)
+METAL_MIN3 = $(if $(filter iphoneos,$(METAL_SDK)),-mios-version-min=18.0,$(METAL_MIN))
 ios: $(OUT)/ios/libnxgal.a $(OUT)/ios/gal_helpers/.stamp
 # iOS 版离线辅助库（10-23）：源码与平台无关（Mac 版 gal_xc 导出，源码哈希两边相同），用 iOS SDK 编；pack/ipa.sh 签名前拷进 App 的 gal_helpers/
 $(OUT)/ios/gal_helpers/.stamp: $(OUT)/gal_xc
 	rm -rf $(OUT)/ios/gal_helpers && mkdir -p $(OUT)/ios/gal_helpers/src && $(OUT)/gal_xc --helpers $(OUT)/ios/gal_helpers/src
-	for f in $(OUT)/ios/gal_helpers/src/*.metal; do xcrun -sdk iphoneos metal -std=metal4.0 -mios-version-min=$(IPHONEOS_DEPLOYMENT_TARGET) -o $(OUT)/ios/gal_helpers/$$(basename $$f .metal).metallib $$f || exit 1; done
-	mkdir -p $(OUT)/ios/gal_helpers/m3 && for f in $(OUT)/ios/gal_helpers/src/*.metal; do xcrun -sdk iphoneos metal -std=metal3.2 -mios-version-min=18.0 -o $(OUT)/ios/gal_helpers/m3/$$(basename $$f .metal).metallib $$f || exit 1; done
+	for f in $(OUT)/ios/gal_helpers/src/*.metal; do xcrun -sdk $(METAL_SDK) metal -std=metal4.0 $(METAL_MIN) -o $(OUT)/ios/gal_helpers/$$(basename $$f .metal).metallib $$f || exit 1; done
+	mkdir -p $(OUT)/ios/gal_helpers/m3 && for f in $(OUT)/ios/gal_helpers/src/*.metal; do xcrun -sdk $(METAL_SDK) metal -std=metal3.2 $(METAL_MIN3) -o $(OUT)/ios/gal_helpers/m3/$$(basename $$f .metal).metallib $$f || exit 1; done
 	touch $@
 $(OUT)/ios/libnxgal.a: $(SRCS) $(HDRS) $(GENH)
 	@mkdir -p $(OUT)/ios
@@ -126,9 +130,18 @@ $(HELPERS): $(OUT)/gal_xc
 	mkdir -p $(OUT)/gal_helpers/m3 && for f in $(OUT)/gal_helpers/src/*.metal; do xcrun -sdk macosx metal -std=metal3.2 -mmacosx-version-min=$(MACOSX_DEPLOYMENT_TARGET) -o $(OUT)/gal_helpers/m3/$$(basename $$f .metal).metallib $$f || exit 1; done
 	touch $@
 # 单测：.c 按 C 编，.m 按 Objective-C（ARC）编；都直接连源码。都依赖离线辅助库（单测断言渲染器启动到首帧不现编）
+#   EXTRA_FLAGS / EXTRA_SRCS：目标各自的追加旗标 / 追加源码（缺省空——其余单测命令行一字不变）
 $(OUT)/t_%: tests/t_%.* $(SRCS) $(HDRS) $(wildcard tests/*.h) $(DSX_MAC_A) $(GENH) | $(HELPERS)
 	@mkdir -p $(OUT)
-	clang $(PFX) $(MACSYS) $(OBJCFLAGS) -o $@ $(firstword $(wildcard tests/t_$*.c tests/t_$*.m)) $(wildcard tests/t_$*_stubs.m) $(SRCS) $(LIBS) $(SPVC)
+	clang $(PFX) $(MACSYS) $(EXTRA_FLAGS) $(OBJCFLAGS) -o $@ $(firstword $(wildcard tests/t_$*.c tests/t_$*.m)) $(wildcard tests/t_$*_stubs.m) $(EXTRA_SRCS) $(SRCS) $(LIBS) $(SPVC)
+
+# t_present_hdr（PR7 gal HDR 闭环，评审稿 v3 §4 PR7）：链生产策略存储 graphics/nvn/gfx/nvn/nvn2.c（纯 C）——
+#   gal 经 dlsym 接缝（RTLD_DEFAULT，同 gal_present.m ap_direct 先例）消费策略入口：宿主里由直连图形层给，
+#   本单测里命中可执行文件自身的生产强定义。nvn2.c 的 dm_opmode 由测试文件替身给（同 graphics/nvn/tests/t_nvn2.c 文案）；
+#   其 dm.h（替身头）引 native.h 的生成头按 -Iruntime/include 取（同 runtime/build.mk NATIVE_INC）
+$(OUT)/t_present_hdr: EXTRA_SRCS := ../nvn/gfx/nvn/nvn2.c
+$(OUT)/t_present_hdr: EXTRA_FLAGS := -I$(ROOT)/runtime/include
+$(OUT)/t_present_hdr: ../nvn/gfx/nvn/nvn2.c
 
 # GPU 挂死看门狗单测（T10 / #635）：只链 gal_gpuwd.m + 自己，不链整套源码 —— 它不碰 Metal、不碰 gal_core，
 #   全程不提交任何命令缓冲（用「登记了栅栏但从不推进完成号」造挂死，主线程用 read 空管道冒充 waitUntilCompleted）
@@ -214,7 +227,7 @@ $(OUT)/t_prog_fin/%.spv: tests/t_prog_%.spvasm
 	@mkdir -p $(OUT)/t_prog_fin
 	spirv-as --target-env vulkan1.0 $< -o $@ && spirv-val --target-env vulkan1.0 $@
 T_FIN := $(OUT)/t_prog_fin/fs32r4.spv $(OUT)/t_prog_fin/fs32r32.spv
-T_SPV := $(OUT)/t_prog_in/vs.spv $(OUT)/t_prog_in/fs.spv $(OUT)/t_prog_in/cs.spv $(OUT)/t_prog_in/vsl.spv $(OUT)/t_prog_in/cso.spv $(OUT)/t_prog_in/csspill.spv $(OUT)/t_prog_in/csl.spv $(OUT)/t_prog_in/csw.spv
+T_SPV := $(OUT)/t_prog_in/vs.spv $(OUT)/t_prog_in/fs.spv $(OUT)/t_prog_in/cs.spv $(OUT)/t_prog_in/vsl.spv $(OUT)/t_prog_in/cso.spv $(OUT)/t_prog_in/csspill.spv $(OUT)/t_prog_in/csl.spv $(OUT)/t_prog_in/csw.spv $(OUT)/t_prog_in/csx.spv
 $(OUT)/t_prog_in/lib/gal.shards: $(T_SPV) $(OUT)/gal_xc tools/gal_offline.py
 	GAL_SHARD_MB=0.001 python3 tools/gal_offline.py $(OUT)/t_prog_in $(OUT)/t_prog_in/lib macos   # 每片约 1 KB：每支各一片，单测走多片按键取片
 # 语料（acnh 467 支着色器，约 2 分钟）：只在 make test-corpus 时生成；CORPUS_SRC 缺省取旧库只读产物，新库出包产物到位后改指新根

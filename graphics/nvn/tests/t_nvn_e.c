@@ -90,6 +90,10 @@ static void setup(void) {
     bind_deferred = (bind_deferred_fn)load("nvnCommandBufferBindTexturesDeferred");
     NVNdeviceBuilder db = {{0}}; API(nvnDeviceBuilderSetDefaults)(&db);
     CHECK(API(nvnDeviceInitialize)(&device, &db));
+    int separate_textures = 0, separate_samplers = 0;
+    API(nvnDeviceGetInteger)(&device, NVN_DEVICE_INFO_SEPARATE_TEXTURE_BINDINGS_PER_STAGE, &separate_textures);
+    API(nvnDeviceGetInteger)(&device, NVN_DEVICE_INFO_SEPARATE_SAMPLER_BINDINGS_PER_STAGE, &separate_samplers);
+    CHECK(separate_textures == 128 && separate_samplers == 32);  // 没有加载游戏驱动时采用默认绑定上限。
     NVNqueueBuilder qb = {{0}}; API(nvnQueueBuilderSetDefaults)(&qb);
     API(nvnQueueBuilderSetDevice)(&qb, &device); CHECK(API(nvnQueueInitialize)(&queue, &qb));
     NVNtextureBuilder tb = {{0}}; API(nvnTextureBuilderSetDefaults)(&tb);
@@ -221,9 +225,9 @@ static void nested_commands(void) {
         command *ch = new_command(); API(nvnCommandBufferBeginRecording)(&ch->object); set_pools(ch, 1);
         for (int i = 0; i < 40; i++) record_bind(ch, 4, 2, src, 1);
         NVNcommandHandle h1 = API(nvnCommandBufferEndRecording)(&ch->object);
-        // 设备字节：换池两条不占命令内存（真机驱动写控制内存令牌，hle_nvn.c DEV_CTL，11-06 Outlast 2）、延迟绑定 2 个按记录大小 8+24+16+8 = 56、END 8
+        // 设备字节：换池两条不占命令内存（真机驱动写控制内存令牌，hle_nvn.c DEV_CTL，11-06 Outlast 2）、延迟绑定 2 个按记录大小 8+24+16+8 = 56、END 0（驱动的 EndRecording 只写控制内存）
         size_t child = API(nvnCommandBufferGetCommandMemoryUsed)(&ch->object);
-        CHECK(child == 40 * 56 + 8);
+        CHECK(child == 40 * 56);
         command *parent = new_command();
         API(nvnCommandBufferSetMemoryCallback)(&parent->object, oom_cb);
         API(nvnCommandBufferAddCommandMemory)(&parent->object, &parent->storage->object, 0, 256);   // 游戏给目标的空间小于源录制的已用量

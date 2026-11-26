@@ -35,6 +35,8 @@
 //   长 0 / 越界 → INVALID_VALUE，读 + 作废 / 读写位都没有 / 显式刷新不带写 / 已映射 → INVALID_OPERATION；显式刷新：映射内无错、越过映射长 → INVALID_VALUE、映射没带显式刷新位 → INVALID_OPERATION。
 // O GLSL ES 3.00（11-03 火影羁绊：Scaleform 着色器全是「#version 300 es」，出包 gl_shaders.py 交给 glslang 前没升版本，glslang -V 不收 ES 3.10 以下，421 支全翻不出）：
 //   api_es300.* 与 tri.* 同一份程序、只是 #version 300 es；出库后能链接，四边形盖住左半画 (1, 0, 0) → 左 255 0 0 255、右保持清除色蓝 0 0 255 255。
+// O′ 桌面 GLSL 1.20（D-45J6 / #852：暗黑地牢的着色器是桌面 1xx，glslang 出 SPIR-V 拒收 140 以下的桌面版本，整支编不过、有声无画）：
+//   api_desk120.* 与 tri.* 同一份程序、写成桌面 1.20（attribute / varying / gl_FragColor）；出库后能链接，同 O 组：左 255 0 0 255、右清除色蓝 0 0 255 255。
 // P 采样器数组（11-03 火影羁绊：Scaleform 129 段片元着色器用 uniform sampler2D tex[2]，GL 库表口径 1 没有数组项、宿主一个名字只认一个槽，全部进不了库）：
 //   api_samparr.frag 取 tex[0] 画左半、tex[1] 画右半；单元 3 绑纯红 1×1、单元 5 绑纯绿 1×1，glUniform1iv(「tex」, 2, {3, 5}) →
 //   左 255 0 0 255、右 0 255 0 255；「tex[1]」位置 = 「tex」位置 + 1，单设它为 3 后右半变红；活动 uniform 里数组算一个，名字「tex[0]」、大小 2。
@@ -50,6 +52,14 @@
 //   glDrawElementsBaseVertex 索引 0..5、基准顶点 6 → 画第二段：左半保持清除色蓝、右半绿；glClearBufferfv(COLOR, 0, 黄) → 黄，且 COLOR_CLEAR_VALUE 仍是设过的蓝；
 //   glGetUniformfv 读回 glUniform4f 写的 (0.25, 0.5, 0.75, 1)；glPointSize(2) → POINT_SIZE 2、0 → INVALID_VALUE；glHint / glInvalidateFramebuffer 不置错、坏目标 INVALID_ENUM；
 //   glDrawArraysInstanced 1 个实例同 glDrawArrays（左半红）。
+// T 像素打包缓冲（D-WR8B Worms W.M.D：进战役时绑 GL_PIXEL_PACK_BUFFER → glBufferStorage → glMapBufferRange 拿指针、两条线程往里写，
+//   原先三步都报「目标没实现」回空，线程写地址 0 / 0x800 崩）。期望按 GL 4.5 §6 / §18.2：绑定、建存储、查 PIXEL_PACK_BUFFER_BINDING = 绑的名字；
+//   绑着时 glReadPixels 的 data 是缓冲内偏移：清除成绿后读 4×4 到偏移 16，映射偏移 16 起 64 字节读回 16 个像素都是 0 255 0 255、偏移 0..15 保持建存储时的 0xAB；
+//   放不下（偏移 + 64 > 大小）、缓冲映射着（非持久）→ INVALID_OPERATION；解绑后 glReadPixels 照旧写客户端内存（读到绿）
+// U 像素解包缓冲（D-W2MJ 白日梦的构想图，#1440：绑 GL_PIXEL_UNPACK_BUFFER → glMapBufferRange 写像素 → 从缓冲上传纹理，原先绑定 / 映射都报「目标没实现」、
+//   纹理没上、整屏黑）。期望按 GL 4.5 §8.4.4.1 / ES 3.0 §3.7.1：绑定无错、PIXEL_UNPACK_BUFFER_BINDING = 绑的名字；96 字节缓冲偏移 0..15 填 0xAB、16..79 填 16 个红像素，
+//   glTexImage2D(4×4 RGBA8, data = 偏移 16) 后纹理当附件读回 (1,1)、(3,3) 都是红；映射偏移 80 起 16 字节写 4 个绿像素，glTexSubImage2D(2×2 于 (0,0), data = 偏移 80) 后
+//   (0,0)、(1,1) 绿、(3,3) 仍红；偏移 40 上传 4×4（40 + 64 > 96）、缓冲映射着（非持久）上传 → INVALID_OPERATION 且纹理不变；解绑后 glTexSubImage2D 照旧读客户端内存（(0,0) 变蓝）
 #include "../../gfx/gl/gl_int.h"
 #include <pthread.h>
 #include <dispatch/dispatch.h>
@@ -630,6 +640,31 @@ static void t_api_version(void) {
     } else CHECK(0, "桌面上下文建立");
     eglMakeCurrent(g_dpy, g_sf, g_sf, es); if (gl) eglDestroyContext(g_dpy, gl);
 }
+// #1440：一款 GL 游戏开局问当前显示 / 表面 / 上下文属性；期望按 EGL 1.5 §3.7.3–3.7.4 与本前端的单显示（1）、单配置（1）、读写同表面手写
+static void t_egl_current(void) {
+    printf("N2 当前显示 / 表面与上下文属性\n");
+    G(eglGetCurrentDisplay, EGLDisplay, void) G(eglGetCurrentSurface, EGLSurface, EGLint) G(eglQueryContext, EGLBoolean, EGLDisplay, EGLContext, EGLint, EGLint *)
+    G(eglGetError, EGLint, void) G(eglBindAPI, EGLBoolean, EGLenum) G(eglCreateContext, EGLContext, EGLDisplay, EGLConfig, EGLContext, const EGLint *)
+    G(eglMakeCurrent, EGLBoolean, EGLDisplay, EGLSurface, EGLSurface, EGLContext) G(eglGetCurrentContext, EGLContext, void) G(eglDestroyContext, EGLBoolean, EGLDisplay, EGLContext)
+    EGLContext es = eglGetCurrentContext();
+    CHECK(eglGetCurrentDisplay() == g_dpy, "当前显示 = eglGetDisplay 给的那个");
+    CHECK(eglGetCurrentSurface(0x3059) == g_sf && eglGetCurrentSurface(0x305A) == g_sf, "EGL_DRAW / EGL_READ 都是当前窗口表面");
+    CHECK(eglGetCurrentSurface(0x3000) == NULL && eglGetError() == 0x300C, "别的 readdraw：EGL_NO_SURFACE + EGL_BAD_PARAMETER");
+    EGLint t = 0, ver = 0, cfg = 0, rb = 0;
+    CHECK(eglQueryContext(g_dpy, es, 0x3097, &t) && t == 0x30A0 && eglQueryContext(g_dpy, es, 0x3098, &ver) && ver == 3,
+          "ES 上下文：CLIENT_TYPE %#x（期望 0x30a0）、CLIENT_VERSION %d（期望 3）", t, ver);
+    CHECK(eglQueryContext(g_dpy, es, 0x3028, &cfg) && cfg == 1 && eglQueryContext(g_dpy, es, 0x3086, &rb) && rb == 0x3084,
+          "CONFIG_ID %d（期望 1）、绑着窗口表面 RENDER_BUFFER %#x（期望 EGL_BACK_BUFFER 0x3084）", cfg, rb);
+    CHECK(!eglQueryContext(g_dpy, es, 0x3030, &t) && eglGetError() == 0x3004, "不认的属性：失败 + EGL_BAD_ATTRIBUTE");
+    CHECK(!eglQueryContext((EGLDisplay)2, es, 0x3097, &t) && eglGetError() == 0x3008, "错的显示：失败 + EGL_BAD_DISPLAY");
+    eglBindAPI(0x30A2); EGLContext gl = eglCreateContext(g_dpy, g_cfg, NULL, NULL); eglBindAPI(0x30A0);
+    CHECK(gl && eglQueryContext(g_dpy, gl, 0x3097, &t) && t == 0x30A2 && eglQueryContext(g_dpy, gl, 0x3098, &ver) && ver == 4 &&
+          eglQueryContext(g_dpy, gl, 0x3086, &rb) && rb == 0x3038, "桌面上下文（没绑）：CLIENT_TYPE %#x、VERSION %d、RENDER_BUFFER %#x（期望 0x30a2 / 4 / EGL_NONE）", t, ver, rb);
+    if (gl) eglDestroyContext(g_dpy, gl);
+    eglMakeCurrent(g_dpy, NULL, NULL, NULL);
+    CHECK(eglGetCurrentDisplay() == NULL && eglGetCurrentSurface(0x3059) == NULL, "没有当前上下文：EGL_NO_DISPLAY / EGL_NO_SURFACE");
+    eglMakeCurrent(g_dpy, g_sf, g_sf, es);
+}
 static void t_map_range(void) {
     printf("N 上下文 API 与范围映射：范围映射\n");
     G(glMapBufferRange, void *, GLenum, GLintptr, GLsizeiptr, GLbitfield) G(glFlushMappedBufferRange, void, GLenum, GLintptr, GLsizeiptr) G(glUnmapBuffer, GLboolean, GLenum)
@@ -658,11 +693,69 @@ static void t_map_range(void) {
     glBindFramebuffer(0x8D40, 0); glDeleteFramebuffers(1, &fb);
 }
 
+static void t_pack_buffer(void) {
+    printf("T 像素打包缓冲\n");
+    G(glBufferStorage, void, GLenum, GLsizeiptr, const void *, GLbitfield) G(glMapBufferRange, void *, GLenum, GLintptr, GLsizeiptr, GLbitfield) G(glUnmapBuffer, GLboolean, GLenum)
+    GLuint fb = fbo_rb(64, 64, NULL); glClearColor(0, 1, 0, 1); glClear(0x4000); glFinish();
+    uint8_t init[96]; memset(init, 0xAB, sizeof init);
+    GLuint pb = 0; glGenBuffers(1, &pb); glBindBuffer(0x88EB, pb); GLenum e_bind = glGetError(); GLint got = -1; glGetIntegerv(0x88ED, &got);
+    glBufferStorage(0x88EB, sizeof init, init, 1); GLenum e_st = glGetError();
+    CHECK(e_bind == 0 && got == (GLint)pb && e_st == 0, "绑定 / 建存储无错（%#x / %#x）、PIXEL_PACK_BUFFER_BINDING = %d（期望 %u）", e_bind, e_st, got, pb);
+    glReadPixels(0, 0, 4, 4, 0x1908, 0x1401, (void *)16); GLenum e_rd = glGetError();
+    const uint8_t *m = glMapBufferRange(0x88EB, 0, sizeof init, 1); int green = m != NULL, keep = m != NULL;
+    for (int i = 0; m && i < 16; i++) green &= m[16 + i * 4] == 0 && m[17 + i * 4] == 255 && m[18 + i * 4] == 0 && m[19 + i * 4] == 255;
+    for (int i = 0; m && i < 16; i++) keep &= m[i] == 0xAB;
+    CHECK(e_rd == 0 && green && keep, "读回进缓冲偏移 16：16 个像素都是 0 255 0 255、偏移 0..15 保持 0xAB（读回错 %#x、映射 %s）", e_rd, m ? "成" : "回空");
+    glReadPixels(0, 0, 1, 1, 0x1908, 0x1401, (void *)16); GLenum e_mapped = glGetError(); glUnmapBuffer(0x88EB);
+    glReadPixels(0, 0, 4, 4, 0x1908, 0x1401, (void *)40); GLenum e_over = glGetError();
+    CHECK(e_mapped == INVALID_OPERATION && e_over == INVALID_OPERATION, "映射着读回 → INVALID_OPERATION（%#x）；偏移 40 + 64 > 96 → INVALID_OPERATION（%#x）", e_mapped, e_over);
+    glBindBuffer(0x88EB, 0); uint8_t px[4]; rpx(1, 1, px);
+    CHECK(px[0] == 0 && px[1] == 255 && px[2] == 0 && px[3] == 255 && !glGetError(), "解绑后读回写客户端内存：%u %u %u %u（期望 0 255 0 255）", px[0], px[1], px[2], px[3]);
+    glDeleteBuffers(1, &pb); glBindFramebuffer(0x8D40, 0); glDeleteFramebuffers(1, &fb);
+}
+
+static void t_unpack_buffer(void) {
+    printf("U 像素解包缓冲\n");
+    G(glMapBufferRange, void *, GLenum, GLintptr, GLsizeiptr, GLbitfield) G(glUnmapBuffer, GLboolean, GLenum)
+    G(glTexSubImage2D, void, GLenum, GLint, GLint, GLint, GLsizei, GLsizei, GLenum, GLenum, const void *)
+    uint8_t init[96]; memset(init, 0xAB, 16); for (int i = 0; i < 16; i++) { init[16 + i * 4] = 255; init[17 + i * 4] = 0; init[18 + i * 4] = 0; init[19 + i * 4] = 255; } memset(init + 80, 0, 16);
+    GLuint ub = 0; glGenBuffers(1, &ub); glBindBuffer(0x88EC, ub); GLenum e_bind = glGetError(); GLint got = -1; glGetIntegerv(0x88EF, &got);
+    glBufferData(0x88EC, sizeof init, init, 0x88E4); GLenum e_data = glGetError();
+    CHECK(e_bind == 0 && e_data == 0 && got == (GLint)ub, "绑定 / 建存储无错（%#x / %#x）、PIXEL_UNPACK_BUFFER_BINDING = %d（期望 %u）", e_bind, e_data, got, ub);
+    GLuint fb, tex; glGenFramebuffers(1, &fb); glBindFramebuffer(0x8D40, fb); glGenTextures(1, &tex); glBindTexture(0x0DE1, tex);
+    glTexImage2D(0x0DE1, 0, 0x8058, 4, 4, 0, 0x1908, 0x1401, (const void *)16); GLenum e_img = glGetError();
+    glFramebufferTexture2D(0x8D40, 0x8CE0, 0x0DE1, tex, 0); char a[20], b[20]; pxs(1, 1, a); pxs(3, 3, b);
+    CHECK(e_img == 0 && px_is(1, 1, 255, 0, 0, 255) && px_is(3, 3, 255, 0, 0, 255), "glTexImage2D 从偏移 16 取像素：(1,1) %s、(3,3) %s（期望都是 255 0 0 255，错 %#x）", a, b, e_img);
+    uint8_t *m = glMapBufferRange(0x88EC, 80, 16, 2); if (m) for (int i = 0; i < 4; i++) { m[i * 4] = 0; m[i * 4 + 1] = 255; m[i * 4 + 2] = 0; m[i * 4 + 3] = 255; }
+    glUnmapBuffer(0x88EC); GLenum e_map = glGetError();
+    glTexSubImage2D(0x0DE1, 0, 0, 0, 2, 2, 0x1908, 0x1401, (const void *)80); GLenum e_sub = glGetError(); char c[20]; pxs(0, 0, a); pxs(1, 1, b); pxs(3, 3, c);
+    CHECK(m && e_map == 0 && e_sub == 0 && px_is(0, 0, 0, 255, 0, 255) && px_is(1, 1, 0, 255, 0, 255) && px_is(3, 3, 255, 0, 0, 255),
+          "映射写绿（%s）后 glTexSubImage2D 从偏移 80 取：(0,0) %s、(1,1) %s 期望绿，(3,3) %s 期望仍红（错 %#x / %#x）", m ? "映射成" : "映射回空", a, b, c, e_map, e_sub);
+    glTexSubImage2D(0x0DE1, 0, 0, 0, 4, 4, 0x1908, 0x1401, (const void *)40); GLenum e_over = glGetError();
+    glMapBufferRange(0x88EC, 0, 16, 1); glTexSubImage2D(0x0DE1, 0, 0, 0, 1, 1, 0x1908, 0x1401, (const void *)16); GLenum e_mapped = glGetError(); glUnmapBuffer(0x88EC); pxs(0, 0, a);
+    CHECK(e_over == INVALID_OPERATION && e_mapped == INVALID_OPERATION && px_is(0, 0, 0, 255, 0, 255), "偏移 40 + 64 > 96 → INVALID_OPERATION（%#x）；映射着上传 → INVALID_OPERATION（%#x）；纹理不变 (0,0) %s", e_over, e_mapped, a);
+    glBindBuffer(0x88EC, 0); const uint8_t blue[4] = {0, 0, 255, 255}; glTexSubImage2D(0x0DE1, 0, 0, 0, 1, 1, 0x1908, 0x1401, blue); GLenum e_cli = glGetError(); pxs(0, 0, a);
+    CHECK(e_cli == 0 && px_is(0, 0, 0, 0, 255, 255), "解绑后 glTexSubImage2D 读客户端内存：(0,0) %s（期望 0 0 255 255，错 %#x）", a, e_cli);
+    glDeleteBuffers(1, &ub); glBindFramebuffer(0x8D40, 0); glDeleteFramebuffers(1, &fb); glDeleteTextures(1, &tex);
+}
+
 // ---------- O GLSL ES 3.00 程序 ----------
 static void t_es300(void) {
     printf("O GLSL ES 3.00 程序\n");
     char v[] = "api_es300.vert", f[] = "api_es300.frag"; GLuint p = glCreateProgram(); glAttachShader(p, shader(0x8B31, v)); glAttachShader(p, shader(0x8B30, f)); glLinkProgram(p);
     GLint ok = 0; glGetProgramiv(p, 0x8B82, &ok); CHECK(ok == 1, "#version 300 es 程序在离线库里、链接成功"); if (!ok) return;
+    GLuint fb = fbo_rb(64, 64, NULL); glClearColor(0, 0, 1, 1); glClear(0x4000);
+    GLuint saved = g_tri; g_tri = p; const float q[] = {QUAD(-1, -1, 0, 1, 1, 0, 0)}; tri_use(q, 6); glDrawArrays(4, 0, 6); glFinish(); g_tri = saved;
+    char a[32], b[32]; pxs(16, 32, a); pxs(48, 32, b);
+    CHECK(px_is(16, 32, 255, 0, 0, 255) && px_is(48, 32, 0, 0, 255, 255) && !glGetError(), "左半红（%s）、右半清除色蓝（%s）", a, b);
+    glBindFramebuffer(0x8D40, 0); glDeleteFramebuffers(1, &fb); glDeleteProgram(p);
+}
+
+// ---------- O′ 桌面 GLSL 1.20 程序 ----------
+static void t_desk120(void) {
+    printf("O′ 桌面 GLSL 1.20 程序\n");
+    char v[] = "api_desk120.vert", f[] = "api_desk120.frag"; GLuint p = glCreateProgram(); glAttachShader(p, shader(0x8B31, v)); glAttachShader(p, shader(0x8B30, f)); glLinkProgram(p);
+    GLint ok = 0; glGetProgramiv(p, 0x8B82, &ok); CHECK(ok == 1, "#version 120 程序在离线库里、链接成功"); if (!ok) return;
     GLuint fb = fbo_rb(64, 64, NULL); glClearColor(0, 0, 1, 1); glClear(0x4000);
     GLuint saved = g_tri; g_tri = p; const float q[] = {QUAD(-1, -1, 0, 1, 1, 0, 0)}; tri_use(q, 6); glDrawArrays(4, 0, 6); glFinish(); g_tri = saved;
     char a[32], b[32]; pxs(16, 32, a); pxs(48, 32, b);
@@ -779,6 +872,32 @@ static void t_love(void) {
 //   核心名（结尾不是两个以上大写字母）没实现 → 非空、调用回 0；带厂商后缀的没实现 → 空；FRAMEBUFFER_SRGB 缺省关、开了查得到开、全程无错
 //   #601 起空实现按调用来源给：查表 gl_lookup 只回真实现（装载器先问直连层，层里交了空实现，游戏模块自己导出的同名函数就轮不到）；
 //   游戏运行时按名要（eglGetProcAddress）查表没有时才给空实现。所以下面空实现各项从 eglGetProcAddress 取，查表另核回空
+// ---------- 渲染缓冲位数 + 同步对象属性查询（游戏不查 glGetError、报错不写输出时读到自己栈上的旧值）----------
+//   期望照 GL 4.6 §9.2.6 / §4.1.3 手写：RGBA8 = 8/8/8/8/0/0、DEPTH24_STENCIL8 = 0/0/0/0/24/8、没建存储全 0；
+//   同步对象：类型 SYNC_FENCE 0x9116、条件 0x9117、标志 0、等到后状态 SIGNALED 0x9119；count 0 不写值、length 报 0
+static void t_rb_sync_query(void) {
+    printf("渲染缓冲位数 / 同步对象属性\n");
+    GLuint rb[3]; glGenRenderbuffers(3, rb);
+    static const struct { GLenum f; GLint b[6]; } want[] = {{0x8058, {8, 8, 8, 8, 0, 0}}, {0x88F0, {0, 0, 0, 0, 24, 8}}, {0, {0, 0, 0, 0, 0, 0}}};
+    for (int i = 0; i < 3; i++) {
+        glBindRenderbuffer(0x8D41, rb[i]); if (want[i].f) glRenderbufferStorage(0x8D41, want[i].f, 16, 16);
+        GLint got[6]; int ok = 1; for (int k = 0; k < 6; k++) { got[k] = -7; glGetRenderbufferParameteriv(0x8D41, 0x8D50 + k, &got[k]); ok &= got[k] == want[i].b[k]; }
+        GLenum e = glGetError();
+        CHECK(ok && !e, "渲染缓冲 %#x 各分量位数 %d/%d/%d/%d/%d/%d（期望 %d/%d/%d/%d/%d/%d），错误 %#x", want[i].f, got[0], got[1], got[2], got[3], got[4], got[5],
+              want[i].b[0], want[i].b[1], want[i].b[2], want[i].b[3], want[i].b[4], want[i].b[5], e);
+    }
+    glBindRenderbuffer(0x8D41, 0); glDeleteRenderbuffers(3, rb);
+    G(glGetSynciv, void, GLsync, GLenum, GLsizei, GLsizei *, GLint *) G(glFenceSync, GLsync, GLenum, GLbitfield) G(glClientWaitSync, GLenum, GLsync, GLbitfield, GLuint64) G(glDeleteSync, void, GLsync)
+    GLsync f = glFenceSync(0x9117, 0); glClientWaitSync(f, 1, 5000000000ull);
+    GLint v[4] = {-7, -7, -7, -7}; GLsizei n[4] = {-7, -7, -7, -7};
+    glGetSynciv(f, 0x9112, 1, &n[0], &v[0]); glGetSynciv(f, 0x9113, 1, &n[1], &v[1]); glGetSynciv(f, 0x9115, 1, &n[2], &v[2]); glGetSynciv(f, 0x9114, 1, &n[3], &v[3]);
+    CHECK(v[0] == 0x9116 && v[1] == 0x9117 && v[2] == 0 && v[3] == 0x9119 && n[0] == 1 && n[3] == 1 && !glGetError(),
+          "同步对象属性：类型 %#x 条件 %#x 标志 %d 状态 %#x（期望 0x9116 0x9117 0 0x9119），length %d", v[0], v[1], v[2], v[3], n[0]);
+    GLint z = -7; GLsizei zl = -7; glGetSynciv(f, 0x9114, 0, &zl, &z);
+    CHECK(z == -7 && zl == 0 && !glGetError(), "count 0：不写值（%d）、length 0（%d）", z, zl);
+    glGetSynciv(f, 0x1234, 1, NULL, &z); GLenum e1 = glGetError(); glDeleteSync(f); glGetSynciv(f, 0x9114, 1, NULL, &z); GLenum e2 = glGetError();
+    CHECK(e1 == INVALID_ENUM && e2 == INVALID_VALUE, "未知参数 INVALID_ENUM、已删的同步对象 INVALID_VALUE（%#x %#x）", e1, e2);
+}
 static void t_core_stub(void) {
     void *(*egpa)(const char *) = gpa("eglGetProcAddress"); CHECK(egpa != NULL, "eglGetProcAddress 查得到"); if (!egpa) return;
     CHECK(gpa("glS2aNoSuchCore") == NULL, "查表（gl_lookup）对没实现的核心名回空（空实现不从查表给，#601）");
@@ -882,6 +1001,31 @@ static void t_bool_uniform(void) {
     glUniform1i(lf, 0); glUniform2iv(lp, 1, p00); glDrawArrays(4, 0, 6); glFinish(); pxs(4, 4, s);
     CHECK(px_is(4, 4, 255, 0, 0, 255) && !glGetError(), "uFlag=0、uPair=(0,0) → 红（%s）", s);
 }
+// ⓟ D-S6VQ：精度查询与读回格式查询（期望按规范与本层实际精度手算：32 位 float / int）
+static void t_precision(void) {
+    G(glGetShaderPrecisionFormat, void, GLenum, GLenum, GLint *, GLint *)
+    glGetError(); GLint r[2] = {-1, -1}, pr = -1;
+    glGetShaderPrecisionFormat(0x8B30, 0x8DF2, r, &pr);   // FRAGMENT / HIGH_FLOAT
+    CHECK(r[0] == 127 && r[1] == 127 && pr == 23 && !glGetError(), "highp float：range {%d, %d}、precision %d（应 127 127 23）", r[0], r[1], pr);
+    r[0] = r[1] = pr = -1; glGetShaderPrecisionFormat(0x8B31, 0x8DF0, r, &pr);   // VERTEX / LOW_FLOAT：本层不降精度，同 highp
+    CHECK(r[0] == 127 && r[1] == 127 && pr == 23, "lowp float 同 highp：{%d, %d} %d", r[0], r[1], pr);
+    r[0] = r[1] = pr = -1; glGetShaderPrecisionFormat(0x8B30, 0x8DF5, r, &pr);   // FRAGMENT / HIGH_INT
+    CHECK(r[0] == 31 && r[1] == 30 && pr == 0, "highp int：range {%d, %d}、precision %d（应 31 30 0）", r[0], r[1], pr);
+    r[0] = r[1] = pr = -1; glGetShaderPrecisionFormat(0x8B30, 0x1234, r, &pr);
+    CHECK(glGetError() == INVALID_ENUM && r[0] == -1 && pr == -1, "未知精度类型 → INVALID_ENUM、不写输出");
+    GLint fmt = 0, typ = 0; glGetIntegerv(0x8B9B, &fmt); glGetIntegerv(0x8B9A, &typ);
+    CHECK(fmt == 0x1908 && typ == 0x1401 && !glGetError(), "IMPLEMENTATION_COLOR_READ_FORMAT / TYPE = RGBA / UNSIGNED_BYTE（%#x / %#x）、不置错", fmt, typ);
+    {   // D-5MW2：游戏按 NUM_COMPRESSED_TEXTURE_FORMATS = 0 开空缓冲（空指针）再查 COMPRESSED_TEXTURE_FORMATS——清单类一个都不写、不置错（传空指针也不崩）；
+        //   统一块上限有值（每程序 8 块、32 个绑定点、64 KB）；查不到的 pname 置 INVALID_ENUM 且不动输出（原先写 0）
+        GLint nf = -1, nb = -1, vb = -1, fb2 = -1, bb = -1, bs = -1; glGetIntegerv(0x86A2, &nf); glGetIntegerv(0x87FE, &nb);
+        glGetIntegerv(0x86A3, NULL); glGetIntegerv(0x87FF, NULL); GLfloat ff = 7; glGetFloatv(0x86A3, &ff); GLenum e0 = glGetError();
+        glGetIntegerv(0x8A2B, &vb); glGetIntegerv(0x8A2D, &fb2); glGetIntegerv(0x8A2F, &bb); glGetIntegerv(0x8A30, &bs); GLenum e1 = glGetError();
+        GLint keep = 12345; glGetIntegerv(0x7FFF, &keep); GLenum e2 = glGetError();
+        CHECK(nf == 0 && nb == 0 && ff == 7 && e0 == 0 && vb == 8 && fb2 == 8 && bb == 32 && bs == 65536 && e1 == 0 && keep == 12345 && e2 == 0x0500,
+              "格式清单数 %d / 程序二进制格式数 %d、清单查询传空指针不崩不置错（%#x、浮点输出仍 %.0f）；统一块 %d / %d / 绑定点 %d / 块大小 %d（%#x）；查不到的置 %#x、输出仍 %d",
+              nf, nb, e0, ff, vb, fb2, bb, bs, e1, e2, keep);
+    }
+}
 int main(void) { alarm(120); @autoreleasepool {
 #define LOAD(name, ret, ...) name = (ret (*)(__VA_ARGS__))gpa(#name); if (!name) { printf("✗ 取不到已有入口 %s\n", #name); return 1; }
     BASE(LOAD)
@@ -895,6 +1039,6 @@ int main(void) { alarm(120); @autoreleasepool {
     g_sf = eglCreateWindowSurface(g_dpy, cfg, NULL, NULL); EGLContext ctx = eglCreateContext(g_dpy, cfg, NULL, ctx_attr);
     if (!eglMakeCurrent(g_dpy, g_sf, g_sf, ctx)) { printf("✗ 建上下文失败\n"); return 1; }
     g_tri = program("tri"); glGenVertexArrays(1, &g_tri_vao); glGenBuffers(1, &g_tri_vbo);
-    t_queries(); t_sync(); t_readback(); t_fb_query(); t_volume(); t_msaa(); t_map(); t_instanced(); t_packed_attr(); t_raster_read(); t_uniforms(); t_names_programs(); t_threads(); t_frame_storage(); t_core_stub(); t_tex_storage3d(); t_tex_swizzle(); t_bool_uniform(); t_api_version(); t_map_range(); t_es300(); t_sampler_array(); t_shader_iv(); t_love();
+    t_queries(); t_sync(); t_readback(); t_fb_query(); t_volume(); t_msaa(); t_map(); t_instanced(); t_packed_attr(); t_raster_read(); t_uniforms(); t_names_programs(); t_threads(); t_frame_storage(); t_precision(); t_core_stub(); t_rb_sync_query(); t_tex_storage3d(); t_tex_swizzle(); t_bool_uniform(); t_api_version(); t_egl_current(); t_map_range(); t_pack_buffer(); t_unpack_buffer(); t_es300(); t_desk120(); t_sampler_array(); t_shader_iv(); t_love();
     printf("%s t_gl_api：%d 项，失败 %d\n", fails ? "✗" : "✓", checks, fails); return fails != 0;
 }}

@@ -40,6 +40,8 @@ namespace Ryujinx.Audio.Input
         /// The <see cref="AudioInputSystem"/> session instances.
         /// </summary>
         private readonly AudioInputSystem[] _sessions;
+        public AudioInputSystem[] S2ASessions => _sessions;   // S2Arm 即时存档：按会话号找 audin 队列（读时持 S2ASessionLock）
+        public System.Threading.Lock S2ASessionLock => _sessionLock;
 
         /// <summary>
         /// The count of active sessions.

@@ -198,7 +198,7 @@ static void report_players(void) {
     if (status == NS2_STATUS_READY) emit_status(status, now ? "Connected: two Joy-Con 2, one player each" : "Connected: Joy-Con 2 pair (left + right)", NULL);
 }
 
-// 启动器 stdin 的命令（一行一条，launchers NS2LauncherController）：assign start / cancel / done {json}（分配玩家）、exclude / missing（两个连接程序别抢同一台）。
+// 启动器 stdin 的命令（一行一条，launchers NS2LauncherController）：assign start / cancel / done {json}（分配玩家）、lights {json}（玩家灯）、exclude / missing（两个连接程序别抢同一台）。
 //   认不出的行记一笔、照常跑；stdin 关了（启动器退出）就不再读
 static void *stdin_main(void *context) {
     (void)context;
@@ -223,6 +223,15 @@ static void *stdin_main(void *context) {
         if (!strncmp(line, "press stop", 10)) { ns2_set_press_watch(0); continue; }
         if (!strncmp(line, "assign start", 12)) { ns2_set_assign_mode(1); ns2_rescan(); continue; }   // 分配中继续搜，好接更多手柄
         if (!strncmp(line, "assign cancel", 13)) { ns2_set_assign_mode(0); continue; }
+        if (!strncmp(line, "lights ", 7)) {   // lights {"设备 id": 灯型, …}：手柄上的玩家灯跟着分配（同原机；灯型见 NS2Transport.h ns2_set_player_lights）
+            NSData *json = [[NSString stringWithUTF8String:line + 7] dataUsingEncoding:NSUTF8StringEncoding];
+            NSDictionary *lights = json ? [NSJSONSerialization JSONObjectWithData:json options:0 error:nil] : nil;
+            if (![lights isKindOfClass:NSDictionary.class]) { fprintf(stderr, "[NS2 Relay] 玩家灯读不懂，照原样：%s", line); continue; }
+            for (NSString *identifier in lights)
+                if ([identifier isKindOfClass:NSString.class] && [lights[identifier] isKindOfClass:NSNumber.class])
+                    ns2_set_player_lights(identifier.UTF8String, [lights[identifier] unsignedIntValue]);
+            continue;
+        }
         if (!strncmp(line, "assign done ", 12)) {
             NSData *json = [[NSString stringWithUTF8String:line + 12] dataUsingEncoding:NSUTF8StringEncoding];
             NSDictionary *plan = json ? [NSJSONSerialization JSONObjectWithData:json options:0 error:nil] : nil;

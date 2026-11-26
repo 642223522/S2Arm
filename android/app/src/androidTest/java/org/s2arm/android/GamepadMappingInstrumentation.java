@@ -50,10 +50,10 @@ public final class GamepadMappingInstrumentation extends Instrumentation {
     @Override public void onStart() {
         Bundle result = new Bundle();
         SharedPreferences prefs = getTargetContext().getSharedPreferences("s2a", 0);
-        String original = prefs.getString("gamepadMapping", null);
+        String original = prefs.getString("padFace", null), legacy = prefs.getString("gamepadMapping", null);
         try {
             check(getTargetContext().getPackageName().equals("org.s2arm.android"), "diagnostic APK only");
-            check(prefs.edit().remove("gamepadMapping").commit(), "clear only mapping preference");
+            check(prefs.edit().remove("padFace").remove("gamepadMapping").commit(), "clear only mapping preferences");
             Intent launch = new Intent(getTargetContext(), MainActivity.class)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK).putExtra("s2arm.touchlog", "on")
                 .putExtra("s2arm.touchpad", "off");
@@ -61,9 +61,10 @@ public final class GamepadMappingInstrumentation extends Instrumentation {
             waitForIdleSync();
             int[] codes = {KeyEvent.KEYCODE_BUTTON_A, KeyEvent.KEYCODE_BUTTON_B,
                 KeyEvent.KEYCODE_BUTTON_X, KeyEvent.KEYCODE_BUTTON_Y};
-            int[][] expected = {{2, 1, 8, 4}, {1, 2, 4, 8}};
+            // Software events have no device: not a Nintendo pad, so the default (auto) is the Xbox layout.
+            int[][] expected = {{1, 2, 4, 8}, {2, 1, 8, 4}};
             for (int mode = 0; mode < 2; mode++) {
-                if (mode == 1) deliver(new Intent().putExtra("s2arm.gamemap", "label"));
+                if (mode == 1) deliver(new Intent().putExtra("s2arm.gamemap", "switch"));
                 for (int i = 0; i < codes.length; i++) {
                     key(codes[i], true);
                     check(buttons() == expected[mode][i], "face button mode=" + mode + " index=" + i);
@@ -75,7 +76,7 @@ public final class GamepadMappingInstrumentation extends Instrumentation {
             deliver(new Intent().putExtra("s2arm.gamemap", "position"));
             // Android pauses a resumed Activity before onNewIntent; onPause must release held input.
             check(buttons() == 0, "Intent pause clears held A");
-            check("position".equals(prefs.getString("gamepadMapping", null)), "position saved while held");
+            check("switch".equals(prefs.getString("padFace", null)), "older position saved as switch while held");
             key(codes[0], false);
             key(codes[0], true);
             check(buttons() == 2, "new press uses position");
@@ -89,12 +90,12 @@ public final class GamepadMappingInstrumentation extends Instrumentation {
             for (Intent invalid : new Intent[] {new Intent().putExtra("s2arm.gamemap", "LABEL"),
                     new Intent().putExtra("s2arm.gamemap", 1)}) {
                 deliver(invalid);
-                check("label".equals(prefs.getString("gamepadMapping", null)), "invalid request not saved");
+                check("xbox".equals(prefs.getString("padFace", null)), "invalid request not saved");
                 key(codes[0], true);
                 check(buttons() == 1, "invalid request keeps mapping");
                 key(codes[0], false);
             }
-            check("label".equals(activity.getIntent().getStringExtra("s2arm.gamemap")), "launch intent updated");
+            check("xbox".equals(activity.getIntent().getStringExtra("s2arm.gamemap")), "launch intent updated");
             ActivityMonitor monitor = addMonitor(MainActivity.class.getName(), null, false);
             MainActivity previous = activity;
             runOnMainSync(() -> previous.recreate());
@@ -118,8 +119,10 @@ public final class GamepadMappingInstrumentation extends Instrumentation {
         } finally {
             if (activity != null) runOnMainSync(() -> activity.finish());
             SharedPreferences.Editor restore = prefs.edit();
-            if (original == null) restore.remove("gamepadMapping");
-            else restore.putString("gamepadMapping", original);
+            if (original == null) restore.remove("padFace");
+            else restore.putString("padFace", original);
+            if (legacy == null) restore.remove("gamepadMapping");
+            else restore.putString("gamepadMapping", legacy);
             restore.commit();
         }
         finish(result.getBoolean("passed") ? Activity.RESULT_OK : Activity.RESULT_CANCELED, result);

@@ -11,15 +11,30 @@ namespace Ryujinx.HLE.HOS.Services.Ldn.UserServiceCreator.LdnMitm.Proxy
         private readonly LanProtocol _protocol;
         private byte[] _buffer;
         private int _bufferEnd;
+        private int _localDisconnect;
+        private int _remoteDisconnectNotified;
+        private readonly IPAddress _localAddress;
 
-        public LdnProxyTcpClient(LanProtocol protocol, IPAddress address, int port) : base(address, port)
+        public LdnProxyTcpClient(LanProtocol protocol, IPAddress address, int port, IPAddress localAddress = null) : base(address, port)
         {
             _protocol = protocol;
+            _localAddress = localAddress;
             _buffer = new byte[LanProtocol.BufferSize];
             OptionSendBufferSize = LanProtocol.TcpTxBufferSize;
             OptionReceiveBufferSize = LanProtocol.TcpRxBufferSize;
             OptionSendBufferLimit = LanProtocol.TxBufferSizeMax;
             OptionReceiveBufferLimit = LanProtocol.RxBufferSizeMax;
+        }
+
+        protected override Socket CreateSocket()
+        {
+            Socket socket = base.CreateSocket();
+            if (_localAddress != null && !socket.IsBound)
+            {
+                socket.Bind(new IPEndPoint(_localAddress, 0));
+            }
+
+            return socket;
         }
 
         protected override void OnConnected()
@@ -34,6 +49,7 @@ namespace Ryujinx.HLE.HOS.Services.Ldn.UserServiceCreator.LdnMitm.Proxy
 
         public void DisconnectAndStop()
         {
+            Interlocked.Exchange(ref _localDisconnect, 1);
             DisconnectAsync();
 
             while (IsConnected)
@@ -64,7 +80,20 @@ namespace Ryujinx.HLE.HOS.Services.Ldn.UserServiceCreator.LdnMitm.Proxy
 
         protected override void OnError(SocketError error)
         {
-            Logger.Error?.PrintMsg(LogClass.ServiceLdn, $"LdnProxyTCPClient caught an error with code {error}");
+            Logger.Error?.PrintMsg(LogClass.ServiceLdn,
+                $"LdnProxyTCPClient caught an error with code {error}; endpoint={Endpoint}, connected={IsConnected}");
+        }
+
+        protected override void OnDisconnected()
+        {
+            Logger.Info?.PrintMsg(LogClass.ServiceLdn,
+                $"LdnProxyTCPClient disconnected; endpoint={Endpoint}, localClose={Volatile.Read(ref _localDisconnect) != 0}");
+
+            if (Volatile.Read(ref _localDisconnect) == 0 &&
+                Interlocked.Exchange(ref _remoteDisconnectNotified, 1) == 0)
+            {
+                _protocol.InvokeClientDisconnected(this);
+            }
         }
 
         protected override void Dispose(bool disposingManagedResources)

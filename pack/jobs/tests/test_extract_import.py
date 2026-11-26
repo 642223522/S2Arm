@@ -83,7 +83,8 @@ class ExtractImportTests(JobCase):
         self.assertEqual((self.c.library / "games" / "Mario" / "cover.jpg").read_bytes(), b"EXTRACT_ICON")
 
     def test_loose_folder_reaches_ns2_dump(self):
-        # 玩家 #9：已解包目录出包走 extract_folder 的 loose 分支，用到 tempfile（曾漏 import，NameError）。手算期望：起 ns2_dump.py 一次，第一个位置参数 = 临时目录，里面 base 是指向源目录的链接
+        # 玩家 #9：已解包目录出包走 extract_folder 的 loose 分支，用到 tempfile（曾漏 import，NameError）。手算期望：起 ns2_dump.py 一次，第一个位置参数 = 临时目录（空、不建链接），
+        #   本体目录经 --base 直接交进去（玩家诊断 #0fd185：链接可能建不了）
         import os
         import tempfile as tf
         from types import SimpleNamespace
@@ -93,42 +94,11 @@ class ExtractImportTests(JobCase):
             root = Path(d); src = root / "src"; src.mkdir(); (root / "priv").mkdir(); calls = []
             def run(args, log, env):
                 stage = Path(args[4])
-                calls.append((Path(args[3]).name, os.path.islink(stage / "base"), os.path.realpath(stage / "base")))
+                calls.append((Path(args[3]).name, os.path.lexists(stage / "base"), args[args.index("--base") + 1] if "--base" in args else None))
             c = SimpleNamespace(private=root / "priv", engine=root, run=run)
             with mock.patch.object(build, "source_path", return_value=src), mock.patch.object(build, "reader_program", return_value="r"):
                 build.extract_folder(c, dict(name="G"), [dict(format="loose")], root / "x", {}, root)
-            self.assertEqual(calls, [("ns2_dump.py", True, os.path.realpath(src))])
-
-    def test_loose_link_on_windows_uses_junction_then_symlink(self):
-        # 诊断#1fad25：Windows 普通用户建符号链接 WinError 1314（没有特权），已解包散文件出包在解包一步就失败。
-        #   期望：Windows 先建目录联接；联接建不了再试符号链接（按目录建）；两样都不行报 permission_denied、说清网络盘 / 开发者模式
-        import sys as _sys
-        import types
-        from unittest import mock
-        import build
-        from core import Failure
-        calls = []
-        def junction_ok(target, link): calls.append(("junction", target, link))
-        def junction_bad(target, link): calls.append(("junction", target, link)); raise OSError(1, "不支持")
-        def symlink_ok(src, dst, target_is_directory=False): calls.append(("symlink", str(src), str(dst), target_is_directory))
-        def symlink_bad(src, dst, target_is_directory=False): calls.append(("symlink", str(src), str(dst), target_is_directory)); raise OSError(1314, "客户端没有所需的特权")
-        src, dst = "D:\\games\\loose", "C:\\stage\\base"
-        for junction, symlink, want, fails in ((junction_ok, symlink_bad, [("junction", src, dst)], False),
-                                               (junction_bad, symlink_ok, [("junction", src, dst), ("symlink", src, dst, True)], False),
-                                               (junction_bad, symlink_bad, [("junction", src, dst), ("symlink", src, dst, True)], True)):
-            calls.clear()
-            fake = types.ModuleType("pack.orch.winlong"); fake.create_junction = junction
-            with self.subTest(junction=junction.__name__, symlink=symlink.__name__), \
-                 mock.patch.dict(_sys.modules, {"pack.orch.winlong": fake}), mock.patch.object(build.os, "name", "nt"), \
-                 mock.patch.object(build.os, "symlink", symlink):
-                if fails:
-                    with self.assertRaises(Failure) as e:
-                        build._dir_link(src, dst)
-                    self.assertEqual(e.exception.code, "permission_denied")
-                    self.assertIn("开发者模式", str(e.exception))
-                else:
-                    build._dir_link(src, dst)
-                self.assertEqual(calls, want)
+            self.assertEqual(calls, [("ns2_dump.py", False, str(src))])
 
     def test_loose_import_without_keys(self):
         # 通用解包目录（有 exefs/main、exefs/main.npdm 和 romfs/ 目录，没有 unpack.tsv）：不要密钥能导入，format=loose，
@@ -142,6 +112,26 @@ class ExtractImportTests(JobCase):
         self.assertEqual((game["id"], game["name"], pkg["type"], pkg["format"]),
                          (f"{tid:016X}", "Splatoon", "base", "loose"))
         self.assertEqual((self.c.library / "games" / "Splatoon" / "cover.jpg").read_bytes(), b"LOOSE_ICON")
+
+    def test_program_hash_mismatch_imports_with_warning(self):
+        # #1522：导出目录 / 散文件导入时先试解程序文件（NSO）、核段哈希。解不开（LZ4）的分支要 lz4，在 tests/ns2_dump_test.sh（钉版解释器）测；夹具：第一段不压缩（标志 0x38 = 三段都核哈希，同真件的核验位），期望句手写
+        import hashlib
+        import struct
+
+        def nso(text, good=True):
+            b = bytearray(0x100); b[:4] = b"NSO0"; struct.pack_into("<I", b, 0x0C, 0x38)
+            struct.pack_into("<III", b, 0x10, 0x100, 0, len(text)); struct.pack_into("<I", b, 0x60, len(text))
+            for i, seg in enumerate((text, b"", b"")):
+                b[0xA0 + i * 32:0xC0 + i * 32] = hashlib.sha256(seg if (good or i) else seg + b"x").digest()
+            return bytes(b) + text
+        tid = 0x0400A3A01EE4C000
+        # 段哈希对不上但解得开（打过补丁 / mod 的程序）：照常入库，记一条黄色诊断（维护者 11-17：校验不过不拒收）
+        off = self.make_dump(self.root / "off", tid); (off / "base" / "exefs" / "main").write_bytes(nso(b"CODE" * 64, good=False))
+        _, done = self.worker("import", paths=[str(off)])
+        self.assertEqual(done["state"], "succeeded")
+        warn = [d for d in done.get("diagnostics", []) if d.get("code") == "source_integrity_skipped"]
+        self.assertEqual(len(warn), 1, done.get("diagnostics")); self.assertEqual(warn[0]["severity"], "warning")
+        self.assertEqual(len(self.c.catalog()["games"]), 1)
 
     def test_extract_dir_in_subfolder(self):
         # 解包目录嵌在子目录里：扫描时能找到，认到就不再往里走

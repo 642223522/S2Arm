@@ -1,3 +1,4 @@
+#if !os(tvOS)   // tvOS 不编本文件：触屏虚拟手柄预览（电视版库界面见 TVLibraryView.swift，UPSTREAM.md「我方改动」）
 import SwiftUI
 
 /// Where the touch controls sit on an iPhone Pro Max held sideways (932 x 430 points, the side insets of the Dynamic Island and the home
@@ -159,3 +160,4 @@ enum PadDrawing {
     }
 }
 
+#endif   // !os(tvOS)

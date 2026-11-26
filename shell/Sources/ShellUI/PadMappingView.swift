@@ -133,7 +133,7 @@ struct PadMappingCard: View {
                 footer
             }
         }
-        .frame(maxWidth: 480)
+        .frame(maxWidth: 480 * ShellFonts.tvScale)
         .background(Color(red: 0.075, green: 0.075, blue: 0.082), in: RoundedRectangle(cornerRadius: 26))
         .clipShape(RoundedRectangle(cornerRadius: 26))
         .overlay(RoundedRectangle(cornerRadius: 26).strokeBorder(.white.opacity(0.10)))

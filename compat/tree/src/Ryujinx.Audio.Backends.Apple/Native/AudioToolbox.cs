@@ -73,6 +73,32 @@ namespace Ryujinx.Audio.Backends.Apple.Native
             ref uint dataSize,
             ref uint data);
 
+        // S2Arm（11-16 声音诊断）：建队时记下系统默认输出设备的传输方式（'tran'）、标称采样率（'nsrt'，Float64）、输出作用域（'outp'）的静音（'mute'）与音量（'volm'，Float32）。
+        //   #1308 / #1245 / 诊断#a51362：交给设备的声音非零却听不到 / 爆音，日志里没有设备是什么、静没静音
+        internal const uint kAudioDevicePropertyTransportType = 0x7472616E;   // 'tran'
+        internal const uint kAudioDevicePropertyNominalSampleRate = 0x6E737274;   // 'nsrt'
+        internal const uint kAudioDevicePropertyMute = 0x6D757465;   // 'mute'
+        internal const uint kAudioDevicePropertyVolumeScalar = 0x766F6C6D;   // 'volm'
+        internal const uint kAudioDevicePropertyScopeOutput = 0x6F757470;   // 'outp'
+
+        [LibraryImport("/System/Library/Frameworks/CoreAudio.framework/CoreAudio", EntryPoint = "AudioObjectGetPropertyData")]   // 平台例外：Apple 后端平台实现的 CoreAudio P/Invoke 声明（声音诊断，Float32 值）
+        internal static partial int AudioObjectGetPropertyDataFloat(
+            uint objectID,
+            ref AudioObjectPropertyAddress address,
+            uint qualifierDataSize,
+            nint qualifierData,
+            ref uint dataSize,
+            ref float data);
+
+        [LibraryImport("/System/Library/Frameworks/CoreAudio.framework/CoreAudio", EntryPoint = "AudioObjectGetPropertyData")]   // 平台例外：Apple 后端平台实现的 CoreAudio P/Invoke 声明（声音诊断，Float64 值）
+        internal static partial int AudioObjectGetPropertyDataDouble(
+            uint objectID,
+            ref AudioObjectPropertyAddress address,
+            uint qualifierDataSize,
+            nint qualifierData,
+            ref uint dataSize,
+            ref double data);
+
         internal const uint kAudioFormatFlagIsFloat = (1 << 0);
         internal const uint kAudioFormatFlagIsSignedInteger = (1 << 2);
         internal const uint kAudioFormatFlagIsPacked = (1 << 3);
@@ -82,6 +108,17 @@ namespace Ryujinx.Audio.Backends.Apple.Native
 
         [LibraryImport("/System/Library/Frameworks/AudioToolbox.framework/AudioToolbox")]
         internal static partial int AudioQueueNewOutput(
+            ref AudioStreamBasicDescription format,
+            nint callback,
+            nint userData,
+            nint callbackRunLoop,
+            nint callbackRunLoopMode,
+            uint flags,
+            out nint audioQueue);
+
+        // S2Arm（#2151）：收音队列（AppleHardwareDeviceSessionInput）；回调 = AudioQueueInputCallback(userData, 队列, 缓冲, 起始时刻, 包数, 包描述)
+        [LibraryImport("/System/Library/Frameworks/AudioToolbox.framework/AudioToolbox")]   // 平台例外：Apple 后端平台实现的 AudioToolbox P/Invoke 声明（收音）
+        internal static partial int AudioQueueNewInput(
             ref AudioStreamBasicDescription format,
             nint callback,
             nint userData,
@@ -122,6 +159,10 @@ namespace Ryujinx.Audio.Backends.Apple.Native
 
         [LibraryImport("/System/Library/Frameworks/AudioToolbox.framework/AudioToolbox")]
         internal static partial int AudioQueueStop(nint audioQueue, [MarshalAs(UnmanagedType.I1)] bool immediate);
+
+        // outTimeStamp：AudioTimeStamp（64 字节，mSampleTime 在偏移 0）；看门狗线程按需调（QueueTimelineWatch.PastSubmitted）
+        [LibraryImport("/System/Library/Frameworks/AudioToolbox.framework/AudioToolbox")]   // 平台例外：Apple 后端平台实现的 AudioToolbox P/Invoke 声明（#1921 队列时钟）
+        internal static unsafe partial int AudioQueueGetCurrentTime(nint audioQueue, nint timeline, void* outTimeStamp, nint outDiscontinuity);
 
         [LibraryImport("/System/Library/Frameworks/AudioToolbox.framework/AudioToolbox")]
         internal static partial int AudioQueueSetParameter(

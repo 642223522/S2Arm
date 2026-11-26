@@ -10,7 +10,8 @@
 #   virtual range [offset, offset + length). A chunk whose stored length equals its length is kept as it is; the others are Oodle, decoded by the game's own decoder (nxsh_extract.pkz_oodle).
 #   An archive that is not compressed has no chunk table: the offsets are offsets in the file.
 # File 0 is the path list (one path per line, in entry order after it), which names the entries.
-import struct
+import os, struct, sys
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'nvn', 'tools')); import romfs_list   # 按路径读经 romfs_list（目录形态同 open；RomFS 不落散文件、只有镜像时从镜像读）
 
 MAGIC, CHUNK, CTL_MAGIC = b'HGPAK\0\0\0', 0x20000, bytes.fromhex('34127698')
 
@@ -87,14 +88,14 @@ def shader(b):
 
 def jobs(files, oodle, parts=64, heads=None):
     """nxsh_extract's jobs: each HGPAK's files (the path list read once here) in about equal sizes. → ([(path, files), …], the archive paths taken)"""
-    import mmap
     out, taken = [], set()
     for p in files:   # heads = 文件头表（nxsh_extract 从 RomFS 清单给，#606）：魔数不对的不打开
         h = heads.get(p) if heads is not None else None
         if h is not None and h[:8] != MAGIC: continue
-        with open(p, 'rb') as f:
-            if h is None and f.read(8) != MAGIC: continue
-            with mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as d: fl = Hgpak(d, oodle).files()
+        if h is None:
+            with romfs_list.open_file(p) as f:
+                if f.read(8) != MAGIC: continue
+        with romfs_list.map_file(p) as d: fl = Hgpak(d, oodle).files()
         taken.add(p)
         step, cur, size = sum(x[2] for x in fl) / parts, [], 0
         for x in fl:
@@ -106,7 +107,6 @@ def jobs(files, oodle, parts=64, heads=None):
 
 def members(path, fl, oodle):
     """→ (name, data) of the files fl of the HGPAK at path"""
-    import mmap
-    with open(path, 'rb') as f, mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as d:
+    with romfs_list.map_file(path) as d:
         r = Hgpak(d, oodle)
         for name, off, size in fl: yield name, r.read(off, size)

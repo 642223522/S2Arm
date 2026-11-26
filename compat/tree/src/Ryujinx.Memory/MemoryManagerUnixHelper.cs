@@ -115,7 +115,7 @@ namespace Ryujinx.Memory
                 {
                     result |= MAP_ANONYMOUS_LINUX_GENERIC;
                 }
-                else if (OperatingSystem.IsMacOS() || OperatingSystem.IsIOS())
+                else if (OperatingSystem.IsMacOS() || (OperatingSystem.IsIOS() || OperatingSystem.IsTvOS()))   // 平台例外：tvOS 与 iOS 走同一分支
                 {
                     result |= MAP_ANONYMOUS_DARWIN;
                 }
@@ -131,7 +131,7 @@ namespace Ryujinx.Memory
                 {
                     result |= MAP_NORESERVE_LINUX_GENERIC;
                 }
-                else if (OperatingSystem.IsMacOS() || OperatingSystem.IsIOS())
+                else if (OperatingSystem.IsMacOS() || (OperatingSystem.IsIOS() || OperatingSystem.IsTvOS()))   // 平台例外：tvOS 与 iOS 走同一分支
                 {
                     result |= MAP_NORESERVE_DARWIN;
                 }
@@ -147,7 +147,7 @@ namespace Ryujinx.Memory
                 {
                     result |= MAP_UNLOCKED_LINUX_GENERIC;
                 }
-                else if (OperatingSystem.IsMacOS() || OperatingSystem.IsIOS())
+                else if (OperatingSystem.IsMacOS() || (OperatingSystem.IsIOS() || OperatingSystem.IsTvOS()))   // 平台例外：tvOS 与 iOS 走同一分支
                 {
                     // FIXME: Doesn't exist on Darwin
                 }

@@ -1,7 +1,8 @@
 // Android's production layout adapter: legacy balanced mode and default budget.
 #include "../src/native.h"
 #include "../../android/native/runtime/platform/layout_android.inc"
-uint64_t s2a_app_pool(void) { return 0xCD500000ull; } void s2a_app_pool_set(uint64_t v) { (void)v; }   // layout.c 替身（本测不链 layout.c；Switch 池）
+static uint64_t g_pool = 0xCD500000ull;
+uint64_t s2a_app_pool(void) { return g_pool; } void s2a_app_pool_set(uint64_t v) { g_pool = v; }   // layout.c 替身（本测不链 layout.c；缺省 Switch 池，堆模式用例里临时改成 Switch 2 的 9 GiB）
 #include <assert.h>
 #include <unistd.h>
 #define GB (1ull << 30)
@@ -52,6 +53,17 @@ int main(void) {
     assert(L.heap_base + L.heap_size <= W + L.win_size);
     assert(s2a_android_layout_compute(3, 80*MB, &req, W, need-2*MB, &L) == -2);
     assert(s2a_android_layout_compute(2, 80*MB, &req, W, 64*GB, &L) == -1);
+    // 堆模式（系统资源 0，沿用 39 位布局）：堆区 6 GiB；应用池比它大（Switch 2 的 9 GiB）时堆区放大到池、别名区顺延——同 runtime/src/layout.c heapmode
+    //   （t_layout.c 的 Pokopia 用例）。期望值手算：TLS/IO 1 GiB + 栈区 2 GiB 之后堆区起于 W+3 GiB，别名区紧接堆区之后、8 GiB，32 GiB 跨度不变。
+    //   起因：Switch 2 一款开局 SetHeapSize 要 9579790336 字节（9 GiB − 80 MiB），堆区写死 6 GiB → 0xD001，起局即崩
+    assert(!s2a_android_layout_compute(3, 0, &req, W, 64*GB, &L));   // Switch 池（3284 MiB）：与改前一字节不变
+    assert(L.win_size == 32*GB && L.heap_base == W + 3*GB && L.heap_size == 6*GB && L.alias_base == W + 9*GB && L.alias_size == 8*GB);
+    s2a_app_pool_set(9*GB);                                          // Switch 2 池
+    assert(!s2a_android_layout_compute(3, 0, &req, W, 64*GB, &L));
+    assert(L.win_size == 32*GB && L.heap_base == W + 3*GB && L.heap_size == 9*GB && L.alias_base == W + 12*GB && L.alias_size == 8*GB);
+    assert(L.heap_base + L.heap_size <= L.alias_base && L.alias_base + L.alias_size <= W + L.win_size && L.aslr_size == 32*GB);
+    assert(9579790336ull <= L.heap_size);                            // 那款真要的堆放得进去
+    s2a_app_pool_set(0xCD500000ull);
 #endif
     puts("✓ t_layout_balanced");
     return 0;

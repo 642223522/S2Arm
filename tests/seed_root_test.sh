@@ -115,4 +115,19 @@ grep -q '【红】' "$T/deleted.log" || { echo "不通：现行解析不出没�
 ! grep -q '🟢' "$T/deleted.log" || { echo "不通：现行解析不出仍打 🟢（$(grep '🟢' "$T/deleted.log")）" >&2; exit 1; }
 echo 'seed_current_missing: 提交后版本被删 -> 退非0 + 【红】，无 🟢'
 
+# RomFS 镜像 romfs.std（标准 RomFS，与 romfs/ 同级）：源只有镜像 → 现行有逐字节相同的 romfs.std、不建 romfs/（从现行克隆来的存储软链删掉）；
+#   上一版的界面布局覆盖层（ui_overlay/ + 清单）随重播作废；再播目录形态的源 → 旧镜像删掉、romfs/ 回来。期望按夹具手写
+mkdir -p "$T/imgsrc/exefs"; printf 'program' > "$T/imgsrc/exefs/main"; head -c 70001 /dev/urandom > "$T/imgsrc/romfs.std"
+W=$(root_begin fixture overlay); mkdir -p "$W/ui_overlay/romfs/deep"; printf wide > "$W/ui_overlay/romfs/deep/plugin.nro"; printf 'deep/plugin.nro\n' > "$W/ui_overlay.tsv"; root_commit fixture overlay
+bash "$R/pack/seed_root.sh" fixture image "$T/imgsrc" > /dev/null
+current=$(root_cur fixture)
+{ cmp -s "$T/imgsrc/romfs.std" "$current/romfs.std" && [ ! -e "$current/romfs" ] && [ ! -L "$current/romfs" ]; } || { echo "不通 播镜像：现行该有同字节的 romfs.std、没有 romfs（$(ls "$current" | tr '\n' ' ')）" >&2; exit 1; }
+{ [ ! -e "$current/ui_overlay" ] && [ ! -e "$current/ui_overlay.tsv" ]; } || { echo "不通 重播没清掉界面布局覆盖层" >&2; exit 1; }
+W=$(root_begin fixture image-clone); root_commit fixture image-clone
+cmp -s "$T/imgsrc/romfs.std" "$(root_cur fixture)/romfs.std" || { echo "不通 开工 / 提交后镜像字节变了" >&2; exit 1; }
+bash "$R/pack/seed_root.sh" fixture back-to-dir "$T/source" > /dev/null
+current=$(root_cur fixture)
+{ [ ! -e "$current/romfs.std" ] && cmp -s "$T/source/romfs/data" "$current/romfs/data"; } || { echo "不通 再播目录形态：旧镜像该删、romfs/ 回来" >&2; exit 1; }
+echo 'seed_romfs_image: 镜像播种逐字节、不建 romfs/、清覆盖层；开工克隆不变；回到目录形态删旧镜像'
+
 echo 'Seed default layout, explicit DLC cloning, stage replacement, retention and packaging passed'

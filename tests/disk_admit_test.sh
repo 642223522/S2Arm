@@ -9,6 +9,7 @@
 #   ⑤ 两单同时来、各 40（剩 100）→ 一个跑完另一个才开（不同时挤进去）
 #   ⑦ 入口闸经 disk_admit.py 重起入口脚本；⑧ 入口闸写的不在本机工作盘（本机没有工作盘）→ 不排队直接跑
 #   ⑥ S2A_DISK_ADMIT=off → 没余量也直接跑、打【黄】
+#   ⑳ 别的卷是纯数据盘（不是系统所在卷）→ 保底 S2A_DISK_MIN_FREE_DATA_GB（5），不套系统保底
 #   ⑲ --measure 实占按 APFS 独占字节：克隆进来的输入（cp -c）不计，新写的照计
 #   ⑩ 账内只算还没写的：剩 50.03、持有者预留 0.02 且实测目录已写 25 MB → 再来 0.02 放行（50.03 − 0 − 0.02 ≥ 50）；负对照：目录空 → 50.03 − 0.02 − 0.02 < 50 排不上
 #   ⑪ 嵌套不叠加：外层 run 预留 40（剩 100）里再 run 40 → 组内 max(40, 40) = 40，放行；里层要 60 → 组内 60、100 − 60 < 50 排不上
@@ -55,9 +56,11 @@ ck "⑧ 本机没有工作盘 → 直接跑、账上 0 单（${o8}）；负对�
 # ⑨ 子进程拿调用方原样的区域（11-06 手测脚本经准入重起后「装测试设备 + 变量 DEV + 全角括号」报 DEV�: unbound variable）：调用方没设区域 → 子进程环境里也没有 LC_CTYPE（Python 区域强转加的 C.UTF-8 不外泄），
 #   脚本里「变量紧跟全角字」照常展开；负对照：子进程显式带 LC_CTYPE=C.UTF-8 → 同一脚本报 unbound
 printf '#!/bin/bash\nset -u\nDEV=2\necho "装测试设备%sDEV）"\n' '$' > $T/loc.sh   # 夹具故意写「变量紧跟全角字」；用 %s 拼出 $，仓库源码里不留这种写法
-o9=$(env -u LANG -u LC_ALL -u LC_CTYPE S2A_DISK_FREE_GB=100 python3 $H/tools/disk_admit.py run --cat c --name loc --gb 1 -- bash -c 'echo "ct=${LC_CTYPE:-无}"; bash '$T'/loc.sh' 2>&1 | tr '\n' ' ')
-o9n=$(env -u LANG -u LC_ALL LC_CTYPE=C.UTF-8 bash $T/loc.sh 2>&1 | tr '\n' ' ')
-ck "⑨ 调用方没设区域 → 子进程也没有 LC_CTYPE、全角字紧跟变量照常（${o9}）；负对照带 C.UTF-8 报错（${o9n:0:60}）" '[ "$o9" = "ct=无 装测试设备2） " ] && grep -q "unbound variable" <<< "$o9n"'
+#   正向与负对照都钉死：/bin/bash（系统自带 3.2；Homebrew bash 在不设区域时按系统语言本地化、中文系统上连字节切分都变）+ LC_MESSAGES=C（报错英文，
+#   负对照认「unbound variable」）。11-16：一台系统语言为中文的门禁主机上，这里两半都按机器语言走、合入后一直红；与「区域不外泄」的被测行为无关
+o9=$(env -u LANG -u LC_ALL -u LC_CTYPE LC_MESSAGES=C S2A_DISK_FREE_GB=100 python3 $H/tools/disk_admit.py run --cat c --name loc --gb 1 -- /bin/bash -c 'echo "ct=${LC_CTYPE:-无}"; /bin/bash '$T'/loc.sh' 2>&1 | LC_ALL=C tr '\n' ' ')
+o9n=$(env -u LANG -u LC_ALL LC_MESSAGES=C LC_CTYPE=C.UTF-8 /bin/bash $T/loc.sh 2>&1 | LC_ALL=C tr '\n' ' ')   # tr / grep 按字节：输出里有被切坏的半个字（DEV\357），外层是 UTF-8 区域时 tr 遇非法序列会截断
+ck "⑨ 调用方没设区域 → 子进程也没有 LC_CTYPE、全角字紧跟变量照常（${o9}）；负对照带 C.UTF-8 报错（${o9n:0:60}）" '[ "$o9" = "ct=无 装测试设备2） " ] && LC_ALL=C grep -q "unbound variable" <<< "$o9n"'
 # ⑩ 嵌套（11-06 金刚 c3：外层 run 记 40G、里面Windows 出包机道 hold 同一单再排 40G，剩 159 − 98 − 40 < 50 自己挡自己）：剩 100、外层 40 排到后里面再套 run 40 →
 #   期望（按规则手写）：里层不排队直接跑、退出码透传、跑时账上只 1 单（外层那笔）；负对照：同样的里层不在外层里（另起、不带 S2A_DISK_HELD）且外层占着 → 等满退 75
 o10=$($DA run --cat c --name outer --gb 40 -- bash -c "$DA run --cat c --name inner --gb 40 --max-wait 2 --poll 1 -- bash -c 'ls $T/acct | grep -c ^use\\.; exit 4' 2> $T/e10; echo rc=\$?" 2> /dev/null | tr '\n' ' ')
@@ -120,6 +123,15 @@ if [ -n "$WV" ]; then
   kill $HW 2> /dev/null; pkill -P $HW 2> /dev/null; wait $HW 2> /dev/null
   ck "⑯ 别的卷上的单只看那一卷：要 30 放行（rc ${r16}）、要 50 排不上（rc ${r16n}）；工作盘那本照旧满（要 1 排不上 rc ${r16w}）" '[ $r16 = 0 ] && [ $r16n = 75 ] && [ $r16w = 75 ]'
 else echo "通 ⑯ 跳过：本机 / 与临时目录同一卷，造不出第二卷"; fi
+# ⑳ 纯数据盘保底小（11-19 外置数据盘回传两单被系统保底挡 4.8 小时）：把「系统所在卷」指到 ${WV}（S2A_DISK_SYS），临时目录那一卷就成了纯数据盘，
+#   剩 30、保底 5：要 21 → 30 − 21 = 9 ≥ 5 放行；要 26 → 4 < 5 排不上；负对照（临时目录就是系统卷，保底 S2A_DISK_MIN_FREE_SYS_GB=25）要 21 → 9 < 25 排不上
+if [ -n "$WV" ]; then
+  rm -f $T/acct/use.* $T/acct/wait.*; mkdir -p $T/v20
+  S2A_DISK_SYS=$WV S2A_DISK_WORK=$WV S2A_DISK_FREE_OTHER_GB=30 S2A_DISK_MIN_FREE_SYS_GB=25 $DA run --cat c --name d20 --gb 21 --measure $T/v20 --max-wait 1 --poll 1 -- true 2> /dev/null; r20=$?
+  S2A_DISK_SYS=$WV S2A_DISK_WORK=$WV S2A_DISK_FREE_OTHER_GB=30 S2A_DISK_MIN_FREE_SYS_GB=25 $DA run --cat c --name d20n --gb 26 --measure $T/v20 --max-wait 1 --poll 1 -- true 2> /dev/null; r20n=$?
+  S2A_DISK_WORK=$WV S2A_DISK_FREE_OTHER_GB=30 S2A_DISK_MIN_FREE_SYS_GB=25 $DA run --cat c --name s20 --gb 21 --measure $T/v20 --max-wait 1 --poll 1 -- true 2> /dev/null; r20s=$?
+  ck "⑳ 纯数据盘保底 5：要 21 放行（rc ${r20}）、要 26 排不上（rc ${r20n}）；负对照系统卷保底 25 要 21 排不上（rc ${r20s}）" '[ $r20 = 0 ] && [ $r20n = 75 ] && [ $r20s = 75 ]'
+else echo "通 ⑳ 跳过：造不出第二卷"; fi
 # ⑰ 有界回填（11-07 维护者拍板）：剩 100、最低 50，A 占 40，大单 B 要 40 排队（100 − 40 − 40 < 50）。
 #   ① 小单 2G、2G、1G 依次来：不算 B 时 100 − 40 − 小单 ≥ 50 → 回填放行（status 标「回填」）；② 回填合计已 5G，第 4 张 1G 要排队（5 + 1 > 5，退 75）；
 #   ③ A 结束、空间够 → B 照常放行（不是回填）；负对照：没有排队者时 1G 单走正常放行、不标回填

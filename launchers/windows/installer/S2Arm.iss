@@ -20,6 +20,12 @@
 #ifndef AppVersion
   #error 用 /DAppVersion=<版本号，如 0.3.0> 指定版本
 #endif
+; 文件属性里的版本（VersionInfoVersion）只收数字：测试版 0.6.0-test.2 取 0.6.0，产品版本 / 界面仍显示完整号（AppVersion）
+#if Pos("-", AppVersion) > 0
+  #define VerNum Copy(AppVersion, 1, Pos("-", AppVersion) - 1)
+#else
+  #define VerNum AppVersion
+#endif
 
 [Setup]
 ; AppId 定下就不能改：卸载信息、升级识别都靠它
@@ -31,7 +37,7 @@ AppPublisher=S2Arm contributors
 AppPublisherURL=https://s2arm.com
 AppSupportURL=https://github.com/jhaizhou-ops/S2Arm/issues
 AppUpdatesURL=https://s2arm.com
-VersionInfoVersion={#AppVersion}
+VersionInfoVersion={#VerNum}
 DefaultDirName={localappdata}\Programs\S2Arm
 PrivilegesRequired=lowest
 ; Inno Setup 6.7 起缺省给 Setup 自己开 Windows 的 RedirectionGuard（不让穿过普通用户建的目录联接 / 符号链接），
@@ -203,6 +209,10 @@ end;
   翻页时 CurPageChanged 先放开并撤掉这个计时器，它不参与正常翻页的那一帧 }
 procedure LockRedraw;
 begin
+  { 静默安装（启动器自更新 /VERYSILENT）不锁：WM_SETREDRAW 关重画会清掉窗口的可见标志、开重画又把它设上，
+    Inno 静默时照样调 NextButtonClick / CurPageChanged，放开重画那一下把本该隐藏的向导窗设成可见，页面没布置，
+    玩家看到一个只有深色底的空「S2Arm 安装程序」窗口（#1919，Windows 11 自更新到 0.6.4 每次都这样）。没锁就不会放 }
+  if WizardSilent then exit;
   if RedrawLocked then exit;
   RedrawLocked := True;
   SendMessage(WizardForm.Handle, WM_SETREDRAW, 0, 0);

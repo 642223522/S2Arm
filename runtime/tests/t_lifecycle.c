@@ -13,7 +13,7 @@ static int early_stall;   // 11-14：收尾早期一步卡死（游戏卡死时�
 static void event(char c) { write(1, &c, 1); }
 void s2a_logcon_flush(void) { if(early_stall==2)for(;;)pause(); event('F'); }
 void s2a_logcon_push(const char *p, size_t n) { (void)p;(void)n; }
-void s2a_cs_shutdown(const char *why) { (void)why;if(timeout_case)sleep(3); }
+void s2a_cs_shutdown(const char *why) { (void)why;if(timeout_case)for(;;)pause(); }   // 1：这一步永远卡住，兜底必然先到（原 sleep(3)：负载高时 1.5 秒兜底晚醒、正常路径先走完 → 假红）
 void nxgal_gpu_hold(int on, const char *why) { (void)on;(void)why; }
 void s2a_trap_report(const char *when) { (void)when; }   // 双补丁岛 brk 兜底汇总（traps.c）
 void s2a_guest_freeze(int on) {(void)on;}

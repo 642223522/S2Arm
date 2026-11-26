@@ -26,15 +26,23 @@ int s2a_shell_play(const char *game_id);
 void *s2a_shell_library_vc(const char *catalogue_json_path);
 
 // 本款装机阶段（11-07 Duo「游戏没能启动」：库里对资源包不在机上的款仍给 Play；v0.2.3 装机蒙版：传着的款要显示进度）：
-//   s2a_shell_game_install_state：1 就绪 / 2 传完了只等解开 / 3 传输中（推送没完：有 资源包/.transfer 按它画进度，没有按文件改动判传断了）/ 0 没有（资源包不在或是空的，库里不显示）。
+//   s2a_shell_game_install_state：1 就绪 / 2 传完了只等解开 / 3 传输中（推送没完：有 资源包/.transfer 按它画进度，没有按文件改动判传断了）/ 5 外部来源离线（本体是指向游戏来源文件夹的软链接、打不开）/ 0 没有本体（资源包不在或是空的，或清单写着本体 game.img 而它不在——两件套导入 .s2arm 先到时就是这样，D-84EQ）：库里显示「需要游戏数据」，玩家删过的不显示。
 //     实现在宿主 ios/app.m（按 Documents/games/<游戏号> 跑 pack_apply.c s2a_game_install_state，同起局导入闸门判据）；本包弱定义缺省 1（Swift 单测不链宿主）
 //   s2a_shell_install_game：库在后台解开阶段 2 的那款，解完宿主调 s2a_shell_refresh；同时只解一款，正在解（或游戏号不对）返回 0。弱缺省 0
 //   s2a_shell_install_progress：正在解的是这款 → 写已解开包数 / 总包数、返回 1；否则 0。弱缺省 0
 //   s2a_shell_pick_game_data：库里点「需要游戏数据」那款 → 宿主给导入说明（含「重新检查」）；弱定义缺省只记日志
 int s2a_shell_game_install_state(const char *game_id);
+// 这款程序是按别的宿主约定号出的（runtime s2a_launch_ctx_game_needs_update / 点开被拒 S2A_SELECT_NEEDS_UPDATE）→ 1：库卡片标「需要在电脑上更新」。
+//   实现在宿主 ios/app.m（每款读一次清单后缓存，点开被拒的也记上；库每秒重判只查缓存）；弱缺省 0
+int s2a_shell_game_needs_host_update(const char *game_id);
+// 这款的签名状态（0.6.0：签名证书是游戏状态的一部分，库列出时就判，不等点开始；判据 ios/sign_state.m s2a_sign_state_at）：
+//   0 可玩 / 1 要手机签、手机上没有签名证书 / 2 手机上只有别的团队（Apple ID）的证书 / 3 装 App 用的证书已换或吊销 / 4 电脑签的签名本机不认、手机上没证书重签 /
+//   5 手机上有能用的证书、重签了仍被拒（只能电脑上对这款重装，库卡片「需要在电脑上更新」）。1–4 库卡片「需要签名证书」、主按钮 s2a_shell_cert_get。
+//   实现在宿主 ios/app.m（点开被拒的记下；证书导入后清掉、库重判）；弱缺省 0
+int s2a_shell_game_sign_state(const char *game_id);
 int s2a_shell_install_game(const char *game_id);
 int s2a_shell_install_progress(const char *game_id, int *done, int *total);
-// 库起解包被拒（s2a_shell_install_game 返回 0）时为什么：1 另一款正在解（同时只解一款）/ 2 正在整理游戏目录（#569 迁移）/ 0 没有在等的事。
+// 库起解包被拒（s2a_shell_install_game 返回 0）时为什么：1 另一款正在解（同时只解一款）/ 2 正在整理游戏目录（首次清点容器、资源包挪位，ios/app.m img_scan_bg）/ 0 没有在等的事。
 //   库据此在卡片上说「等另一款装完」「正在整理游戏目录」，不再只写「安装中」（iOS 装机剃刀 #46 / #47）。主线程；弱缺省 0
 int s2a_shell_install_wait(void);
 // 库界面第一次出现（启动打点「游戏库界面可操作」）；弱定义缺省什么都不做
@@ -48,8 +56,16 @@ const char *s2a_shell_install_failure(const char *game_id);
 int s2a_shell_take_open_settings(void);
 // 这次安装确定丢了「提高内存上限」权限（ios/iml_probe.m，读不到不算）：返回 {"title","body"}（已按 App 语言）的 JSON，调用方 free；没丢 / 读不到返回 NULL。主线程
 char *s2a_shell_iml_notice(void);
+/* 游戏库真画出了这条提示：记下，进游戏后起局提示不再重复弹（ios/iml_probe.m） */
+void s2a_shell_iml_notice_seen(void);
 void s2a_shell_pick_game_data(const char *game_id);
-// 宿主让库界面重判各款资源包（说明里「重新检查」后调）。库界面建好时登记；没登记时 s2a_shell_refresh 什么都不做
+// 库卡片「导入 .s2arm…」（还缺 .s2arm 的款、0.5 老款）：开文件选择器选这款的 .s2arm，同「在文件里用 S2Arm 打开」导入、导好库重读清单。
+//   宿主 ios/app.m（iPhone；电视没有文件选择器）；弱缺省只记日志
+void s2a_shell_pick_s2arm(const char *game_id);
+// 长按卡片「导出这一款…」（0.6.3）：后台生成这款的 <名>.s2arm + <名>.img（ios/game_export.m），交「文件」App 存走，换签名重装后放「放这里导入」导回。
+//   宿主 ios/app.m（iPhone；电视没有文件导出）；弱缺省什么都不做。主线程
+void s2a_shell_export_game(const char *game_id);
+// 宿主让库界面重读游戏清单并重判各款资源包（说明里「重新检查」、后台解包完成、导入文件夹导入 .s2arm 后调）。库界面建好时登记；没登记时 s2a_shell_refresh 什么都不做
 typedef void (*s2a_shell_refresh_fn)(void *ctx);
 void s2a_shell_set_refresh_handler(s2a_shell_refresh_fn fn, void *ctx);
 void s2a_shell_refresh(void);
@@ -94,6 +110,29 @@ void s2a_shell_cloud_upload_background(const char *game_id);
 
 // 故障报修（游戏库设置页最下面）：实现在宿主 ios/diag.m（可不填的一句说明 → 打包上传、给短码）；本包弱定义缺省什么也不做
 void s2a_shell_report_problem(void);
+// 签名证书（游戏库设置「签名证书」，0.6.0）：实现在宿主 ios/cert_import.m。status = 现在手机上用来签游戏的证书（团队 · 来源，按界面语言），没有回空串；
+//   p12 = 文件选择器选 .p12、问密码、存钥匙串；sidestore = 打开 SideStore 取它当前的签名证书（回调 s2arm://sidestore-cert）。本包弱定义：status 空串、另两个什么也不做
+const char *s2a_shell_cert_status(void);
+void s2a_shell_cert_p12(void);
+void s2a_shell_cert_sidestore(void);
+// 「从 SideStore 获取」给不给：0 = S2Arm 在 LiveContainer 里（切过去会结束 S2Arm、证书回不来，#2226），设置里不出这一项。弱缺省 1
+int s2a_shell_cert_sidestore_ok(void);
+// 库卡片「需要签名证书」的主按钮：这台手机装了 SideStore 走 SideStore 取证书，否则开文件选择器选 .p12（宿主 ios/cert_import.m；弱缺省什么也不做）
+void s2a_shell_cert_get(void);
+/// Instant snapshot (0.6.0): 1 = the game has a complete snapshot to go back to (host ios/app.m; the shell's weak stub says 0).
+int s2a_shell_snapshot_available(const char *game_id);
+/// Starts the game back at its saved moment (asks first when the game saved after that moment). The shell's weak stub does nothing.
+void s2a_shell_restore_snapshot(const char *game_id);
+/// The folder of the game's complete snapshot into `out` (0), or -1: no snapshot, snapshots off, or `out` too small. The shell's weak stub says -1.
+int s2a_shell_snapshot_dir(const char *game_id, char *out, unsigned long size);
+/// Deletes the game's snapshot with its picture and manifest, freeing the space: 0 done, -1 not (or nothing to delete). Weak stub -1.
+int s2a_shell_delete_snapshot(const char *game_id);
+// 外部游戏来源（11-22，游戏库设置里加的「游戏来源文件夹」，如外接硬盘；壳 GameSources.swift 解析书签、拿到访问权后调）：
+//   s2a_shell_scan_game_source：扫 dir（往下两层）里电脑导出的完整 .img，以软链接接进这款的资源包（外部文件不挪不改）；skip = 库里删过的游戏号（逗号隔开，NULL = 不跳过）。
+//     返回新链 / 改链的款数，文件夹打不开 → -1。实现在宿主 ios/app.m（pack_apply.c s2a_img_scan_source）；弱缺省 -1
+//   s2a_shell_forget_game_source：玩家移除这个来源 → 从它链来的款删掉 App 内的资源包根（外部文件不动），返回款数；弱缺省 0
+int s2a_shell_scan_game_source(const char *dir, const char *source_id, const char *skip);
+int s2a_shell_forget_game_source(const char *source_id);
 
 #ifdef __cplusplus
 }

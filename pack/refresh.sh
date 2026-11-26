@@ -45,6 +45,13 @@ TS0=$SECONDS; TM=$L/tm.tsv
 tm() { printf '%s\t%s\n' "$1" "$2" >> "$TM"; }
 tsum() { [ -s "$TM" ] || return 0
   echo "⏱ $G 刷新分阶段用时（秒，并行段各记各的墙钟）：$(awk -F'\t' '{printf "%s%s %s", (NR > 1 ? " · " : ""), $1, $2}' "$TM")；刷新共 $((SECONDS - TS0)) 秒"; }
+# 出包收尾当场修剪（#338 的补全）：「只留现行 + 上一版」在出包收尾就该成立——最后一笔提交时并行段进程还活着、各自的钉都有效，
+#   只剪得动没人钉的；各段先后退出后再没有取现行的点（root_gc 只在取现行时顺手收 + 同款 10 分钟节流），多余版本连带 .trash /
+#   死钉 / 无主 RomFS 身份一直滞留到这款下次出包 / 起局。实测（11-17 Mac，10.2 GB 的款出包成功 8.5 小时后）：roots 滞留 5 份版本
+#   + .trash 908 MB + 两个 RomFS 身份 + 25 个死钉，du 口径整款 50.7 GB、克隆感知实占 13.1 GB（同 #303 / library.disk_bytes）——
+#   物理上是 APFS 克隆、几乎不另占盘，但访达 / du 按份数重复计克隆块，玩家照目录大小当磁盘被吃掉来报（#1471）。
+#   S2A_ROOT_GC_FORCE 越过刚写下的节流戳；钉 / 提交锁照旧在 root_gc 里保护在读者；收不成不挡出包（root_gc 失败只返回 0）
+tail_gc() { [ -n "${S2A_ROOT_CUR:-}" ] || S2A_ROOT_GC_FORCE=1 root_gc "$G"; }
 # v0.2.3 清理：不再每次刷新都核「现行程序版本 = 本机原件」（pack/srcver.sh 留作开发共享根手动核对）。它防的是 10-25 开发共享根停在旧版本，
 #   玩家流程里产物根的键已含所选包身份（inputIdentity），换了原件就是另一个根；同 11-07「出包不重算原件校验」
 # Android keeps its existing make_pack rewrite as the sole module producer.
@@ -68,6 +75,9 @@ if [ "${S2A_PACK_PLAT:-ios}" = android ]; then
   prog_tick 刷新各阶段 3 6
   t=$SECONDS; out=$(bash "$H/stage_romfsidx.sh" "$G" 2>&1); rc=$?; tm romfsidx $((SECONDS - t)); echo "$out" | tail -1
   [ "$rc" = 0 ] || { echo "【红】$G 刷新停在 romfsidx 阶段（rc=${rc}），现行 = $(basename "$(root_cur "$G")")"; exit 1; }
+  # 首局预热种子（安卓真机跑局落下的预热清单随包，pack/stage_vk_warm_seed.sh）：种子出不来本段自己打黄退 0，非 0 只有产物根出错
+  t=$SECONDS; out=$(bash "$H/stage_vk_warm_seed.sh" "$G" 2>&1); rc=$?; tm vk_warm_seed $((SECONDS - t)); echo "$out" | tail -1
+  [ "$rc" = 0 ] || { echo "$out" | sed '$d'; echo "【红】$G 刷新停在 vk_warm_seed 阶段（rc=${rc}），现行 = $(basename "$(root_cur "$G")")"; exit 1; }
   prog_tick 刷新各阶段 4 6
   export S2A_RESOURCE_KEY_ONCE_FILE="$L/resource-input.key"   # 同苹果路线：抽取与直连库共用这一轮算好的资源输入键
   # 直连库（#783）：NVN 款出离线 Vulkan 库 shaders/direct/b-<链>-vk/（pack/stage_direct.sh，出库目标 android）。
@@ -110,6 +120,7 @@ PYEOF
     fi
   fi
   prog_tick 刷新各阶段 6 6
+  tail_gc   # 出包收尾当场修剪（见上）：各段刚退出、钉已失效
   echo "🟢 $G Android 共享资源已刷新：$(basename "$(root_cur "$G")")${DY:+；🟡 1 项：$DY}"
   exit 0
 fi
@@ -119,10 +130,10 @@ for s in rewrite sysdata uilayout aoc; do ( t=$SECONDS; bash "$H/stage_$s.sh" "$
 # 直连库要的 C# 批量进程（translator/dsh_batch.py：按源码摘要编、带文件锁）快路开头就后台编好，不压在抽取之后的关键链上
 #   （11-06 出包速度线：玩家引擎副本没有 build/dsh_batch，首次出包原先在直连库里现编，Spare-host 约 25 秒）。编不出不在这里报：直连库那次调用照旧编、照旧报红
 { "${S2A_PY:-python3}" "$H/../translator/dsh_batch.py" --xfp > "$L/dsh_prewarm.out" 2>&1 < /dev/null & }
-RD=0; RN=10   # 进度格数：界面布局 ‖ 追加内容 2 + 配置推导 · 抽取 2 + 直连库 + 种子表 + 旁路（改写 / 系统数据 / 能力表 / RomFS 索引）4
+RD=0; RN=11   # 进度格数：界面布局 ‖ 追加内容 2 + 配置推导 · 抽取 2 + 直连库 + 种子表 + 计算管线归档 + 旁路（改写 / 系统数据 / 能力表 / RomFS 索引）4
 rt() { RD=$((RD + ${1:-1})); prog_tick 刷新各阶段 "$RD" "$RN"; }
 # 依赖重排（11-06 出包速度线）：直连链（配置推导 / 抽取 / 直连库）只读 exefs/main、romfs、追加内容与配置推导结果，不读改写 / 系统数据 / 能力表 / RomFS 索引的产物。
-#   关键链：追加内容 ‖ 界面布局 → 配置推导 → 抽取 → 直连库 → 管线种子表。
+#   关键链：追加内容 ‖ 界面布局 → 配置推导 → 抽取 → 直连库 → 管线种子表 → 计算管线归档。
 #     界面布局改 romfs、抽取与直连库的键含 romfs 抽样（resource_input_key），所以它必须在抽取开工前落定，否则下次热出包白重抽一遍。
 #   旁路（后台，与关键链并行）：改写 ‖ 系统数据 → 能力表 → 宽屏自动出表；RomFS 索引（界面布局之后）。各段照旧提交（声明了 ROOT_REPLAY，并发提交时重放到新现行），
 #     旁路的输出与红行在关键链末尾汇合打出，任一段红照旧退 1；直连库开工前旁路已红就当场停（不白编十几分钟）。
@@ -141,7 +152,7 @@ run_extract() {   # 抽着色器（只做一次：直连库要的两份抽取出
   [ $rc = 3 ] && { echo "$out" | sed '$d' | tail -3; dred "抽取阶段" "$(echo "$out" | grep -a '直连库失败：' | tail -1 | sed 's/^.*\(直连库失败：\)/\1/' | cut -c1-260)"; }
   [ $rc = 0 ] || { echo "$out" | sed '$d' | tail -3; echo "【红】$G 刷新停在抽取阶段（rc=${rc}）：抽取是出包内部出错，现行 = $(basename "$(root_cur "$G")")"; exit 1; }
 }
-direct_tail() {   # 直连库 → 管线种子表
+direct_tail() {   # 直连库 → 管线种子表 → 计算管线归档
   local rc t
   CT=${J:-${S2A_DIRECT_J:-$S2A_CPU_BAKE}}
   # 只把编译路数给 J；S2A_CPU_BAKE 留 tools/cores.sh 按内存算的值，直连阶段里的抽取按它封顶（#711：原先两个都设成直连库路数，抽取跟着开到 J 路）
@@ -152,6 +163,7 @@ direct_tail() {   # 直连库 → 管线种子表
   root_has_direct "$(root_cur "$G")" || dred "直连库" "直连库阶段退 0 但产物根里没有 shaders/direct/keys.tsv"
   rt
   st1 direct_seed; rt   # 管线种子表（审计 #1534 P1-54 B3）：只写 pso_manifest.tsv 的轻阶段，键 = 直连库阶段键 + 跑局知识 seen.tsv
+  J=$CT st1 direct_cpso; rt   # 计算管线归档：按出包目标 GPU 架构离线编直连库全部计算着色器的管线（shaders/direct/pipelines/），键 = 直连库阶段键 + 目标对
 }
 chk() {   # chk <阶段>：照原口径打该段末行，非 0 → 红行、退 1（.out 是该段的整段输出）
   local rc; tail -1 "$L/$1.out"; rc=$(cat "$L/$1.rc" 2>/dev/null || echo 9)
@@ -190,4 +202,5 @@ rt 2
 [ -s "$L/side.rc" ] && side_join   # 旁路已结束：红就在开编直连库之前停
 direct_tail
 side_join; rt 4
+tail_gc   # 出包收尾当场修剪（见上）：各段刚退出、钉已失效
 echo "🟢 $G 现行产物根各阶段与本树一致：$(basename "$(root_cur "$G")")"; exit 0

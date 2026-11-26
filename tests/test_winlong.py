@@ -15,6 +15,28 @@ import redact
 
 
 class LongPathTest(unittest.TestCase):
+    def test_oserror_without_path_names_call_paths(self):
+        # #df9fd6：CopyFile2 报 WinError 112 不带文件名，失败归因量不到写满的那块盘。期望手写：包装后报错补上调用方给的源 / 目标（不带 \\?\ 前缀）；
+        #   本来就带文件名的不动；参数是文件描述符（不是路径）不补
+        import types
+        def boom(*a):
+            raise OSError(28, "磁盘空间不足。")
+        def named(*a):
+            raise OSError(28, "磁盘空间不足。", "X:\\own")
+        long_src = "E:\\" + "a\\" * 130 + "f"
+        mod = types.SimpleNamespace(copy=boom, stat=boom, named=named)
+        winlong._wrap(mod, "copy", 2); winlong._wrap(mod, "stat", 1); winlong._wrap(mod, "named", 2)
+        with self.assertRaises(OSError) as c:
+            mod.copy(long_src, "C:\\out\\f")
+        self.assertEqual((c.exception.filename, c.exception.filename2), (long_src, "C:\\out\\f"))
+        self.assertIn("-> 'C:\\\\out\\\\f'", str(c.exception))
+        with self.assertRaises(OSError) as c:
+            mod.stat(7)
+        self.assertIsNone(c.exception.filename)
+        with self.assertRaises(OSError) as c:
+            mod.named("E:\\a", "C:\\b")
+        self.assertEqual((c.exception.filename, c.exception.filename2), ("X:\\own", None))
+
     def test_short_paths_untouched(self):
         self.assertEqual(winlong.long_path("C:\\a\\b.txt"), "C:\\a\\b.txt")
         self.assertEqual(winlong.long_path(7), 7)     # 文件描述符
@@ -56,6 +78,23 @@ class LongPathTest(unittest.TestCase):
         short = "C:\\a"
         fake.scandir(short)
         self.assertEqual(seen[-1], short)
+
+    def test_realpath_invalid_handle_falls_back(self):
+        # #1582 D-AHTT：有的盘取最终路径回 WinError 6（Python 不严格模式不吞这个码）→ 退回规整后的绝对路径；strict=True 照旧抛
+        from unittest import mock
+        def boom(path, **kw):
+            e = OSError(6, "控制代碼無效。"); e.winerror = 6
+            raise e
+        saved = ntpath.realpath
+        try:
+            with mock.patch.object(ntpath, "realpath", boom):
+                winlong._wrap_realpath()
+                wrapped = ntpath.realpath
+            self.assertEqual(wrapped(r"D:\lib\game\..\work\x.bin"), ntpath.abspath(r"D:\lib\work\x.bin"))
+            with self.assertRaises(OSError):
+                wrapped(r"D:\lib\x", strict=True)
+        finally:
+            ntpath.realpath = saved
 
     def test_short_entry_mapping(self):
         from pack.orch import shortroot as sr
@@ -116,6 +155,20 @@ class LongPathTest(unittest.TestCase):
         from pack.orch import shortroot as sr
         self.assertEqual(sr.group_targets(["R:\\lib\\iPhone\\g\\work", "R:\\lib\\cache\\g\\extract"]), ["R:\\lib"])
         self.assertEqual(sorted(sr.group_targets(["R:\\lib\\w", "D:\\x"])), ["D:\\x", "R:\\lib\\w"])
+
+    def test_target_never_holds_entry_dir(self):
+        # 公共上级把短入口目录自己包进去 → 联接指向自己的上级、遍历绕圈（Windows 单测：工作区在 Temp、工具缓存已是 S2A\j\<短号> 下的短路径，
+        #   公共上级 = AppData\Local → 入口 i8wr 指向 Local，WinError 1921、600 秒超时）。期望手写：不合并、各建各的；已在入口下的不再套
+        from pack.orch import shortroot as sr
+        local = r"R:\profile\AppData\Local"   # 应用数据目录（LOCALAPPDATA）
+        j = local + r"\S2A\j"
+        tmp, short = local + r"\Temp\t1\out", j + r"\zqgx\s2a_run"
+        self.assertEqual(sr.group_targets([tmp, short], j), [tmp])
+        lib = r"R:\profile"   # 游戏库设在用户目录：工作区与工具缓存的公共上级 = 用户目录，包住 AppData\Local\S2A\j
+        work, cache = lib + r"\iPhone\g\work", lib + r"\tool-cache"
+        self.assertEqual(sr.group_targets([work, cache], j), [work, cache])
+        self.assertEqual(sr.group_targets([r"R:\lib\w", r"R:\lib\c"], j), [r"R:\lib"])   # 不包入口的照旧合并
+        self.assertEqual(sr.junction_targets([tmp, short], j), [tmp])
 
     def test_unc_share_is_not_used_as_junction_target(self):
         from pack.orch import shortroot as sr

@@ -258,7 +258,6 @@ class ControlPlaneTests(unittest.TestCase):
         self.assertEqual(self.cli("--request", self.request()).returncode, 0)
         stored = self.jobs_dir() / (self.task + ".request.json")
         self.assertTrue(stored.is_file())
-        self.assertEqual(stored.stat().st_mode & 0o077, 0)
         self.assertEqual(json.loads(stored.read_text())["taskId"], self.task)
 
     # ---- job store pruning ----
@@ -517,9 +516,8 @@ class ControlPlaneTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, "journal_write_failed")
         self.assertTrue(c.journal_broken)
 
-    def test_events_file_is_private_from_creation_and_chmodded_once(self):
-        # #561：每条事件都按路径 os.chmod 一次，Windows 上又多一个撞占用报「拒绝访问」的点；权限在创建时给，本进程只补收紧一次
-        import stat
+    def test_events_file_is_never_chmodded(self):
+        # #561：每条事件都按路径 os.chmod 一次，Windows 上又多一个撞占用报「拒绝访问」的点；11-16 起权限用系统缺省、一次都不改
         from unittest.mock import patch
         c = self.context()
         real, chmods = os.chmod, []
@@ -528,8 +526,7 @@ class ControlPlaneTests(unittest.TestCase):
         with patch("os.chmod", chmod):
             for i in range(5):
                 c.begin(f"导出 {i + 1}/5")
-        self.assertEqual(sum(p.endswith(".events.jsonl") for p in chmods), 1)
-        self.assertEqual(stat.S_IMODE(c.events.stat().st_mode), 0o600)
+        self.assertEqual(sum(p.endswith(".events.jsonl") for p in chmods), 0)
         self.assertGreaterEqual(len(c.events.read_text(encoding="utf-8").splitlines()), 5)
 
     # ---- 阶段完成记录：按维护方口径，job 层不记这份（只有一个判据 = 产物根的阶段键） ----

@@ -68,25 +68,10 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
                 return false;
             }
 
+            // S2A：句柄从哪来都走整池数组（上游只放行常量缓冲 / 输入 / 存储缓冲读出的句柄，其余删掉取样、结果当 0，是为避开整池绑定开销的人为限制）。
+            //   句柄经算术、共享 / 全局内存、守卫下拼成的 phi（#82）等来源原先读成 0、物体全黑；硬件就是按句柄的值读池，这里同样按值读。
+            //   宿主按池表整段绑（iOS 池表指针、安卓整池描述符数组、通用宿主 TextureBindingsArrayCache），代价只落在原先就画错的着色器上
             Operand bindlessHandle = texOp.GetSource(0);
-
-            if (bindlessHandle.AsgOp is PhiNode phi)
-            {
-                for (int srcIndex = 0; srcIndex < phi.SourcesCount; srcIndex++)
-                {
-                    Operand phiSource = phi.GetSource(srcIndex);
-
-                    if (phiSource.AsgOp is not PhiNode && !IsBindlessAccessAllowed(phiSource) &&
-                        !(gpuAccessor.QueryBindlessPhiSeeThrough() && IsGuardedTableHandle(bindlessHandle)))
-                    {
-                        return false;
-                    }
-                }
-            }
-            else if (!IsBindlessAccessAllowed(bindlessHandle))
-            {
-                return false;
-            }
 
             Operand textureHandle = OperandHelper.Local();
             Operand samplerHandle = OperandHelper.Local();
@@ -95,12 +80,10 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
             block.Operations.AddBefore(node, new Operation(Instruction.BitwiseAnd, textureHandle, bindlessHandle, OperandHelper.Const(0xfffff)));
             block.Operations.AddBefore(node, new Operation(Instruction.ShiftRightU32, samplerHandle, bindlessHandle, OperandHelper.Const(20)));
 
-            // S2A（直连）：采样贴图（非贴图缓冲）按整个池长、宿主按编号建池表；贴图缓冲与图像按槽绑，数组长 QueryBindlessSlotArrayLength（0 = 也按池长，上游原样）。
-            //   上游参考实现（MIT）BindlessElimination pooled / NvnSlotArrayLength 同此分法
-            int slotArrayLength = gpuAccessor.QueryBindlessSlotArrayLength();
-            bool pooled = slotArrayLength <= 0 || (!texOp.Inst.IsImage() && (texOp.Type & SamplerType.Mask) != SamplerType.TextureBuffer);
-
-            int texturePoolLength = pooled ? Math.Max(BindlessToArray.MinimumArrayLength, gpuAccessor.QueryTextureArrayLengthFromPool()) : slotArrayLength;
+            // S2A（直连）：采样贴图、贴图缓冲、图像一律按整个池长，宿主按编号建池表（iOS nvn_mtl.m pool_gpu 按元素类型分表：采样 / 贴图缓冲 / 可写图像）。
+            //   原先贴图缓冲与图像按 32 槽绑（QueryBindlessSlotArrayLength，上游参考实现 pooled / NvnSlotArrayLength 的分法），宿主只能把 c2 里的句柄改成槽号；
+            //   句柄从存储缓冲 / 游戏 uniform 缓冲等别处读来时改不到，写进 / 读出的是槽里碰巧放着的那张（一款双人合作游戏 119 支计算着色器贴图缓冲写）
+            int texturePoolLength = Math.Max(BindlessToArray.MinimumArrayLength, gpuAccessor.QueryTextureArrayLengthFromPool());
 
             block.Operations.AddBefore(node, new Operation(Instruction.MinimumU32, textureIndex, textureHandle, OperandHelper.Const(texturePoolLength - 1)));
 
@@ -122,7 +105,7 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
             {
                 Operand samplerIndex = OperandHelper.Local();
 
-                int samplerPoolLength = pooled ? Math.Max(BindlessToArray.MinimumArrayLength, gpuAccessor.QuerySamplerArrayLengthFromPool()) : slotArrayLength;
+                int samplerPoolLength = Math.Max(BindlessToArray.MinimumArrayLength, gpuAccessor.QuerySamplerArrayLengthFromPool());
 
                 block.Operations.AddBefore(node, new Operation(Instruction.MinimumU32, samplerIndex, samplerHandle, OperandHelper.Const(samplerPoolLength - 1)));
 
@@ -142,58 +125,6 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
             else
             {
                 texOp.TurnIntoArray(textureSetAndBinding);
-            }
-
-            return true;
-        }
-
-        // S2A（直连，#82 八方旅人0 落叶）：守卫下拼成的句柄（@P R = c[2][t] | c[2][s]）与读处的守卫对不上时，寄存器在读不执行的路径上还装着别的值（坐标、浮点中间量），
-        // phi 汇合后既不是同一个句柄也不全来自常量缓冲。只要汇合的值里有 c[2] 分离采样器表（IsSeparateSamplerWord）拼出的句柄，就按运行时句柄走回退数组：
-        // 读执行的路径上值必是拼好的句柄，其余输入只出现在读不执行的路径上。上游原样是把读整个删掉、结果当 0（落叶的风摆掩码读成 0，预深度与基础通道位置不一致，深度 EQUAL 落空成黑块）
-        private static bool IsGuardedTableHandle(Operand handle)
-        {
-            List<Operand> leaves = new();
-            CollectLeaves(handle, leaves);
-
-            foreach (Operand leaf in leaves)
-            {
-                if (leaf.AsgOp is not Operation op || op.Inst != Instruction.BitwiseOr)
-                {
-                    continue;
-                }
-
-                List<Operand> words = new();
-                CollectLeaves(op.GetSource(0), words);
-                CollectLeaves(op.GetSource(1), words);
-
-                if (words.Exists(IsSeparateSamplerWord))
-                {
-                    return true;
-                }
-            }
-
-            return false;
-        }
-
-        private static bool IsBindlessAccessAllowed(Operand bindlessHandle)
-        {
-            if (bindlessHandle.Type == OperandType.ConstantBuffer)
-            {
-                // Bindless access with handles from constant buffer is allowed.
-
-                return true;
-            }
-
-            if (bindlessHandle.AsgOp is not Operation handleOp ||
-                handleOp.Inst != Instruction.Load ||
-                (handleOp.StorageKind != StorageKind.Input && handleOp.StorageKind != StorageKind.StorageBuffer))
-            {
-                // Right now, we only allow bindless access when the handle comes from a shader input or storage buffer.
-                // This is an artificial limitation to prevent it from being used in cases where it
-                // would have a large performance impact of loading all textures in the pool.
-                // It might be removed in the future, if we can mitigate the performance impact.
-
-                return false;
             }
 
             return true;

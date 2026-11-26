@@ -14,7 +14,7 @@ ratchet() {   # $1 = translator_log.tsv
 }
 if [ -n "${T_TRLOG_TSV:-}" ]; then [ -f "$T_TRLOG_TSV" ] || { echo "没有 $T_TRLOG_TSV → 红"; exit 1; }; ratchet "$T_TRLOG_TSV"; exit $?; fi
 O=${T_VTG_OUT:-$R/build/t_vtg}; mkdir -p "$O"
-dotnet build -c Release "$R/graphics/tools/shbake/S2A.ShBake.csproj" --artifacts-path "$O/art" -p:OutDir="$O/bin/" > "$O/build.log" 2>&1 || { echo "编 S2A.ShBake 失败（$O/build.log）"; tail -5 "$O/build.log"; exit 1; }
+bash "$R/tools/cs_cache.sh" "$O/art" "$O/bin" "$R/graphics/tools/shbake/S2A.ShBake.csproj" -- dotnet build -c Release "$R/graphics/tools/shbake/S2A.ShBake.csproj" --artifacts-path "$O/art" -p:OutDir="$O/bin/" > "$O/build.log" 2>&1 || { echo "编 S2A.ShBake 失败（$O/build.log）"; tail -5 "$O/build.log"; exit 1; }
 W="$O/trlog"; rm -rf "$W"; mkdir -p "$W"
 timeout 200 "$O/bin/S2A.ShBake" selftest-trlog "$W" ${T_TRLOG_BAKE:+"$T_TRLOG_BAKE"}; rc=$?
 if [ -f "$W/o/translator_log.tsv" ]; then ratchet "$W/o/translator_log.tsv"; r2=$?; else echo "翻译告警棘轮：没有端到端产物 → 红"; r2=1; fi

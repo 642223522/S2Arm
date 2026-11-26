@@ -13,7 +13,8 @@ import java.util.regex.Pattern;
  * <ul>
  * <li>paths come from Context at run time (multi-user /data/user/&lt;n&gt;, adoptable storage);</li>
  * <li>the cache entry is only the root: the backend derives shader / pipeline domains itself;</li>
- * <li>language is the first system locale's BCP 47 tag; region only when that locale has one;</li>
+ * <li>language is the first system locale's BCP 47 tag without its extensions (-u-…, -x-…); region only
+ *     when that locale has one;</li>
  * <li>timezone is an IANA name: whole-hour GMT offsets become Etc/GMT∓h, anything else UTC with
  *     a diagnostic;</li>
  * <li>screen is the game surface in pixels, landscape, with the display's density and refresh rate.</li>
@@ -102,12 +103,21 @@ final class BootSpec {
     final List<String> diagnostics = new ArrayList<>();
 
     private static final Pattern LANGUAGE = Pattern.compile("^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$");
+    /** A BCP 47 singleton subtag: everything from it on is an extension or private use (-u-mu-celsius, -x-…). */
+    private static final Pattern SINGLETON = Pattern.compile("(^|-)[A-Za-z0-9](-|$)");
     private static final Pattern REGION = Pattern.compile("^[A-Z]{2}$");
     private static final Pattern IANA = Pattern.compile("^(UTC|[A-Za-z]+(/[A-Za-z0-9_+-]+)+)$");
     private static final Pattern GMT_OFFSET = Pattern.compile("^GMT([+-])(\\d{1,2}):?(\\d{2})?$");
 
     /** A BCP 47 language tag the schema accepts, or "en" (recorded) when the system gave none usable. */
     String language(String tag) {
+        // Android 14+ puts Regional preferences into the default locale as Unicode extensions
+        // (zh-CN-u-mu-celsius); the schema has no room for them, and the one-letter "u" would fail
+        // the check below. Keep the language / script / region part as it is and drop the rest.
+        if (tag != null) {
+            Matcher singleton = SINGLETON.matcher(tag);
+            if (singleton.find()) tag = tag.substring(0, singleton.start());
+        }
         if (tag != null && LANGUAGE.matcher(tag).matches() && !tag.equals("und")) return tag;
         diagnostics.add("language '" + tag + "' unusable, en");
         return "en";

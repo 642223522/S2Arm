@@ -1,7 +1,7 @@
 // 块压缩贴图的未压缩别名（nvn_mtl.m g_bcal：bcal_note / bcal_sync）。11-06 无人深空：植物、晶体、树干表面一片彩虹噪点。
 //   游戏用计算着色器（genmipmap_comp_compressbc1 / 5 / 7）把程序生成的贴图压成 BC：往一张 RG32UI / RGBA32UI 图像里写，一个像素就是一个 BC 块，
 //   采样的是同一段存储上的 BC 贴图。Switch 上两者是同一段内存；这里原先是两张互不相通的 Metal 贴图，BC 贴图读的是游戏内存里的旧字节。
-// 本单测走公开 NVN 接口：一张 8x8 BC1（RGBA_DXT1）贴图和一张同存储的 2x2 RG32UI 贴图，用 CopyBufferToTexture 往 RG32UI 写 4 个已知的 BC1 块（GPU 写），
+// 本单测走公开 NVN 接口：一张 8x8 BC1（RGBA_DXT1）贴图和一张同存储的 2x2 RG32UI 贴图，先用 CopyBufferToTexture 上传到独立的 RG32UI，再 CopyTextureToTexture 写同存储的 RG32UI（GPU 写），
 //   再 CopyTextureToBuffer 读 BC 贴图的块（解析发生在提交里，命令顺序在写之后），最后用 Metal 计算着色器逐像素读 BC 贴图（硬件 BC1 解码）。
 // 期望按 BC1 解码规则手算（不跑被测实现）：端点 RGB565 展开到 8 位（5 位 ×255/31、6 位 ×255/63）；c0 > c1 时四色：p2 = (2·c0 + c1) / 3、p3 = (c0 + 2·c1) / 3，
 //   c0 ≤ c1 时三色加透明：p2 = (c0 + c1) / 2、p3 = 透明黑（alpha 0）；索引 2 位一个像素，第 (x, y) 像素 = 位 2·(4y + x)。容差 ±3/255（硬件插值舍入）。
@@ -56,8 +56,14 @@ static void run(void (^rec)(void)) {   // 录一个命令缓冲、提交、等 G
     NVNcommandHandle h = API(nvnCommandBufferEndRecording)(&cmd); API(nvnQueueSubmitCommands)(&q, 1, &h); API(nvnQueueFinish)(&q);
     if (mtl_last_commit_error()) { printf("✗ GPU 报错\n"); exit(1); }
 }
-static void gpu_write(NVNtexture *rg) {   // GPU 往 RG32UI 写 4 个块（拷贝目的 = GPU 写，与计算着色器的图像写同记一笔 gpw_mark）
-    run(^{ NVNcopyRegion r = {0, 0, 0, 2, 2, 1}; API(nvnCommandBufferCopyBufferToTexture)(&cmd, base + SRC, rg, NULL, &r, 0); });
+static void gpu_write(NVNtexture *rg) {   // 真正只改 GPU 贴图的写入：B2T 也会更新池字节，不能再用它替代图像写的负对照
+    static NVNtexture upload[2];
+    static int initialized[2];
+    NVNformat format = API(nvnTextureGetFormat)(rg); int i = format == NVN_FORMAT_RG32UI ? 0 : 1;
+    if (!initialized[i]) { tex(&upload[i], format, 2, (1 << 20) + i * 65536); initialized[i] = 1; }
+    run(^{ NVNcopyRegion r = {0, 0, 0, 2, 2, 1};
+        API(nvnCommandBufferCopyBufferToTexture)(&cmd, base + SRC, &upload[i], NULL, &r, 0);
+        API(nvnCommandBufferCopyTextureToTexture)(&cmd, &upload[i], NULL, &r, rg, NULL, &r, 0); });
 }
 static void read_blocks(NVNtexture *bc, uint8_t out[32]) {   // BC 贴图在提交里被用一次：块字节拷进缓冲
     memset(mem + OUT, 0x5A, 32);

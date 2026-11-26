@@ -1,0 +1,16 @@
+diff --git a/src/Ryujinx.HLE/HOS/Services/Hid/HidDevices/NpadDevices.cs b/src/Ryujinx.HLE/HOS/Services/Hid/HidDevices/NpadDevices.cs
+index e02a403e044700fa66b37bb61474f0fb3b7eeb21..f55d22f824b5c15043bf8a1ffc8123170011f276 100644
+--- a/src/Ryujinx.HLE/HOS/Services/Hid/HidDevices/NpadDevices.cs
++++ b/src/Ryujinx.HLE/HOS/Services/Hid/HidDevices/NpadDevices.cs
+@@ -231,7 +231,10 @@ namespace Ryujinx.HLE.HOS.Services.Hid
+ 
+                 ControllerType currentType = (ControllerType)Base(nPadsSpan[i].InternalState.StyleSet);
+ 
+-                if (currentType != ControllerType.None && StyleSupported(npad, acceptedTypes) && _supportedPlayers[i])   // S2Arm：连着 Joy-Con 2 时只收 Joy-Con 2 位也算（手柄设置小程序原先判不收、游戏反复重开）
++                // S2Arm：连着 Joy-Con 2 时只收 Joy-Con 2 位也算（手柄设置小程序原先判不收、游戏反复重开）。
++                //   样式按游戏实际看到的那个判（Remap 已把 Pro / 双 Joy-Con 按游戏声明互换过）：配的是 Pro、游戏只收 掌机 / 双 Joy-Con 时
++                //   共享内存里已是双 Joy-Con，原先照配置表判 Pro 不收，小程序回 0 人（#1671）
++                if (npad != ControllerType.None && currentType != ControllerType.None && StyleSupported(currentType, acceptedTypes) && _supportedPlayers[i])
+                 {
+                     configuredCount++;
+                     if (primaryIndex == PlayerIndex.Unknown)

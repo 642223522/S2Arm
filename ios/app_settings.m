@@ -12,11 +12,18 @@ void s2a_ios_sgrade_counts(NSString *gid, NSInteger *cheatOn, NSInteger *cheatAl
 #import "play_layout.h"
 // 弱链接[lab]：s2a_fps_cap_reason（runtime/src/fps.c：60 帧降档原因 0 无 / 1 热 / 2 低电量 / 3 A/B 测原帧率段；输入工作台不链原生核，取不到就不写降档副标题）
 int s2a_fps_cap_reason(void) __attribute__((weak_import));
+// 弱链接[lab]：s2a_fps_raised（runtime/src/fps.c：这局帧率是否被补丁抬高；输入工作台不链原生核，取不到就不写帧率上限说明）
+int s2a_fps_raised(void) __attribute__((weak_import));
+// 弱链接[lab]：s2a_host_session_state（runtime/src/session.c；输入工作台不链原生核，取不到 = 不在局内）
+int s2a_host_session_state(void) __attribute__((weak_import));
 #import "vpad.h"
 #import "vpad_settings.h"
 #import "cpatch_settings.h"
 #include "native.h"   // LOG
+#include "s2a_session.h"   // S2A_SESSION_RUNNING：帧率上限说明只在局内写
 #include "s2a_pad.h"   // 手柄按键排布（自动 / Switch / Xbox）的取值解析，同齿轮菜单
+// 游戏内亮度（按款）：option 定义在 ios/settings.m（纯数据，命令行单测也能编）；拖动即时生效函数在本文件下方（需要 UIKit）。
+NSDictionary *s2a_ios_brightness_option(void);
 // 弱链接[lab]：s2a_cpatch_fps_pick（runtime/src/cpatch.c：局中切帧率档，下一帧生效；输入工作台不链原生核，取不到就只记、下次进游戏生效）
 void s2a_cpatch_fps_pick(int target) __attribute__((weak_import));
 // 弱链接[lab]：s2a_pad_layout_parse（runtime/src/pad.c；输入工作台不链原生核，取不到就按存的字面值认）
@@ -46,6 +53,13 @@ S2ASettingsRuntime *s2a_settings_runtime(void) { return g_runtime; }
 - (void)accessibilityIncrement { self.value = MIN(self.maximumValue, roundf(self.value) + 1); [self sendActionsForControlEvents:UIControlEventValueChanged]; }
 - (void)accessibilityDecrement { self.value = MAX(self.minimumValue, roundf(self.value) - 1); [self sendActionsForControlEvents:UIControlEventValueChanged]; }
 @end
+// 游戏内亮度拖动即时生效：设置页这一进程直接改屏幕亮度，让玩家当场看到效果；起局真正生效靠 settings.m 导出的 S2A_BRIGHTNESS。
+//   @"system" = 跟随系统，不动屏幕亮度（下一局也不导出）；越界值忽略。
+static void s2a_brightness_apply_live(id value) {
+    if (![value isKindOfClass:NSString.class] || [value isEqual:@"system"]) return;
+    double b = atof([value UTF8String]); if (b < 0 || b > 1) return;
+    UIScreen.mainScreen.brightness = b;
+}
 
 @class S2ASettingsController;
 @interface S2ASettingsPane : UITableViewController
@@ -60,10 +74,10 @@ S2ASettingsRuntime *s2a_settings_runtime(void) { return g_runtime; }
 @end
 
 static NSArray *toggleKeys(void) {
-    return @[@"S2ANS2ProAdapterEnabled", @"S2APhoneGyro", @"S2APhoneHaptics", @"S2ADiagExportOnOpen", @"S2ADevHUD", @"MetalHUDForceEnabled", @"S2AWidescreen", @"S2AFps60", @"S2A.touchHud", @"S2ADockedMode", @"S2ADiagRunNext", @"S2APerfHUD"];
+    return @[@"S2ANS2ProAdapterEnabled", @"S2APhoneGyro", @"S2APhoneHaptics", @"S2ADiagExportOnOpen", @"S2ADevHUD", @"MetalHUDForceEnabled", @"S2AWidescreen", @"S2AFps60", @"S2A.touchHud", @"S2ADockedMode", @"S2ADiagRunNext", @"S2APerfHUD", @"S2ASnapshot"];
 }
 static NSArray *toggleTitles(void) {
-    return @[S2AL(@"vpad.menu.ns2pro"), S2AL(@"vpad.menu.gyro"), S2AL(@"settings.toggle.phoneHaptics"), S2AL(@"settings.toggle.diagOnOpen"), S2AL(@"settings.toggle.devHud"), S2AL(@"settings.toggle.metalHud"), S2AL(@"settings.toggle.fullscreen"), S2AL(@"cpatch.group.fps"), S2AL(@"settings.toggle.touchHud"), S2AL(@"settings.toggle.docked"), S2AL(@"settings.toggle.diagRun"), S2AL(@"vpad.menu.hud")];
+    return @[S2AL(@"vpad.menu.ns2pro"), S2AL(@"vpad.menu.gyro"), S2AL(@"settings.toggle.phoneHaptics"), S2AL(@"settings.toggle.diagOnOpen"), S2AL(@"settings.toggle.devHud"), S2AL(@"settings.toggle.metalHud"), S2AL(@"settings.toggle.fullscreen"), S2AL(@"cpatch.group.fps"), S2AL(@"settings.toggle.touchHud"), S2AL(@"settings.toggle.docked"), S2AL(@"settings.toggle.diagRun"), S2AL(@"vpad.menu.hud"), S2AL(@"settings.toggle.snapshot")];
 }
 static UILabel *textLabel(UIFontTextStyle style) {
     UILabel *label = [UILabel new]; label.font = [UIFont preferredFontForTextStyle:style];
@@ -296,6 +310,10 @@ static UILabel *textLabel(UIFontTextStyle style) {
     cell.accessoryView = button; return cell;
 }
 - (UITableViewCell *)sliderCell:(NSDictionary *)option {
+    return [self sliderCell:option note:nil];
+}
+// note：刻度下一行小字（同 dropdown 的 note；PR3d HDR 开关联动时抗锯齿行下写产品限制）；nil = 不写
+- (UITableViewCell *)sliderCell:(NSDictionary *)option note:(NSString *)note {
     UITableViewCell *cell = [self baseCell:@""]; cell.selectionStyle = UITableViewCellSelectionStyleNone;
     NSArray *values = option[@"values"], *labels = option[@"labels"];
     NSInteger selected = [values indexOfObject:s2a_ios_graphics_snapshot(s2a_ios_settings_defaults())[option[@"key"]]];
@@ -315,6 +333,40 @@ static UILabel *textLabel(UIFontTextStyle style) {
     [slider.heightAnchor constraintGreaterThanOrEqualToConstant:44].active = YES;
     UIStackView *ticks = [UIStackView new]; ticks.distribution = UIStackViewDistributionEqualSpacing;
     for (NSString *label in labels) { UILabel *tick = textLabel(UIFontTextStyleCaption2); tick.text = label; tick.textColor = UIColor.secondaryLabelColor; tick.isAccessibilityElement = NO; [ticks addArrangedSubview:tick]; }
+    NSMutableArray *rows = [NSMutableArray arrayWithArray:@[heading, slider, ticks]];
+    if (note.length) { UILabel *nl = textLabel(UIFontTextStyleFootnote); nl.text = note; nl.textColor = UIColor.secondaryLabelColor; nl.numberOfLines = 0; [rows addObject:nl]; }
+    UIStackView *stack = [[UIStackView alloc] initWithArrangedSubviews:rows];
+    stack.axis = UILayoutConstraintAxisVertical; stack.spacing = 2; stack.translatesAutoresizingMaskIntoConstraints = NO;
+    [cell.contentView addSubview:stack]; UILayoutGuide *m = cell.contentView.layoutMarginsGuide;
+    [NSLayoutConstraint activateConstraints:@[[stack.leadingAnchor constraintEqualToAnchor:m.leadingAnchor], [stack.trailingAnchor constraintEqualToAnchor:m.trailingAnchor], [stack.topAnchor constraintEqualToAnchor:m.topAnchor], [stack.bottomAnchor constraintEqualToAnchor:m.bottomAnchor]]];
+    return cell;
+}
+// 游戏内亮度滑块（按款）：跟随系统 / 50 / 65 / 80 / 100%。拖动写 S2ABrightness 并即时改屏幕亮度；起局生效靠 settings.m 导出 S2A_BRIGHTNESS。
+- (UITableViewCell *)brightnessCell {
+    NSDictionary *option = s2a_ios_brightness_option();
+    UITableViewCell *cell = [self baseCell:@""]; cell.selectionStyle = UITableViewCellSelectionStyleNone;
+    NSArray *values = option[@"values"], *labels = option[@"labels"];
+    NSUserDefaults *d = s2a_ios_settings_defaults();
+    id saved = [d objectForKey:@"S2ABrightness"];
+    NSInteger selected = saved ? [values indexOfObject:saved] : 0; if (selected == NSNotFound) selected = 0;
+    UILabel *title = textLabel(UIFontTextStyleBody); title.text = option[@"title"];
+    UILabel *value = textLabel(UIFontTextStyleBody); value.text = labels[selected]; value.textColor = self.view.tintColor;
+    [value setContentCompressionResistancePriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
+    UIStackView *heading = [[UIStackView alloc] initWithArrangedSubviews:@[title, value]]; heading.spacing = 12;
+    S2ASteppedSlider *slider = [S2ASteppedSlider new]; slider.tag = 100;
+    slider.minimumValue = 0; slider.maximumValue = values.count - 1; slider.value = selected;
+    slider.accessibilityLabel = option[@"title"]; slider.accessibilityValue = labels[selected];
+    slider.accessibilityIdentifier = @"settings.brightness";
+    [slider addAction:[UIAction actionWithHandler:^(UIAction *action) {
+        UISlider *control = (UISlider *)action.sender; NSInteger index = lroundf(control.value); control.value = index;
+        value.text = labels[index]; control.accessibilityValue = labels[index];
+        id v = values[index];
+        if ([v isEqual:@"system"]) [d removeObjectForKey:@"S2ABrightness"]; else [d setObject:v forKey:@"S2ABrightness"];
+        s2a_brightness_apply_live(v);
+    }] forControlEvents:UIControlEventValueChanged];
+    [slider.heightAnchor constraintGreaterThanOrEqualToConstant:44].active = YES;
+    UIStackView *ticks = [UIStackView new]; ticks.distribution = UIStackViewDistributionEqualSpacing;
+    for (NSString *label in labels) { UILabel *tick = textLabel(UIFontTextStyleCaption2); tick.text = label; tick.textColor = UIColor.secondaryLabelColor; tick.isAccessibilityElement = NO; [ticks addArrangedSubview:tick]; }
     UIStackView *stack = [[UIStackView alloc] initWithArrangedSubviews:@[heading, slider, ticks]];
     stack.axis = UILayoutConstraintAxisVertical; stack.spacing = 2; stack.translatesAutoresizingMaskIntoConstraints = NO;
     [cell.contentView addSubview:stack]; UILayoutGuide *m = cell.contentView.layoutMarginsGuide;
@@ -325,14 +377,14 @@ static UILabel *textLabel(UIFontTextStyle style) {
     NSString *key = toggleKeys()[index]; UITableViewCell *cell = [self baseCell:toggleTitles()[index]];
     cell.selectionStyle = UITableViewCellSelectionStyleNone;
     UISwitch *control = [UISwitch new]; id saved = [s2a_ios_settings_defaults() objectForKey:key];
-    control.on = [key isEqualToString:@"S2AFps60"] ? s2a_ios_fps60_on() : saved ? [saved boolValue] : (index == 1 || index == 2 || index == 6);   // 60 帧显示实际生效的（没选过的缺省按清单，不一律显示开）
+    control.on = [key isEqualToString:@"S2AFps60"] ? s2a_ios_fps60_on() : saved ? [saved boolValue] : (index == 1 || index == 2 || index == 6 || [key isEqualToString:@"S2ASnapshot"]);   // 即时快照缺省开（宿主苹果端缺省开，runtime/src/snapsw.c）   // 60 帧显示实际生效的（没选过的缺省按清单，不一律显示开）
     control.accessibilityLabel = toggleTitles()[index]; control.accessibilityIdentifier = [@"settings." stringByAppendingString:key];
     // 主机模式（#352，维护者 11-09：手机缺省掌机，玩家可自己开）：标题下一行写明代价——更耗电换画质，手机上不建议开
     // 诊断局（#438）同样在标题下写一行：怎么用、只管下一局、会变慢
-    if ([key isEqualToString:@"S2ADockedMode"] || [key isEqualToString:@"S2ADiagRunNext"]) {
+    if ([key isEqualToString:@"S2ADockedMode"] || [key isEqualToString:@"S2ADiagRunNext"] || [key isEqualToString:@"S2ASnapshot"]) {
         UITableViewCell *sub = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:nil];
         sub.textLabel.text = cell.textLabel.text; sub.textLabel.font = cell.textLabel.font; sub.textLabel.adjustsFontForContentSizeCategory = YES; sub.textLabel.numberOfLines = 0;
-        sub.detailTextLabel.text = [key isEqualToString:@"S2ADiagRunNext"] ? S2AL(@"settings.diagRun.note") : S2AL(@"settings.docked.note"); sub.detailTextLabel.numberOfLines = 0; sub.detailTextLabel.textColor = UIColor.secondaryLabelColor;
+        sub.detailTextLabel.text = [key isEqualToString:@"S2ADiagRunNext"] ? S2AL(@"settings.diagRun.note") : [key isEqualToString:@"S2ASnapshot"] ? S2AL(@"settings.snapshot.note") : S2AL(@"settings.docked.note"); sub.detailTextLabel.numberOfLines = 0; sub.detailTextLabel.textColor = UIColor.secondaryLabelColor;
         sub.detailTextLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote]; sub.detailTextLabel.adjustsFontForContentSizeCategory = YES;
         sub.selectionStyle = UITableViewCellSelectionStyleNone; cell = sub;
     }
@@ -410,7 +462,7 @@ static UILabel *textLabel(UIFontTextStyle style) {
     cell.accessoryView = control; return cell;
 }
 - (NSInteger)rowsForGroup:(NSInteger)group {
-    if (group == 6) return 2;
+    if (group == 6) return (s2a_ios_play_resizable() ? 1 : 2) + 1;   // 末行：即时快照（全部游戏共用，0.6.0）   // 自由窗口（Duo 内屏 / iPad）方向交给系统，「方向」那行不列（#1364）
     if (group == 7) return 2;   // 界面语言、游戏语言
     if (group == 8) return 1 + (_patchGroups.count > 0);   // S 级优化：社区补丁（这款有才列）+ 金手指
     if (group == 2) return 5;   // 开发者页：打开时导出 / 诊断局 / 触屏诊断 / S2Arm 浮层 / Metal 浮层
@@ -427,10 +479,11 @@ static UILabel *textLabel(UIFontTextStyle style) {
     return [s.array sortedArrayUsingSelector:@selector(compare:)];
 }
 - (NSArray<NSNumber *> *)graphicsRows {
-    BOOL fpsP = NO, wsP = NO;
-    for (S2ACPatchGroup *g in _patchGroups) for (S2ACPatchItem *it in g.items) { if (it.followsFps60) fpsP = YES; if ([g.kind isEqual:@"widescreen"] || it.followsFullscreen) wsP = YES; }
+    BOOL fpsP = NO;
+    for (S2ACPatchGroup *g in _patchGroups) for (S2ACPatchItem *it in g.items) if (it.followsFps60) fpsP = YES;
     NSMutableArray *rows = [@[@0, @1, @2, @3] mutableCopy];
-    if (wsP) [rows addObject:@6];
+    [rows addObject:@21];   // 游戏内亮度（按款，所有游戏都有；跟随系统 / 50 / 65 / 80 / 100%）
+    [rows addObject:@6];   // 满屏：没有宽屏补丁也列（11-15 维护者「没补丁的游戏手动打开满屏就走咱们通用方案」，#2205），缺省关；有补丁时副标题写补丁接管
     if (fpsP) [rows addObject:@7];
     if (fpsP && [self fpsLevels].count > 1) [rows addObject:@20];   // 帧率档位（两档以上才列）
     [rows addObject:@9];
@@ -446,6 +499,7 @@ static UILabel *textLabel(UIFontTextStyle style) {
         cell.accessibilityIdentifier = @"settings.devEntry"; return cell;
     }
     if (group == 6) {
+        if (row == [self rowsForGroup:6] - 1) return [self toggleCell:(NSInteger)[toggleKeys() indexOfObject:@"S2ASnapshot"]];   // 即时快照
         BOOL split=row==0;
         NSString *key=split?S2APlaySplitKey:S2APlayOrientationKey;
         NSArray *values=split?@[@"auto",@"on",@"off"]:@[@"auto",@"landscape",@"portrait"];
@@ -509,12 +563,13 @@ static UILabel *textLabel(UIFontTextStyle style) {
     }
     if (group == 0) {
         NSInteger kind = [self graphicsRows][row].integerValue;
-        if (kind == 20) {   // 帧率档位：自动（不超过屏幕刷新率的最高一档）/ 各档；选了存 S2AFpsPick，游戏里当场切（s2a_cpatch_fps_pick），否则下次进游戏生效
+        if (kind == 21) return [self brightnessCell];   // 游戏内亮度：拖动即时生效、按款记住
+        if (kind == 20) {   // 帧率档位：自动（不超过 60 帧的最高一档，120 档要玩家自己选，11-16 #1285）/ 各档；选了存 S2AFpsPick，游戏里当场切（s2a_cpatch_fps_pick），否则下次进游戏生效
             NSArray<NSNumber *> *lv = [self fpsLevels]; NSMutableArray *labels = [NSMutableArray arrayWithObject:S2AL(@"settings.fps.pick.auto")];
             for (NSNumber *n in lv) [labels addObject:[NSString stringWithFormat:S2AL(@"settings.fps.pick.level"), n.longValue]];
             NSInteger cur = [s2a_ios_settings_defaults() integerForKey:@"S2AFpsPick"], sel = cur > 0 ? (NSInteger)[lv indexOfObject:@(cur)] + 1 : 0;
             if (sel < 0 || sel > (NSInteger)lv.count) sel = 0;
-            return [self dropdown:S2AL(@"settings.fps.pick") labels:labels selected:sel enabled:^BOOL(NSInteger index) { (void)index; return YES; } choose:^(NSInteger index) {
+            return [self dropdown:S2AL(@"settings.fps.pick") note:S2AL(@"settings.fps.pick.note") labels:labels selected:sel enabled:^BOOL(NSInteger index) { (void)index; return YES; } choose:^(NSInteger index) {
                 NSInteger v = index > 0 ? lv[index - 1].integerValue : 0;
                 [s2a_ios_settings_defaults() setInteger:v forKey:@"S2AFpsPick"];
                 if (s2a_cpatch_fps_pick) s2a_cpatch_fps_pick((int)v);
@@ -524,14 +579,24 @@ static UILabel *textLabel(UIFontTextStyle style) {
         if (kind >= 6) return [self toggleCell:kind];
         row = kind;
         NSDictionary *option = s2a_ios_graphics_options()[row];
-        if (row != 2) return [self sliderCell:option];
+        // PR3d HDR 开关联动（照 nxnative Upscaling 行 needs=DM_HDR=0 形态映射，S2A_HDR 是启动环境开关、无设置页行）：
+        //   HDR 管线接手时上屏增强一族对 HDR 窗口旁路（8 位感知缩放不适配 PQ 码值）——行下写产品限制提示，不置灰：
+        //   SDR 窗口（排空帧：先缩放后 mode 2 转换）照常用这两行，置灰会谎报「设置无效」
+        // 帧率上限（row 3，11-25 #502）：显示 = 生效。局内选了 30、而这局帧率没被补丁抬高（没开 60 帧补丁）→ 直连层不压游戏原生出图率
+        //   （graphics/nvn/gfx/nvn/nvn_fps.c，压下去按帧推进的款就慢），行下写明这一局上限 30 不生效；不在局内（s2a_fps_raised 拿不到局况）不写
+        if (row == 3) { NSString *cap = s2a_ios_graphics_snapshot(s2a_ios_settings_defaults())[option[@"key"]];
+            return [self sliderCell:option note:[cap isEqual:@"30"] && s2a_host_session_state && s2a_fps_raised && s2a_host_session_state() == S2A_SESSION_RUNNING && !s2a_fps_raised() ? S2AL(@"gfx.fpsLimit.native.note") : nil]; }
+        if (row != 2) return [self sliderCell:option note:row == 1 && s2a_ios_hdr_upscale_bypassed() ? S2AL(@"gfx.hdrUpscaleBypass.note") : nil];
         NSArray *values = option[@"values"];
         NSInteger selected = [values indexOfObject:s2a_ios_graphics_snapshot(s2a_ios_settings_defaults())[option[@"key"]]];
         // 画质提升（11-15 维护者：标准 / 2D 游戏专用 / 锐利放大）：选了锐利放大（MetalFX）才在标题下写一行代价，另两档不写；
-        //   这款没走直连（锐利放大用不了）：锐利放大置灰，标题下写为什么
+        //   这款没走直连（锐利放大用不了）：锐利放大置灰，标题下写为什么。FSR（AMD FSR 1）同样只直连上屏有：一并置灰、补一句；存过 Fsr 又用不了时
+        //   同已存 MetalFX 的做法，照显示（通用路径按双线性 = 标准，services/S2A.Services/GraphicsSettings.cs）
         BOOL blocked = s2a_ios_metalfx_blocked(nil);
-        NSString *note = blocked ? S2AL(@"gfx.filter.metalfx.noDirect") : [values[MAX(selected, 0)] isEqual:@"MetalFX"] ? S2AL(@"gfx.filter.metalfx.note") : nil;
-        return [self dropdown:option[@"title"] note:note labels:option[@"labels"] selected:selected enabled:^BOOL(NSInteger index) { return !(blocked && [values[index] isEqual:@"MetalFX"]); } choose:^(NSInteger index) {
+        // PR3d：HDR 开时这行下的提示先说产品限制（不置灰，见上——SDR 窗口照常）；没开 HDR 照旧按直连 / MetalFX 代价提示
+        NSString *note = s2a_ios_hdr_upscale_bypassed() ? S2AL(@"gfx.hdrUpscaleBypass.note") : nil;
+        if (!note) note = blocked ? [NSString stringWithFormat:@"%@ %@", S2AL(@"gfx.filter.metalfx.noDirect"), S2AL(@"gfx.filter.fsr.noDirect")] : [values[MAX(selected, 0)] isEqual:@"MetalFX"] ? S2AL(@"gfx.filter.metalfx.note") : nil;
+        return [self dropdown:option[@"title"] note:note labels:option[@"labels"] selected:selected enabled:^BOOL(NSInteger index) { return !(blocked && ([values[index] isEqual:@"MetalFX"] || [values[index] isEqual:@"Fsr"])); } choose:^(NSInteger index) {
             [s2a_ios_settings_defaults() setObject:values[index] forKey:option[@"key"]]; [weakSelf refresh];
         } identifier:@"settings.filter"];
     }
@@ -623,6 +688,7 @@ static UILabel *textLabel(UIFontTextStyle style) {
 @interface S2ASettingsNavigation : UINavigationController
 @end
 @implementation S2ASettingsNavigation
+S2A_VERTICAL_BAR_OFF
 - (UIInterfaceOrientationMask)supportedInterfaceOrientations { return s2a_ios_play_orientations(); }
 - (BOOL)prefersStatusBarHidden { return YES; }
 - (BOOL)prefersHomeIndicatorAutoHidden { return YES; }

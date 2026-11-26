@@ -9,7 +9,9 @@
 # bit 7 stored), the length and the stored length in that width, then the stream: a 32-bit control word per 32 items (bit 0 first, 0 = literal byte, 1 = match),
 # refilled when only its sentinel bit is left; a match is 1 to 4 bytes by its low 3 bits (offset and length - 3, see MATCH). The last 8 bytes are always literals.
 # Usage: mvgl.py list <archive> [ext]   |   mvgl.py get <archive> <name>.<ext> <out file>
-import struct, sys
+import os, struct, sys
+# RomFS 按路径读（graphics/nvn/tools/romfs_list.py open_file / map_file）：盘上同 open / mmap；RomFS 不落散文件、只有 romfs.std 镜像时从镜像读
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'graphics', 'nvn', 'tools')); import romfs_list
 
 MATCH = [(0xff, 2, 0, 0, 1), (0xffff, 2, 0, 0, 2), (0xffff, 6, 15, 2, 2), (0xffffff, 8, 31, 3, 3),
          (0xff, 2, 0, 0, 1), (0xffff, 2, 0, 0, 2), (0xffff, 6, 15, 2, 2), (0xffffffff, 11, 255, 3, 4)]   # mask, offset shift, length mask, length shift, size
@@ -47,7 +49,7 @@ def doboz(b):
 
 class Archive:
     def __init__(self, path):
-        self.f = open(path, 'rb')
+        self.f = romfs_list.open_file(path)
         magic, nt, nn, nd, self.start, self.size = struct.unpack('<4sHHIII', self.f.read(0x14))
         if magic != b'MDB1': raise ValueError('%s: not an MVGL archive' % path)
         tree, names, data = self.f.read(nt * 8), self.f.read(nn * 0x40), self.f.read(nd * 12)

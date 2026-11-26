@@ -66,6 +66,14 @@ namespace Ryujinx.Audio.Backends.CompatLayer
                 return targetSampleFormat;
             }
 
+            // S2Arm: the session decodes any guest format to PCM16 first (CompatLayerHardwareDeviceSession.ReadSamples), so a format
+            //   the device lacks goes through PCM16: straight to it when the device takes PCM16, else on to the chain below (was:
+            //   only PCM16 guests could be converted; audsmx external streams also send PcmInt8 / PcmInt32 / PcmFloat)
+            if (targetSampleFormat != SampleFormat.PcmInt16)
+            {
+                return SelectHardwareSampleFormat(SampleFormat.PcmInt16);
+            }
+
             // Attempt conversion from PCM16.
             if (targetSampleFormat == SampleFormat.PcmInt16)
             {
@@ -120,6 +128,13 @@ namespace Ryujinx.Audio.Backends.CompatLayer
                 throw new NotImplementedException();
             }
 
+            // S2Arm（#2151）：收音没有格式 / 声道转换（下面原先选硬件格式后对不上就整条退成 Dummy，单声道收音永远拿不到真麦克风）：
+            //   支持收音的后端照游戏要的格式原样开（Apple 收音会话由 AudioQueue 按游戏格式出数、系统自己重采样）
+            if (direction == Direction.Input)
+            {
+                return _realDriver.OpenDeviceSession(direction, memoryManager, sampleFormat, sampleRate, channelCount);
+            }
+
             SampleFormat hardwareSampleFormat = SelectHardwareSampleFormat(sampleFormat);
             uint hardwareChannelCount = SelectHardwareChannelCount(channelCount);
 
@@ -138,16 +153,6 @@ namespace Ryujinx.Audio.Backends.CompatLayer
                 {
                     Logger.Warning?.Print(LogClass.Audio, $"{hardwareSampleFormat} has lower quality than {sampleFormat}, expect some loss in audio fidelity.");
                 }
-            }
-
-            if (direction == Direction.Input)
-            {
-                Logger.Warning?.Print(LogClass.Audio, "The selected audio backend doesn't support the requested audio input configuration, fallback to dummy...");
-
-                // TODO: We currently don't support audio input upsampling/downsampling, implement this.
-                realSession.Dispose();
-
-                return new DummyHardwareDeviceSessionInput(this, memoryManager);
             }
 
             // It must be a HardwareDeviceSessionOutputBase.

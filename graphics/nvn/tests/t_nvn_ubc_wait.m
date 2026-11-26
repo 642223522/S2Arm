@@ -2,18 +2,20 @@
 // 期望按交接协议手推，不跑被测实现：
 //   1 拷贝线程睡着时推一笔再等：推的人叫醒它一次，等的人不再加叫醒（改前每圈自旋都加锁发信号）——300 次每次叫醒 ≤ 2
 //   2 等的人自旋完还没好就睡在 g_ubc_done 上、被拷贝线程叫醒一次：64 MB 一笔，叫醒 ≤ 2、等待标记清零、内容逐字节对
-//   3 不丢推送：推在拷贝线程去睡的任意时刻、没人等，2 秒内都靠推送自己的叫醒做完（2000 次）
+//   3 不丢推送：推在拷贝线程去睡的任意时刻、没人等，都靠推送自己的叫醒做完（2000 次，每笔兜底 30 秒）
 //   4 压力：两个等的人，40 轮 × 50000 笔（含环回绕），每笔按序做完；叫醒次数 ≤ 推送 + 等待次数
-//   5 迟到的叫醒：拷贝线程被钩子停在「已置标记、已读字」处时补一次叫醒，不得清它的标记；下一笔推送 2 秒内做完（5 轮）
-// 丢叫醒会挂死：alarm(60) 让它按失败结束。
-static _Atomic int g_late;   // 5：拷贝线程停在去睡的路上（标记已置、字已读），迟到的叫醒落在这里
-#define UBC_T_SLEEPING() do { if (atomic_load(&g_late)) usleep(20000); } while (0)
+//   5 迟到的叫醒：拷贝线程被钩子停在「已置标记、已读字」处时补一次叫醒，不得清它的标记；下一笔推送做完（5 轮，兜底 30 秒）
+// 丢叫醒会挂死：alarm(240) 让它按失败结束。
+static _Atomic int g_late, g_in_hook;   // 5：拷贝线程停在去睡的路上（标记已置、字已读），迟到的叫醒落在这里
+// 原先钩子停 20 ms、测试睡 5 ms 再补叫醒：负载高时 5 ms 拖过 20 ms，叫醒落在钩子外（这一轮白测）。现在钩子一直停到测试清 g_late，
+//   并置 g_in_hook 告诉测试「已停在这里」，补叫醒确定落在钩子里
+#define UBC_T_SLEEPING() do { if (atomic_load(&g_late)) { atomic_store(&g_in_hook, 1); while (atomic_load(&g_late)) usleep(100); } } while (0)
 #include "../gfx/nvn/nvn_mtl.m"
 static int checks, failed;
 #define CHECK(c, ...) do { checks++; if (!(c)) { failed++; fprintf(stderr, "FAIL: " __VA_ARGS__); fputc('\n', stderr); } } while (0)
 
-static int asleep(void) {   // the copy thread went to sleep (bounded: 2 s)
-    for (int i = 0; i < 2000; i++) { if (atomic_load(&g_ubc_sleeping)) return 1; usleep(1000); }
+static int asleep(void) {   // the copy thread went to sleep (bounded: 30 s；原 2 秒，负载高时拷贝线程轮不上核就判「没去睡」假红)
+    for (int i = 0; i < 30000; i++) { if (atomic_load(&g_ubc_sleeping)) return 1; usleep(1000); }
     return 0;
 }
 static uint64_t ns(void) { return clock_gettime_nsec_np(CLOCK_UPTIME_RAW); }
@@ -24,7 +26,7 @@ static _Atomic int g_stop; static _Atomic uint64_t g_side_waits;
 static void *side_waiter(void *arg) { (void)arg; while (!atomic_load(&g_stop)) { ubc_wait(ubc_head()); atomic_fetch_add(&g_side_waits, 1); } return NULL; }
 
 int main(void) { @autoreleasepool {
-    alarm(60);   // a lost wake-up hangs: the alarm ends the test as a failure
+    alarm(240);   // a lost wake-up hangs: the alarm ends the test as a failure（原 60 秒：整件在负载 50 下已跑 32 秒，再高就被它误杀；丢叫醒是永久挂死，240 秒照样分得开）
     uint64_t a = 7, b = 0; ubc_wait(ubc_push(&b, &a, sizeof a));   // starts the copy thread
     CHECK(b == 7, "the first copy was not made");
 
@@ -57,10 +59,11 @@ int main(void) { @autoreleasepool {
         for (volatile unsigned k = 0; k < d; k++) {}
         if (i % 50 == 0) usleep(200);   // and sometimes fully asleep
         uint64_t seq = ubc_push(&dst, &src, sizeof src), t = ns();
-        while (atomic_load_explicit(&g_ubc_done, memory_order_acquire) < seq) { if (ns() - t > 2000000000ull) { lost = 1; break; } usleep(10); }
+        // 丢叫醒 = 永远做不完；兜底 30 秒（原 2 秒：负载高时拷贝线程晚跑就判丢叫醒假红）
+        while (atomic_load_explicit(&g_ubc_done, memory_order_acquire) < seq) { if (ns() - t > 30000000000ull) { lost = 1; break; } usleep(10); }
         if (!lost) CHECK(dst == src, "push %d: done counted before the copy was made", i);
     }
-    CHECK(!lost, "a push was not made within 2 s without a waiter (lost wake-up)");
+    CHECK(!lost, "a push was not made within 30 s without a waiter (lost wake-up)");
 
     // 4. Stress, two waiters: the replay thread queues copies (ring wrap included) and waits for some, another thread waits for whatever is queued; every copy in
     // order, and the wake calls stay below one per push / wait. 40 rounds of 50,000: a waker that took the copy thread's flag with a late wake call (the hand-off's
@@ -88,13 +91,15 @@ int main(void) { @autoreleasepool {
     int late_lost = 0;
     for (int i = 0; i < 5 && !late_lost; i++) {
         asleep(); uint64_t s1 = 11, d1 = 0, s2 = 22, d2 = 0;
-        atomic_store(&g_late, 1); uint64_t q1 = ubc_push(&d1, &s1, sizeof s1);
+        atomic_store(&g_in_hook, 0); atomic_store(&g_late, 1); uint64_t q1 = ubc_push(&d1, &s1, sizeof s1);
         while (atomic_load(&g_ubc_done) < q1) usleep(100);
-        usleep(5000); ubc_kick(); atomic_store(&g_late, 0);   // the first push's late wake call, while the thread is held
-        usleep(40000);   // it sleeps now
+        for (int k = 0; k < 30000 && !atomic_load(&g_in_hook); k++) usleep(1000);   // 等拷贝线程停进钩子（兜底 30 秒）
+        CHECK(atomic_load(&g_in_hook), "the copy thread never reached its way to sleep (round %d)", i);
+        ubc_kick(); atomic_store(&g_late, 0);   // the first push's late wake call, while the thread is held
+        usleep(40000);   // it sleeps now（负对照短窗：负载高时它还没睡下就来下一笔，只会漏检丢叫醒，不会假红）
         uint64_t seq = ubc_push(&d2, &s2, sizeof s2), t = ns();
-        while (atomic_load_explicit(&g_ubc_done, memory_order_acquire) < seq) { if (ns() - t > 2000000000ull) { late_lost = 1; break; } usleep(100); }
-        CHECK(!late_lost && d1 == 11 && d2 == 22, "a late wake call took the copy thread's flag: the next push was not made within 2 s (round %d)", i);
+        while (atomic_load_explicit(&g_ubc_done, memory_order_acquire) < seq) { if (ns() - t > 30000000000ull) { late_lost = 1; break; } usleep(100); }   // 兜底 30 秒（原 2 秒）
+        CHECK(!late_lost && d1 == 11 && d2 == 22, "a late wake call took the copy thread's flag: the next push was not made within 30 s (round %d)", i);
         if (late_lost) { fprintf(stderr, "t_ubc_wait: %d checks, %d failed (the copy thread is lost asleep)\n", checks, failed); _exit(1); }
     }
 

@@ -7,6 +7,8 @@
 #include "../gfx/nvn/nvn_mtl.m"
 
 static unsigned checks, failures;
+// 池注销按回放顺序（nvn_mtl.m pool_reap）：nvn_be_pool_del 只打标记，再回放完一次提交才真正下表；本用例测的是真正下表之后，这里直接走过两次提交再收割
+static void reap(void) { pthread_mutex_lock(&g_mu); g_sub_serial += 2; pool_reap(0, 0); pthread_mutex_unlock(&g_mu); }
 #define REQUIRE(c) do { if (!(c)) { fprintf(stderr, "SETUP FAIL %s:%d %s\n", __FILE__, __LINE__, #c); exit(2); } } while (0)
 #define CHECK(c, ...) do { checks++; int ok_ = !!(c); failures += !ok_; printf("%s ", ok_ ? "PASS" : "FAIL"); printf(__VA_ARGS__); putchar('\n'); fflush(stdout); } while (0)
 enum { SLOTS = 1024, SLOT = 64 << 10 };
@@ -43,7 +45,7 @@ int main(void) { @autoreleasepool {
     int adds = 0, dels = 0, invalid = 0;
     for (int step = 0; step < 2000; step++) {
         int s = (int)(rnd() % SLOTS);
-        if (used[s]) { nvn_be_pool_del(base + (size_t)s * SLOT); used[s] = 0; dels++; } else { nvn_be_pool_add(base + (size_t)s * SLOT, SLOT); used[s] = 1; adds++; }
+        if (used[s]) { nvn_be_pool_del(base + (size_t)s * SLOT); reap(); used[s] = 0; dels++; } else { nvn_be_pool_add(base + (size_t)s * SLOT, SLOT); used[s] = 1; adds++; }
         pthread_mutex_lock(&g_mu); invalid += !g_pidx_ok; pthread_mutex_unlock(&g_mu);
         if (step % 50 == 49 || step < 20) bad += verify(&lookups);
     }
@@ -54,6 +56,7 @@ int main(void) { @autoreleasepool {
     for (int s = 0; s < SLOTS; s++) if (!used[s]) { nvn_be_pool_add(base + (size_t)s * SLOT, SLOT); used[s] = 1; }
     CHECK(verify(&lookups) <= 1 && verify(&lookups) == 0, "填满 1024 格（索引扩容）后查找仍全部正确");
     for (int s = 0; s < SLOTS; s += 2) { nvn_be_pool_del(base + (size_t)s * SLOT); used[s] = 0; }
+    reap();
     CHECK(verify(&lookups) == 0, "隔一个注销一个（512 次）后查找全部正确、索引仍有效");
     if (failures) printf("✗ t_nvn_pool_index：%u 项不符（共 %u 项）\n", failures, checks); else printf("✓ t_nvn_pool_index：池地址索引就地维护，%u 项全过\n", checks);
     return failures != 0;

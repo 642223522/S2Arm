@@ -58,7 +58,9 @@ namespace S2A.Services.Tests
                 }
                 using (IStorage s = RomFsIndex.Open(rom, index))
                 {
-                    Check("负对照：索引不叠覆盖层（11-07 现象）", $"{ResultFs.HostFileDataCorrupted.Value}", Read(s, "/Layout/a.zs", 1200).Split('/')[0]);
+                    // 索引不叠覆盖层（11-07 现象）：拿不到覆盖内容（长度对不上的那份照常按实际文件读、黄字记下，11-17 起不再回失败）
+                    string neg = Read(s, "/Layout/a.zs", 1200);
+                    Check("负对照：索引不叠覆盖层拿不到覆盖内容", "不是覆盖内容", neg == "Success/1200×0x22" ? $"拿到了覆盖内容（{neg}）" : "不是覆盖内容");
                 }
                 using (IStorage s = S2A.Services.Application.RomFsFromDirectory(rom, over))
                 {

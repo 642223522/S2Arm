@@ -82,7 +82,7 @@ namespace Ryujinx.Audio.Renderer.Dsp
 
             _mailbox = new Mailbox<MailboxMessage>();
             _sessionCommandList = new RendererSession[Constants.AudioRendererSessionCountMax];
-            _lastTime = PerformanceCounter.ElapsedNanoseconds;
+            _lastTime = S2ANowNs();
             _pauseEvent = deviceDriver.GetPauseEvent();
 
             if (S2AInline)
@@ -146,11 +146,17 @@ namespace Ryujinx.Audio.Renderer.Dsp
             return _sessionCommandList[sessionId] != null;
         }
 
+        // S2Arm (#1598): ticks the last inline Signal spent waiting on the pause event (guest frozen / app unfocused) before rendering.
+        //   The manager's slow-period line subtracts it: a 7 s freeze used to be logged as one 7 s DSP period
+        public long S2ALastPauseWaitTicks;
+
         public void Signal()
         {
             if (S2AInline)
             {
+                long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
                 _pauseEvent?.WaitOne();
+                S2ALastPauseWaitTicks = System.Diagnostics.Stopwatch.GetTimestamp() - t0;
                 Render();
                 return;
             }
@@ -167,7 +173,7 @@ namespace Ryujinx.Audio.Renderer.Dsp
 
             long increment = Constants.AudioProcessorMaxUpdateTimeTarget;
 
-            long timeNow = PerformanceCounter.ElapsedNanoseconds;
+            long timeNow = S2ANowNs();
 
             // S2Arm (11-13 断音): pace by what the output still holds when it can tell (see S2ADepthWait); the wall clock below otherwise
             if (S2ADepthFrames > 0 && S2ADepthWait(increment, timeNow))
@@ -215,8 +221,7 @@ namespace Ryujinx.Audio.Renderer.Dsp
             // S2Arm: one sleep to the end of the period instead of polling WaitOne(1) (3.4 wakeups per 5 ms period → 1)
             if (timeNow < _lastTime + increment)
             {
-                Ryujinx.Common.PreciseSleep.PreciseSleepHelper.SleepUntilTimePointSingleWake(
-                    PerformanceCounter.ElapsedTicks + (_lastTime + increment - timeNow) * PerformanceCounter.TicksPerMillisecond / 1_000_000);
+                S2ASleepNs(timeNow, _lastTime + increment);
             }
 
             _lastTime += increment;
@@ -281,6 +286,45 @@ namespace Ryujinx.Audio.Renderer.Dsp
         //   not make this loop render as fast as it can until the watchdog restarts the queue
         private long _s2aVirt;
 
+        // S2Arm (#1957 Mac 一款开放世界游戏玩 3～4 小时后爆音不停，诊断 D-EZH5): the cap above holds rendering to the wall clock, but the
+        //   device plays by its own clock. One a few ppm faster eats the depth slowly (start of that run: at least 1200 frames in flight;
+        //   3 hours later: 0, 165 → 920 zero-in-flight hand-backs every 10 s, rendering exactly 480240 frames per 10 s = the wall clock
+        //   while below the target, i.e. held by the cap). So while the output holds less than half the target and has been fed, a render may
+        //   pass the cap without moving _s2aVirt (the device is ahead of the wall clock: follow it). At most one such render per
+        //   S2ACatchUpEvery renders (+3.1%, far above any real clock drift — that run: ~75 ms of headroom gone in ~3 h ≈ 7 ppm): an output that
+        //   hands buffers back unplayed (never fills) gets at most 3.1% more than the wall clock, not a spin
+        private const int S2ACatchUpEvery = 32;
+        private int _s2aCatchUp, _s2aCatchUpTick;
+        public static long S2ACatchUps;   // 诊断：追设备的渲染次数（10 秒行读取清零）
+
+        // S2Arm (11-22 门禁偶发红): 节拍读的钟与睡的钟。单测（S2A.Services.Tests AudioDepthPaceTest）换成可控的虚拟钟：
+        //   原先单测用真墙钟，机器忙时测试线程分不到 CPU，假设备照墙钟吃帧、渲染跟不上，判据量到的是调度而不是节拍逻辑。
+        //   S2ATestClock 为 null（宿主恒为 null）= 真墙钟；设了就由它给「现在」、由它「睡到」某一刻（虚拟钟直接把时间拨过去）
+        public interface IS2AClock
+        {
+            long NowNs();
+            void SleepUntilNs(long untilNs);
+        }
+
+        public static IS2AClock S2ATestClock;
+
+        private static long S2ANowNs() => S2ATestClock?.NowNs() ?? PerformanceCounter.ElapsedNanoseconds;
+
+        private static void S2ASleepNs(long nowNs, long untilNs)
+        {
+            IS2AClock c = S2ATestClock;
+
+            if (c != null)
+            {
+                c.SleepUntilNs(untilNs);
+
+                return;
+            }
+
+            Ryujinx.Common.PreciseSleep.PreciseSleepHelper.SleepUntilTimePointSingleWake(
+                PerformanceCounter.ElapsedTicks + (untilNs - nowNs) * PerformanceCounter.TicksPerMillisecond / 1_000_000);
+        }
+
         // True: paced by depth (the next render may start now). False: no fed output can tell its depth: use the wall clock
         private bool S2ADepthWait(long increment, long timeNow)
         {
@@ -306,6 +350,14 @@ namespace Ryujinx.Audio.Renderer.Dsp
             // What a long stall left unrendered is a gap already heard: owe at most 8 periods, never more
             _s2aVirt = Math.Max(_s2aVirt, timeNow - 8 * increment);
 
+            bool catchUp = false;
+
+            if (++_s2aCatchUpTick >= S2ACatchUpEvery)
+            {
+                _s2aCatchUpTick = 0;
+                _s2aCatchUp = Math.Min(_s2aCatchUp + 1, 4);
+            }
+
             while (true)
             {
                 bool below = buffered < S2ADepthFrames;
@@ -313,6 +365,13 @@ namespace Ryujinx.Audio.Renderer.Dsp
 
                 if (below && timeNow >= capAt)
                 {
+                    break;
+                }
+
+                if (buffered < S2ADepthFrames / 2 && _s2aCatchUp > 0)
+                {
+                    catchUp = true;
+
                     break;
                 }
 
@@ -338,16 +397,24 @@ namespace Ryujinx.Audio.Renderer.Dsp
                     wake = Math.Min(wake, _s2aVirt);
                 }
 
-                Ryujinx.Common.PreciseSleep.PreciseSleepHelper.SleepUntilTimePointSingleWake(
-                    PerformanceCounter.ElapsedTicks + Math.Max(0, wake - timeNow) * PerformanceCounter.TicksPerMillisecond / 1_000_000);
+                S2ASleepNs(timeNow, Math.Max(timeNow, wake));
 
-                timeNow = PerformanceCounter.ElapsedNanoseconds;
+                timeNow = S2ANowNs();
                 buffered = Math.Max(0, S2AFedBufferedFrames(false));
             }
 
             S2AFedBufferedFrames(true);
 
-            _s2aVirt += increment;
+            if (catchUp)
+            {
+                _s2aCatchUp--;
+                Interlocked.Increment(ref S2ACatchUps);
+            }
+            else
+            {
+                _s2aVirt += increment;
+            }
+
             _lastTime = timeNow;
             _playbackEnds = timeNow;
 

@@ -1,0 +1,36 @@
+diff --git a/src/Ryujinx.Audio/Renderer/Dsp/AudioProcessor.cs b/src/Ryujinx.Audio/Renderer/Dsp/AudioProcessor.cs
+index caaf5c9a3f99382abdf9c5e7638a772709254469..7fa74ca078ef76e25bdac0e5c7738416306ed404 100644
+--- a/src/Ryujinx.Audio/Renderer/Dsp/AudioProcessor.cs
++++ b/src/Ryujinx.Audio/Renderer/Dsp/AudioProcessor.cs
+@@ -146,11 +146,17 @@ namespace Ryujinx.Audio.Renderer.Dsp
+             return _sessionCommandList[sessionId] != null;
+         }
+ 
++        // S2Arm (#1598): ticks the last inline Signal spent waiting on the pause event (guest frozen / app unfocused) before rendering.
++        //   The manager's slow-period line subtracts it: a 7 s freeze used to be logged as one 7 s DSP period
++        public long S2ALastPauseWaitTicks;
++
+         public void Signal()
+         {
+             if (S2AInline)
+             {
++                long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
+                 _pauseEvent?.WaitOne();
++                S2ALastPauseWaitTicks = System.Diagnostics.Stopwatch.GetTimestamp() - t0;
+                 Render();
+                 return;
+             }
+diff --git a/src/Ryujinx.Audio/Renderer/Server/AudioRendererManager.cs b/src/Ryujinx.Audio/Renderer/Server/AudioRendererManager.cs
+index 165adf6d0a2846f0db0885ddde7178ddf83d2837..e560ed7d9357640fb0fd1155b8ab4248a8a9bd24 100644
+--- a/src/Ryujinx.Audio/Renderer/Server/AudioRendererManager.cs
++++ b/src/Ryujinx.Audio/Renderer/Server/AudioRendererManager.cs
+@@ -270,7 +270,8 @@ namespace Ryujinx.Audio.Renderer.Server
+                 long s2aT2 = System.Diagnostics.Stopwatch.GetTimestamp();
+                 S2ATaskFaults.Read(out long s2aF0, out long s2aP0);
+                 Processor.Signal();
+-                long s2aDsp = System.Diagnostics.Stopwatch.GetTimestamp() - s2aT2;
++                // S2Arm (#1598): the wait for a frozen guest to resume is not DSP time (inline Signal waits on the pause event first)
++                long s2aDsp = System.Diagnostics.Stopwatch.GetTimestamp() - s2aT2 - Processor.S2ALastPauseWaitTicks;
+                 S2ATaskFaults.Read(out long s2aF1, out long s2aP1);
+                 S2ALogSlowPeriod(s2aT0, s2aCmd, s2aDsp, s2aF1 - s2aF0, s2aP1 - s2aP0);
+                 Processor.Wait();

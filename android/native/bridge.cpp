@@ -1,7 +1,6 @@
 #include <cstdlib>
 #include <fcntl.h>
 #include <unistd.h>
-#include "nvn/nvn_vk_first_draw.h"
 #include <unwind.h>
 #include <dlfcn.h>
 #include <sys/system_properties.h>
@@ -16,7 +15,7 @@
 #include "system_tuning.h"
 #include "capacity_affinity.h"
 #include "adpf_hint.h"
-#include "cpu_floor.h"
+#include "gpu_turbo.h"
 #include "aaudio_sink.h"
 #include "wsi_qa.h"
 #include "redlog.h"
@@ -43,6 +42,7 @@ Java_org_s2arm_android_NativeBridge_configureDebugEnvironment(JNIEnv *env, jclas
 #include "guest_signal.h"
 #include "host_android.h"
 #include "input.h"
+#include "phone_feedback.h"
 #include "memory.h"
 #include "module.h"
 #include "selftest.h"
@@ -155,21 +155,6 @@ Java_org_s2arm_android_NativeBridge_gamePresentCount(JNIEnv *, jclass) {
 #else
     return -1;
 #endif
-}
-
-// B3：直连交换链按渲染目标尺寸出图时的缓冲尺寸；只在游戏运行时（mtl_vk_adapter）里存在。
-extern "C" int s2a_vk_adapter_buffer_geometry(uint32_t *, uint32_t *) __attribute__((weak));
-
-extern "C" JNIEXPORT jint JNICALL
-Java_org_s2arm_android_NativeBridge_bufferGeometry(JNIEnv *env, jclass, jintArray out) {
-    int on = 0;
-    uint32_t w = 0, h = 0;
-    if (s2a_vk_adapter_buffer_geometry) on = s2a_vk_adapter_buffer_geometry(&w, &h);
-    if (out && env->GetArrayLength(out) >= 2) {
-        jint dims[2] = {(jint)w, (jint)h};
-        env->SetIntArrayRegion(out, 0, 2, dims);
-    }
-    return on;
 }
 
 #ifndef S2A_ANDROID_GAME_RUNTIME
@@ -469,6 +454,7 @@ Java_org_s2arm_android_NativeBridge_createGame(JNIEnv *, jclass) {
     if (g_game_host) return 0;   // 一个进程只能创建一次真实 guest / GPU 组合。
     try {
         s2a_android_input_reset();
+        s2a_android_session_period_reset();   // 本局最短周期从这一局重新记
         g_game_host = new AndroidHost(nullptr, true);
         return reinterpret_cast<jlong>(g_game_host);
     } catch (const std::exception &error) {
@@ -487,7 +473,7 @@ Java_org_s2arm_android_NativeBridge_offerSurface(JNIEnv *env, jclass, jlong hand
     if (!handle) return text(env, "Native host unavailable");
     ANativeWindow *window = surface ? ANativeWindow_fromSurface(env, surface) : nullptr;
     s2a_adpf_set_surface(window != nullptr);
-    s2a_cpu_floor_set_surface(window != nullptr);
+    s2a_gpu_turbo_set_surface(window != nullptr);
     return text(env, get(handle)->window.offer(window));
 }
 extern "C" JNIEXPORT jstring JNICALL
@@ -945,6 +931,7 @@ Java_org_s2arm_android_NativeBridge_configureFrameLogDir(JNIEnv *env, jclass, js
 // 外部私有目录用于 adb push（selected.txt 与驱动文件）。没选驱动时两边都不碰。
 // 另一个读者：会话标记（lifecycle_android.c 的 s2a_sesmark_clear_home，#528 第 15 项）在优雅收尾最后用 files 目录删 end 标记。
 //   所以外壳每次装载运行库后都要调 configureGpuDriver（不管选没选驱动）；不调的话每次正常退局库页都会误报「上一局异常结束」。
+// 第三个读者：设备档案（direct/dev_facts.c，#1749 M0）写 files/devprofile/。
 static std::string g_gpu_driver_files_dir, g_gpu_driver_external_dir;
 extern "C" const char *s2a_android_gpu_driver_files_dir(void) { return g_gpu_driver_files_dir.c_str(); }
 extern "C" const char *s2a_android_gpu_driver_external_dir(void) { return g_gpu_driver_external_dir.c_str(); }
@@ -1005,13 +992,6 @@ Java_org_s2arm_android_NativeBridge_configureReadonlyRangeCheck(JNIEnv *, jclass
     (void)enabled;
     return ENOSYS;
 #endif
-}
-
-extern "C" JNIEXPORT void JNICALL
-Java_org_s2arm_android_NativeBridge_setDrawLog(JNIEnv *, jclass, jint draw_log) {
-    // 生产通道：intent extra s2arm.draw_log → 原生 draw_log 覆盖（-1 不动）。属性通道
-    // debug.s2a.draw_log 在 user 版设备上 untrusted_app 读不到，此通道不依赖它。
-    s2a_fd_set_draw_log((int)draw_log);
 }
 
 extern "C" JNIEXPORT jint JNICALL
@@ -1183,6 +1163,31 @@ extern "C" __attribute__((visibility("default"))) long s2a_android_text_input(
 #endif
 }
 
+// An optional native asset is read from the APK's AssetManager. The caller
+// checks all section sizes and exact content identities before publication.
+extern "C" int s2a_android_read_native_asset(const char *name, size_t max, void **out, size_t *size) {
+    *out = nullptr;
+    *size = 0;
+#ifdef S2A_ANDROID_GAME_RUNTIME
+    if (!g_game_host || !g_game_host->assets || !name || !*name) return 0;
+    AAsset *asset = AAssetManager_open(g_game_host->assets, name, AASSET_MODE_BUFFER);
+    if (!asset) return 0;
+    off64_t length = AAsset_getLength64(asset);
+    const void *data = length > 0 && static_cast<uint64_t>(length) <= max ? AAsset_getBuffer(asset) : nullptr;
+    if (data) {
+        *out = malloc(static_cast<size_t>(length));
+        if (*out) {
+            memcpy(*out, data, static_cast<size_t>(length));
+            *size = static_cast<size_t>(length);
+        }
+    }
+    AAsset_close(asset);
+#else
+    (void)name; (void)max;
+#endif
+    return *out != nullptr;
+}
+
 extern "C" __attribute__((visibility("default"))) long long s2a_android_copy_asset(const char *name, const char *path) {
 #ifdef S2A_ANDROID_GAME_RUNTIME
     if (!g_game_host || !g_game_host->assets || !name || !*name || !path || !*path) return -1;
@@ -1230,7 +1235,8 @@ Java_org_s2arm_android_NativeBridge_stopGame(JNIEnv *env, jclass, jlong handle, 
     if (!host || host != g_game_host || !host->game_runtime || host->stop_started.exchange(true)) return;
     s2a_capacity_stop();
     s2a_adpf_stop();
-    s2a_cpu_floor_stop();
+    s2a_gpu_turbo_stop();
+    s2a_android_session_period_reset();
     host->stop_reason = jstring_or(env, why, "game stop requested");
     host->stop_normal.store(normal == JNI_TRUE);
     // 后台冻着的客机先放开（同 Mac display_focus_publish_ex(NO, NO) 的「收尾只报不冻」）：
@@ -1342,7 +1348,8 @@ Java_org_s2arm_android_NativeBridge_setForeground(JNIEnv *, jclass, jlong handle
     s2a_aaudio_set_foreground(foreground != JNI_FALSE);
     s2a_capacity_foreground(foreground != JNI_FALSE);
     s2a_adpf_set_foreground(foreground != JNI_FALSE);
-    s2a_cpu_floor_set_foreground(foreground != JNI_FALSE);
+    s2a_gpu_turbo_set_foreground(foreground != JNI_FALSE);
+    s2a_android_phone_feedback_foreground(foreground != JNI_FALSE);   // 退后台关手机传感器、停马达
     // 退后台停显示节拍源（直连 vsync 拍；前台回时由 acquire 路径按需懒重启）
     if (!foreground && s2a_android_link_stop) s2a_android_link_stop();
     host->window.set_foreground(foreground);
@@ -1430,6 +1437,29 @@ extern "C" void s2a_android_dguard_prompt(const char *diag) {
     if (env->ExceptionCheck()) { env->ExceptionDescribe(); env->ExceptionClear(); }
     if (attached) vm->DetachCurrentThread();
 }
+// 停帧看门的屏上提示（runtime/src/ap_host.c stall_watch 按名字 dlsym 这三个，取不到就只打日志）：安卓用和 iOS 同名的出口接上，
+//   共用看门不改。三个调用方各只有一种用途——横幅 = 停帧救场关了帧率补丁（定时收）、消息 = 「可能还在加载」（帧又走了用清除收），
+//   所以这里只把「哪一种」交给 Java，文案由 Java 按界面语言取 strings.xml（看门传来的是 s2a_ui_text.h 的中文缺省，提到 iOS 的设置入口）。
+//   在看门线程上被调：挂上 JVM、调 NativeBridge.stallNotice(种类, 秒)，Java 侧派回主线程，不阻塞。
+static void stall_notice(int kind, int seconds) {
+    JavaVM *vm = g_vm;
+    JNIEnv *env = nullptr;
+    bool attached = false;
+    if (!vm || !g_bridge) { __android_log_print(ANDROID_LOG_ERROR, "S2Arm", "stall notice %d dropped: no bridge", kind); return; }
+    if (vm->GetEnv(reinterpret_cast<void **>(&env), JNI_VERSION_1_6) != JNI_OK) {
+        if (vm->AttachCurrentThread(&env, nullptr) != JNI_OK) return;
+        attached = true;
+    }
+    jmethodID method = env->GetStaticMethodID(g_bridge, "stallNotice", "(II)V");
+    if (method) env->CallStaticVoidMethod(g_bridge, method, static_cast<jint>(kind), static_cast<jint>(seconds));
+    else __android_log_print(ANDROID_LOG_ERROR, "S2Arm", "stall notice: NativeBridge.stallNotice missing");
+    if (env->ExceptionCheck()) { env->ExceptionDescribe(); env->ExceptionClear(); }
+    if (attached) vm->DetachCurrentThread();
+}
+// 种类与 StallNotice.java 同值。横幅的秒数是显示多久（看门给 8）；文案里的「约 30 秒」是看门判停帧的窗口（ap_host.c 的 30 秒环、s2a_ap_crawl_due）
+extern "C" void s2a_ios_banner(const char *text, double seconds) { (void)text; stall_notice(1, seconds > 0 ? static_cast<int>(seconds + 0.5) : 8); }
+extern "C" void s2a_ios_show_message(const char *text) { (void)text; stall_notice(2, 0); }
+extern "C" void s2a_ios_clear_message(const char *text) { (void)text; stall_notice(0, 0); }
 // 接口 v2.15（#1228）：运行中切掌机 / 主机走宿主 display->set_console_mode（其内部转
 //   s2a_console_mode_set，服务层再转 ChangeDockedModeState）。与 os.c 其它符号同一强引用
 //   （能链接通过就说明 os.c 在）；仅会话运行中由 Java 调来。
@@ -1452,7 +1482,7 @@ Java_org_s2arm_android_NativeBridge_presentPeriodNs(JNIEnv *, jclass) {
 }
 extern "C" JNIEXPORT jstring JNICALL
 Java_org_s2arm_android_NativeBridge_releaseSurface(JNIEnv *env, jclass, jlong handle) {
-    if (handle) { s2a_adpf_set_surface(0); s2a_cpu_floor_set_surface(0); }
+    if (handle) { s2a_adpf_set_surface(0); s2a_gpu_turbo_set_surface(0); }
     return text(env, handle ? get(handle)->window.release() : "Native host unavailable");
 }
 extern "C" JNIEXPORT void JNICALL
@@ -1524,7 +1554,6 @@ static void s2a_log_exit(const char *why, int code) {
         if (len > (int)sizeof buf - 1) len = (int)sizeof buf - 1;   // dladdr 的模块/符号名可能很长
         if (len > 0) (void)!write(fd, buf, (size_t)len);
     }
-    nvn_vk_callring_dump(fd);   // 最近的关键 Vulkan 调用（debug.s2a.callring=1 时才有内容）
     close(fd);
 }
 static void s2a_exit_probe(void) { s2a_log_exit("atexit", 0); }

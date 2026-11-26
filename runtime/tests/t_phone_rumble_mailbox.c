@@ -64,7 +64,7 @@ int main(void) {
     check(calls() == 0, "① 提交返回时 apply 一次都没跑（同步零回调）");
     check(dt < 2.0, "① 提交耗时应 < 2 ms（远低于一帧）");
     hold(0);
-    check(wait_seen(S2A_PHONE_RUMBLE_PLAY, 1, 2000), "① 放行后 PLAY 到达反馈线程");
+    check(wait_seen(S2A_PHONE_RUMBLE_PLAY, 1, 30000), "① 放行后 PLAY 到达反馈线程");
     { pthread_mutex_lock(&g_mu);
       check(g_last[0].low_amp == v[0].low_amp && g_last[1].low_amp == v[1].low_amp, "① 值原样送到 apply（左右各一侧）");
       pthread_mutex_unlock(&g_mu); }
@@ -74,7 +74,7 @@ int main(void) {
     hold(1);
     for (int i = 0; i < 500; i++) { v[0].low_amp = (float)i / 500.0f; s2a_phone_rumble_mailbox_submit(v); }
     hold(0);
-    check(wait_seen(S2A_PHONE_RUMBLE_PLAY, c0 + 1, 2000), "② 500 次连续提交后仍会消费");
+    check(wait_seen(S2A_PHONE_RUMBLE_PLAY, c0 + 1, 30000), "② 500 次连续提交后仍会消费");
     { pthread_mutex_lock(&g_mu); float got = g_last[0].low_amp; int extra = g_seen[S2A_PHONE_RUMBLE_PLAY] - c0;
       pthread_mutex_unlock(&g_mu);
       // 至多 2 次：线程可能在挂住前已取走一帧，放行后再取走「最后一帧」；绝不能是 500 次
@@ -86,14 +86,14 @@ int main(void) {
     for (int i = 0; i < 1000; i++) s2a_phone_rumble_mailbox_submit(v);
     s2a_phone_rumble_mailbox_submit_stop();
     hold(0);
-    check(wait_seen(S2A_PHONE_RUMBLE_STOP, 1, 2000), "③ 1000 次 PLAY 之后的 STOP 仍被消费");
+    check(wait_seen(S2A_PHONE_RUMBLE_STOP, 1, 30000), "③ 1000 次 PLAY 之后的 STOP 仍被消费");
     { pthread_mutex_lock(&g_mu); int last = g_order[g_order_n - 1]; pthread_mutex_unlock(&g_mu);
       check(last == S2A_PHONE_RUMBLE_STOP, "③ 停止排在最后消费的那一次（没被 PLAY 盖掉）"); }
 
     // ④ 预热：空信箱里 WARM 单独被执行（建引擎不播放）
     int w0 = seen(S2A_PHONE_RUMBLE_WARM);
     s2a_phone_rumble_mailbox_warm();
-    check(wait_seen(S2A_PHONE_RUMBLE_WARM, w0 + 1, 2000), "④ 空信箱里的 WARM 被执行（预热落到 apply 上）");
+    check(wait_seen(S2A_PHONE_RUMBLE_WARM, w0 + 1, 30000), "④ 空信箱里的 WARM 被执行（预热落到 apply 上）");
 
     // ④b PLAY 压过 WARM：预热不该把紧接着的真实震动吞掉（要么先 WARM 再 PLAY，要么 WARM 被 PLAY 合并）
     int p0 = seen(S2A_PHONE_RUMBLE_PLAY);
@@ -101,7 +101,7 @@ int main(void) {
     s2a_phone_rumble_mailbox_warm();
     s2a_phone_rumble_mailbox_submit(v);
     hold(0);
-    check(wait_seen(S2A_PHONE_RUMBLE_PLAY, p0 + 1, 2000), "④b WARM 之后的 PLAY 一定会被消费");
+    check(wait_seen(S2A_PHONE_RUMBLE_PLAY, p0 + 1, 30000), "④b WARM 之后的 PLAY 一定会被消费");
     { pthread_mutex_lock(&g_mu); int seq = g_warm_then_play; int warm = g_seen[S2A_PHONE_RUMBLE_WARM] - w0;
       pthread_mutex_unlock(&g_mu);
       check(seq || warm == 1, "④b WARM 与 PLAY 不互相吞掉（先 WARM 后 PLAY，或 WARM 被 PLAY 合并）"); }
@@ -111,7 +111,7 @@ int main(void) {
       check(s.submits == 1505, "⑤ 提交计数 = 1 + 500 + (1000 + 1) + 1 + (1 + 1)");
       check(s.coalesced > 1400, "⑤ 合并计数记下了被覆盖的提交（诊断能看出来）");
       int synced = 0;
-      for (int i = 0; i < 200 && !synced; i++) { s2a_phone_rumble_mailbox_stats_get(&s); synced = s.applies == (uint64_t)calls(); usleep(1000); }
+      for (int i = 0; i < 30000 && !synced; i++) { s2a_phone_rumble_mailbox_stats_get(&s); synced = s.applies == (uint64_t)calls(); usleep(1000); }   // 30 秒兜底（原 200 ms）
       check(synced, "⑤ apply 计数与回调次数一致"); }
 
     s2a_phone_rumble_mailbox_shutdown();

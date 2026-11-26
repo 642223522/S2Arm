@@ -11,6 +11,7 @@ import S2ArmAppleAdapter
 @MainActor final class UpdatePhoneDeviceTests: XCTestCase {
     func testUpdatePhonePassesTheChosenDevice() async throws {
         _ = NSApplication.shared
+        pinIosAfterPackInstall()
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("s2arm-upd-" + UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
         try FileManager.default.createDirectory(at: root.appendingPathComponent("Jobs"), withIntermediateDirectories: true)
@@ -30,10 +31,12 @@ import S2ArmAppleAdapter
     /// 会挤掉别的电脑装的游戏（container_would_drop）：界面发起的弹确认、记着当时的设备；确认后带 acceptDropped 重发同一台。控制口发起的（ask: false）不弹
     func testUpdatePhoneAsksBeforeDroppingAndRetriesWithAcceptDropped() async throws {
         _ = NSApplication.shared
+        pinIosAfterPackInstall()
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("s2arm-upd-" + UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
         try FileManager.default.createDirectory(at: root.appendingPathComponent("Jobs"), withIntermediateDirectories: true)
         try Data().write(to: root.appendingPathComponent("Jobs/main.py"))
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("lib"), withIntermediateDirectories: true)   // 游戏库文件夹在（更新后重读游戏库失败不能当成库没了，#1412）
         let runner = RequestRunner(); runner.dropFirst = 2
         let model = S2ArmLauncherModel(client: JobClient(environment: JobEnvironment(
             privateRoot: root, resources: root, library: root.appendingPathComponent("lib").path, libraryId: "fixture"), runner: runner))
@@ -52,6 +55,31 @@ import S2ArmAppleAdapter
         XCTAssertEqual(runner.updates[2]["acceptStale"] as? Bool, true)
         XCTAssertEqual(runner.updates[2]["device"] as? String, "00008160-FIXTURE", "还是同一台")
     }
+
+    /// 覆盖装前存档备份做不成时，作业层看云存档里有没有这款的快照（pack/jobs/install.py cloud_save_copy）：玩家在环境页选了云存档文件夹 →
+    ///   installUpdate 请求带 cloudSavesFolder；没选 → 不带（期望手写）
+    func testUpdatePhonePassesCloudSavesFolder() async throws {
+        _ = NSApplication.shared
+        pinIosAfterPackInstall()
+        for folder in ["cloud-fixture/S2Arm Saves", nil] as [String?] {
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent("s2arm-upd-" + UUID().uuidString)
+            defer { try? FileManager.default.removeItem(at: root) }
+            try FileManager.default.createDirectory(at: root.appendingPathComponent("Jobs"), withIntermediateDirectories: true)
+            try Data().write(to: root.appendingPathComponent("Jobs/main.py"))
+            try FileManager.default.createDirectory(at: root.appendingPathComponent("apple-frontend"), withIntermediateDirectories: true)
+            // 同真 App 写出的设置文件（SettingsProvider.write 总带 schema: 1；读的一方不认没有 schema 的文件，SettingsProvider.object）
+            var settings: [String: Any] = ["schema": 1]
+            if let folder { settings["cloudSavesFolder"] = folder }
+            try JSONSerialization.data(withJSONObject: settings).write(to: root.appendingPathComponent("apple-frontend/launch-settings.json"))
+            let runner = RequestRunner()
+            let model = S2ArmLauncherModel(client: JobClient(environment: JobEnvironment(
+                privateRoot: root, resources: root, library: root.appendingPathComponent("lib").path, libraryId: "fixture"), runner: runner))
+            model.updatePhone(acceptStale: false, repack: [], language: "zh-Hans", device: "00008160-FIXTURE")
+            for _ in 0..<300 where model.busy || runner.updates.isEmpty { try? await Task.sleep(for: .milliseconds(10)) }
+            XCTAssertEqual(runner.updates.count, 1)
+            XCTAssertEqual(runner.updates.first?["cloudSavesFolder"] as? String, folder, folder == nil ? "没选云存档文件夹就不带" : "选了就带上同一个路径")
+        }
+    }
 }
 
 private final class RequestRunner: JobProcessRunner {
@@ -62,6 +90,7 @@ private final class RequestRunner: JobProcessRunner {
     func start(executable: URL, arguments: [String], environment: [String: String],
                onLine: @escaping (Data) -> Void, onStderr: @escaping (Data) -> Void,
                onExit: @escaping (Int32) -> Void) throws -> JobProcessHandle {
+        objc_sync_enter(self); defer { objc_sync_exit(self) }   // 作业客户端在并发线程池里同时调 start：替身状态串行改（无锁并发追加数组会 SIGSEGV 带崩整个测试进程）
         var taskId = ""
         var isUpdate = false
         if let last = arguments.last, last.hasSuffix(".json"), let data = try? Data(contentsOf: URL(fileURLWithPath: last)),

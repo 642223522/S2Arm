@@ -106,6 +106,15 @@ int main(void) {
     CK(ns2_assign_gesture_of(NS2_KIND_PRO, BIT(L), 0) == NS2_ASSIGN_NONE && ns2_assign_gesture_of(NS2_KIND_JOYCON_L, BIT(R), 0) == NS2_ASSIGN_NONE &&
        ns2_assign_gesture_of(NS2_KIND_JOYCON_R, BIT(L), NS2_SIDE_SL_L | NS2_SIDE_SR_L) == NS2_ASSIGN_NONE && ns2_assign_gesture_of(NS2_KIND_NONE, ~0ull, 15) == NS2_ASSIGN_NONE,
        "㉘ 负对照：Pro 只按 L / 左只按 R / 右只按左边的 SL + SR / 没型号都不算");
+    // Switch 2 Pro 直连期间扫描（11-16 D-MT6K：直连 30 秒期间不扫描、超时不转扫描，长按 SYNC 的配对广播没人接）。期望按「直连还没建起链路时，配对广播要有人接」手算
+    CK(ns2_pro_direct_pending(NS2_KIND_PRO, 0, 0) && !ns2_pro_direct_pending(NS2_KIND_PRO, 1, 0) && !ns2_pro_direct_pending(NS2_KIND_PRO, 0, 1) && !ns2_pro_direct_pending(NS2_KIND_JOYCON_L, 0, 0),
+       "㉙ Pro 直连还没就绪、没失败：继续扫描；已就绪 / 已失败 / Joy-Con 不走这条");
+    CK(ns2_pro_take_pairing(NS2_KIND_PRO, 0, 0, NS2_KIND_PRO, NS2_WAKE_PAIRING) && !ns2_pro_take_pairing(NS2_KIND_PRO, 0, 1, NS2_KIND_PRO, NS2_WAKE_PAIRING) &&
+       !ns2_pro_take_pairing(NS2_KIND_PRO, 1, 0, NS2_KIND_PRO, NS2_WAKE_PAIRING) && !ns2_pro_take_pairing(NS2_KIND_PRO, 0, 0, NS2_KIND_PRO, NS2_WAKE_OTHER) &&
+       !ns2_pro_take_pairing(NS2_KIND_PRO, 0, 0, NS2_KIND_JOYCON_L, NS2_WAKE_PAIRING) && !ns2_pro_take_pairing(NS2_KIND_JOYCON_L, 0, 0, NS2_KIND_PRO, NS2_WAKE_PAIRING),
+       "㉚ 挂着直连的 Pro 只被 Pro 的配对广播接管；链路已建 / 已就绪 / 唤醒别的主机 / Joy-Con 都不接管");
+    CK(ns2_pro_rescan_after_drop(NS2_KIND_PRO, 0, 0) && !ns2_pro_rescan_after_drop(NS2_KIND_PRO, 1, 0) && !ns2_pro_rescan_after_drop(NS2_KIND_PRO, 0, 1) && !ns2_pro_rescan_after_drop(NS2_KIND_JOYCON_R, 0, 0),
+       "㉛ Pro 从没就绪就断了：转扫描；用过的断开（重挂等它回来）/ 已重挂 / Joy-Con 不转");
     printf("%s test_joycon：%d 项不符\n", bad ? "✗" : "✓", bad);
     return bad ? 1 : 0;
 }

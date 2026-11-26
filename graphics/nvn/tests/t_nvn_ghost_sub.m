@@ -8,6 +8,7 @@
 //      幽灵环放入次数 +0、序号表代号 g_ser_gen +0（不再每个挤一格环、让全部纹理 ID 缓存重查）。改前：放入 +512、代号 +512
 // 负对照（11-05 手工做过，写在报告里）：去掉 tex_get / tex_put 里「编码中记进 g_ghost_active」两处 → ① 红；去掉 tex_mtl_ 里已销毁共享直接返回那一行 → ③ 红
 #include "../gfx/nvn/nvn_mtl.m"
+// GPU 完成等待上限 30 秒（原 10 秒：负载高时只会更慢，等不到 REQUIRE 判红）
 
 static unsigned checks, fails;
 #define REQUIRE(x) do { if (!(x)) { fprintf(stderr, "FAIL setup %s:%d %s\n", __FILE__, __LINE__, #x); exit(2); } } while (0)
@@ -37,9 +38,9 @@ int main(void) { @autoreleasepool {
         int same = 0; for (int i = 0; i < N; i++) same += tex_mtl(&snap[i]) == first[i];
         VERIFY(same == N, "① 一次提交里 %d 个已销毁纹理解析两遍：同一对象 %d / %d（期望 %d）", N, same, N, N);
         uint64_t kept0 = g_ghost_kept;
-        uint64_t f = nvn_be_sub_commit(); REQUIRE(nvn_be_wait(f, 10000000000ull)); REQUIRE(!mtl_last_commit_error()); defer_drain();
-        int out = 0, in = 0;   // the completion handler drains the deferred releases on its own thread: wait (at most 2 s) until it is done
-        for (int k = 0; k < 200; k++) { out = in = 0; for (int i = 0; i < N; i++) { int r = resident(first[i]); if (i < N - NGHOST) out += !r; else in += r; }
+        uint64_t f = nvn_be_sub_commit(); REQUIRE(nvn_be_wait(f, 30000000000ull)); REQUIRE(!mtl_last_commit_error()); defer_drain();
+        int out = 0, in = 0;   // 完成回调在自己的线程上放掉延后释放的：等到放完，兜底 30 秒（原 2 秒：负载高时回调晚跑就假红）；等不到下面判红
+        for (int k = 0; k < 3000; k++) { out = in = 0; for (int i = 0; i < N; i++) { int r = resident(first[i]); if (i < N - NGHOST) out += !r; else in += r; }
             if (out == N - NGHOST) break; usleep(10000); defer_drain(); }
         VERIFY(g_ghost.n == NGHOST && g_ghost_active.n == 0 && g_ghost_kept - kept0 == (uint64_t)(N - NGHOST),
                "② 提交结束：环里 %u（期望 %d）、暂留表 %u（期望 0）、环外放掉 %llu（期望 %d）", g_ghost.n, NGHOST, g_ghost_active.n, (unsigned long long)(g_ghost_kept - kept0), N - NGHOST);
@@ -54,7 +55,7 @@ int main(void) { @autoreleasepool {
         uint64_t puts0 = g_ghost_puts, gen0 = g_ser_gen; int same = 0;
         for (int k = 0; k < M; k++) { tex_t t = make(d, SHARED_OFF); tex_t s = t; nvn_be_tex_release(&t); same += tex_mtl(&s) == shared; }
         uint64_t puts = g_ghost_puts - puts0, gen = g_ser_gen - gen0;
-        uint64_t f = nvn_be_sub_commit(); REQUIRE(nvn_be_wait(f, 10000000000ull)); REQUIRE(!mtl_last_commit_error());
+        uint64_t f = nvn_be_sub_commit(); REQUIRE(nvn_be_wait(f, 30000000000ull)); REQUIRE(!mtl_last_commit_error());
         VERIFY(same == M, "③ %d 个已销毁对象建在共享存储上：解析到共享贴图 %d / %d", M, same, M);
         VERIFY(puts == 0 && gen == 0, "③ 幽灵环放入 +%llu（期望 0）、序号表代号 +%llu（期望 0）", (unsigned long long)puts, (unsigned long long)gen);
     }

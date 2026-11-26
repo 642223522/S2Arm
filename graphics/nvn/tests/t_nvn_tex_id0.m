@@ -31,7 +31,7 @@ static void make_tex(NVNtexture *t, ptrdiff_t off) {
     API(nvnTextureBuilderSetSize2D)(&b, 16, 16); API(nvnTextureBuilderSetFormat)(&b, NVN_FORMAT_RGBA8); API(nvnTextureBuilderSetLevels)(&b, 1);
     API(nvnTextureBuilderSetStorage)(&b, &pool, off); REQUIRE(API(nvnTextureInitialize)(t, &b));
 }
-static id<MTLTexture> by_id(int tid) { pthread_mutex_lock(&g_rmu); id<MTLTexture> t = tex_by_id(tid); pthread_mutex_unlock(&g_rmu); return t; }
+static id<MTLTexture> by_id(int tid) { os_unfair_lock_lock(&g_rmu); id<MTLTexture> t = tex_by_id(tid); os_unfair_lock_unlock(&g_rmu); return t; }
 // 标准错误（MLOG 写在那里）临时转进一个文件，读回这一段日志
 static char g_log[8192]; static int g_saved_err = -1; static FILE *g_logf;
 static void log_begin(void) { fflush(stderr); g_logf = tmpfile(); REQUIRE(g_logf); g_saved_err = dup(2); dup2(fileno(g_logf), 2); }
@@ -63,7 +63,7 @@ int main(void) { @autoreleasepool {
     { const char *lg = log_end(); VERIFY(strstr(lg, "texture ID 0 registered") && strstr(lg, "after 1 reads as an empty slot") && !strstr(lg, "【红】"),
                                          "⓪c ID 0 读过 1 次空项后注册上：记一行先空后有（不报红）"); }
     id<MTLTexture> ma = tex_mtl((const tex_t *)&a), mb = tex_mtl((const tex_t *)&b); REQUIRE(ma && mb && ma != mb);
-    id<MTLTexture> r0 = by_id(0); void *tv = NULL; pthread_mutex_lock(&g_rmu); uint64_t rid = tex_fast_rid(0, &tv); pthread_mutex_unlock(&g_rmu);
+    id<MTLTexture> r0 = by_id(0); void *tv = NULL; os_unfair_lock_lock(&g_rmu); uint64_t rid = tex_fast_rid(0, &tv); os_unfair_lock_unlock(&g_rmu);
     VERIFY(r0 == ma, "① 第一个池 ID 0：tex_by_id(0) 是注册的贴图 A（得 %p，期望 %p）", (__bridge void *)r0, (__bridge void *)ma);
     VERIFY(tv == (__bridge void *)ma && rid, "① 第一个池 ID 0：tex_fast_rid(0) 是贴图 A、资源号非 0（得 %p / %llu）", tv, (unsigned long long)rid);
     API(nvnCommandBufferAddCommandMemory)(&commands, &pool, 0, COMMAND_SIZE); API(nvnCommandBufferBeginRecording)(&commands);

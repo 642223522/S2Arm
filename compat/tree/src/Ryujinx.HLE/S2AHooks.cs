@@ -14,6 +14,12 @@ namespace Ryujinx.HLE
         // 游戏是 Switch 2 程序（NPDM 是 Switch 2 的 ACID 布局；services Application.Register 按 NpdmCompat 设）。只给语义随机型变的命令分派用
         public static bool Switch2;
 
+        // OpenDataStorageWithProgramIndex (fs 205) for a program index other than the caller's own: answer with the caller's own data storage
+        // when the index equals this (-1 = never; upstream throws "Accessing storage from other programs is not supported").
+        // services Application.Register sets 0 for a standalone program n (n >= 1) that is the only program in its package: the package
+        // carries a single RomFS, and a Switch 2 Edition program 1 also reads index 0 (#1567).
+        public static int DataStorageAliasIndex = -1;
+
         // GetDesiredLanguage when the game does not support the system language: try these in order before upstream's "first supported"
         // (the host passes the system's preferred languages, then Simplified / Traditional Chinese, then English). Null = upstream.
         public static Ryujinx.HLE.HOS.SystemState.TitleLanguage[] TitleLanguageFallback;
@@ -39,7 +45,10 @@ namespace Ryujinx.HLE
         // (iOS cannot execute code loaded at run time); the native layer maps that image by the NRO file's SHA-256 (runtime/src/loader.c s2a_nro_map).
         // NroMap(sha256[32], nro size, bss size, out base) -> 0 ok, 1 not in the package, 2 size / bss mismatch, 3 already loaded, 4 module table full, 5 unsupported here.
         // NroUnmap(base) -> 0 ok, 1 not loaded. Null = upstream (Ryujinx kernel memory manager).
-        public static delegate*<byte*, ulong, ulong, ulong*, int> NroMap;   // 宿主登记（services Native.NroMap → 原生核心 s2a_nro_map，DllImport 集中声明）
+        public static delegate*<byte*, ulong, ulong, ulong*, int> NroMap;
+        // Snapshot replay of LoadNro: the hash the saved run computed (set just before the replayed request, cleared once read). The request log keeps
+        //   only the header of an NRO that is in the package, so hashing the replayed buffer would give a different hash
+        public static byte[] SnapNroHash;   // 宿主登记（services Native.NroMap → 原生核心 s2a_nro_map，DllImport 集中声明）
         public static delegate*<ulong, int> NroUnmap;
         // NroKeep(sha256[32], nro bytes, size) -> 0 kept, 2 kept before (not prepared again yet), 1 failed: an NRO the package has no image of (NroMap 1) is kept
         // as the game unpacked it, for the next preparation to rewrite (runtime/src/loader.c s2a_nro_keep). Null = not kept.
@@ -49,6 +58,9 @@ namespace Ryujinx.HLE
 
         // Upstream silently defaulted on missing data in a few places; those now report through here (S2Arm red list)
         public static System.Action<string> Red;
+        // 联机自动模式这一局走平台局域网发现（iOS：发现 → RyuLDN 中继）：宿主在 LdnInitializing 里定、置位；置位时 ldn:u 不建双协议自动客户端（LdnAutoClient），
+        //   照旧按 MultiplayerMode（LdnRyu）建中继客户端。没有平台发现（Mac）或发现起不来时为 false，走双协议自动
+        public static bool LdnPlatformDiscovery;
 
         // Platform JPEG encoding; null preserves the existing Skia implementation on default hosts.
         public static Ryujinx.HLE.UI.ScreenshotJpegEncoder EncodeScreenshotJpeg;
@@ -59,6 +71,16 @@ namespace Ryujinx.HLE
         // A command under Services.Fs failed (S2AFsFail): command name, result + path(s), and whether it is red
         // (false = a probing result the game is expected to handle: path not found / already exists, save data not found)
         public static System.Action<string, string, bool> FsFailed;
+        // S2Arm instant snapshot: set while the request log is being replayed. An open that succeeded when it was logged but finds no
+        //   such path now (the file was deleted later, before the snapshot) gets an empty placeholder so the object numbering stays the
+        //   same; each placeholder registers its removal here and the replayer runs them once the log is done.
+        public static bool SnapReplaying;
+        public static readonly System.Collections.Generic.List<System.Func<bool>> SnapReplayUndo = new();
+        // S2Arm instant snapshot: domain object ids a replayed request must hand out (the ids it got when it was logged). Requests of
+        //   several threads on one domain finish in a different order than they were logged, so allocating lowest-free on replay can
+        //   number the objects differently, and the game memory holds the logged ids. Set by the replayer for one request at a time.
+        [System.ThreadStatic] public static System.Collections.Generic.Queue<int> SnapForceDomainIds;
+        public static int SnapForceDomainIdMiss;
         // Service-owned physical memory. Null preserves upstream allocation; a supplied
         // factory transfers a block of the requested size to Switch's lifetime.
         public static System.Func<ulong, Ryujinx.Memory.MemoryBlock> CreateServiceMemory;
@@ -105,6 +127,9 @@ namespace Ryujinx.HLE
         // S2A switches the configuration to LAN multiplayer on demand here (hosts the relay, starts Bonjour discovery), so that
         // only games that use local wireless ever touch the network or ask for the local-network permission
         public static System.Action LdnInitializing;
+        // Asked when the game initializes ldn:u: true = do not touch the network now (the host's automatic mode), Initialize succeeds with no
+        // neighbours and LdnInitializing runs on the game's first Scan / OpenAccessPoint / OpenStation instead (null / false = upstream timing)
+        public static System.Func<bool> LdnDeferInit;
 
         // TCP port of the RyuLDN server the ldn:u client connects to (S2A hosts its relay on the same port).
         // Upstream's fixed LanPlayPort; tests point it at a free port so they never meet a real relay on 30456
@@ -113,6 +138,26 @@ namespace Ryujinx.HLE
         // System data the game's own pack lacks but S2A can synthesize (empty-but-valid archives such as 0806 / 0823 NgWord, 0802 Mii):
         // directory of the synthesized archive, null when it cannot. Consulted only after the game's own systemdata/<id>/, so real data wins
         public static System.Func<ulong, string> SystemDataFallback;
+
+        // S2Arm multi-user: create and persist a new S2Arm LocalPlayer when an additional controller joins and no unused S2Arm player remains.
+        public static System.Func<string, Ryujinx.HLE.HOS.Services.Account.Acc.UserProfile> CreateLocalPlayer;
+
+        // S2Arm multi-user: record that a user profile was selected/bound in PlayerSelectApplet during this session.
+        public static System.Action<Ryujinx.HLE.HOS.Services.Account.Acc.UserId> UserSelected;
+
+        // 系统小程序开着的个数（接口 v2.18，原生 runtime/src/os.c s2a_applet_open）。键盘、错误弹窗、手柄设置等小程序占着画面时游戏本来就不出新帧，
+        //   停帧看门（runtime/src/ap_host.c、graphics/nvn/host_adapt.m）开着期间暂停计时、关掉后重新计（D-Z96G：输名字 53 秒被判卡住）。
+        //   写者两处，各自 +1 / -1 成对：小程序会话拉起到结束（ILibraryAppletAccessor；内嵌键盘不算，它不占画面）、宿主输入框开着（S2A.Services TextInput）。
+        //   AppletOpenNative 由 services Dispatcher 接到原生 s2a_applet_open_add（单测为 null，只读 AppletOpenCount）
+        public static delegate*<int, void> AppletOpenNative;
+        private static int _appletOpen;
+        public static int AppletOpenCount => System.Threading.Volatile.Read(ref _appletOpen);
+
+        public static void AppletOpenAdd(int delta)
+        {
+            System.Threading.Interlocked.Add(ref _appletOpen, delta);
+            if (AppletOpenNative != null) AppletOpenNative(delta);
+        }
 
         public static string SystemDataDir(ulong id)
         {

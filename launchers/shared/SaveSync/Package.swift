@@ -4,7 +4,7 @@ import PackageDescription
 
 let package = Package(
     name: "SaveSync",
-    platforms: [.iOS(.v18), .macOS(.v13)],
+    platforms: [.iOS(.v18), .tvOS(.v17), .macOS(.v13)],
     products: [.library(name: "SaveSync", targets: ["SaveSync"])],
     targets: [
         .target(name: "SaveSync"),

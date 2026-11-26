@@ -8,7 +8,7 @@
 #   ③ 阶段：写 gl_Position → 顶点在前；EmitVertex → 几何在前；local_size_x → 计算在前；其余 → 片元在前；候选总含顶点 / 片元 / 几何
 #   ④ 键一致：三支源码（顶点 / 片元 / 编不过）经 build() 给假宿主编（2 路）→ .glslc → shader_split.glslc_shaders 出的键与阶段，
 #      等于按「游戏运行时」的读法（段头 +0x94 段数据、+0xc0 控制段 / +0xc4 代码区偏移、+0xc8 / +0xcc 长度，即 DxLib 交给 nvnProgramSetShaders 的两块）
-#      对控制段前 0x880 字节 + 代码区算的 sha256 前 16 位（宿主 hle_nvn.c keys_hash 的口径）；编不过的一支不出文件内容、计数 1
+#      对控制段前 0x880 字节（第 2 代：[0x790, 0x798) 与 [0x7d0, 0x7e8) 置零）+ 代码区算的 sha256 前 16 位（宿主 hle_nvn.c keys_hash / nvn_key.h 的口径）；编不过的一支不出文件内容、计数 1
 #   ⑤ 宿主崩 / 卡住（到墙钟上限）→ build() 报 [RED] 退 1、留那路宿主日志，不出半份当成功；⑥ need()：没有 GLSL 源码的真 NSO（shader_split_reuse 的自编夹具）→ 不需要
 #   ⑦ 源码在 RomFS 的 NRO 里：按 NRO0 认模块（不认普通文件）、跨模块去重、need() 把 NRO 源码算进「有没有源码」
 #   ⑧ 截断的 GLSLC 输出（魔数贴文件尾 / 控制段贴输出尾）跳过、不越界抛异常（审计 P2-45）
@@ -83,7 +83,11 @@ def runtime_key(o):   # 游戏运行时交给 nvnProgramSetShaders 的控制段 
     data = struct.unpack_from('<I', o, 0x94)[0]; co, ko, kn, cn = struct.unpack_from('<4I', o, 0xc0)
     ctl, code = o[data + co:data + co + cn], o[data + ko:data + ko + kn]
     own = struct.unpack_from('<I', ctl, 0x20)[0]
-    return hashlib.sha256(ctl[:own if 0x760 <= own < 0x880 else 0x880] + code).hexdigest()[:16]
+    n = own if 0x760 <= own < 0x880 else 0x880
+    k = bytearray(ctl[:n])
+    for a, b in ((0x790, 0x798), (0x7d0, 0x7e8)):   # 第 2 代键：两段易变字段在 n 之内的部分置零（宿主 nvn_key.h），这里照规格手写、不调被测实现
+        k[a:min(b, n)] = bytes(max(0, min(b, n) - a))
+    return hashlib.sha256(bytes(k) + code).hexdigest()[:16]
 sys.path.insert(0, os.path.join(H, "tests")); import fake_glslc_host as F
 want = {(runtime_key(F.output(vs, 0)), 'vs'), (runtime_key(F.output(fs, 1)), 'ps')}
 have = set()

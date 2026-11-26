@@ -203,7 +203,8 @@ static class Unity
     }
 
     // ================= unity_src =================
-    static readonly Regex UG = PyRe(@"^\s*(#\s*include\s*<[^>]+>|#\s*pragma\s+(?:METAL|clang)\b.*|using\s+namespace\s+metal\s*;|constant int S2A_AT \[\[function_constant\(100\)\]\];.*)\s*$", RegexOptions.Multiline);
+    // 全局行：头文件 / pragma / using，以及函数常量声明（同编号各键只能声明一次）：S2A_AT 那一行（FsAlphaMs / FsFout）、可编程混合开关 s2a_pb<n>_c 那一行（gal_colorround.c，#674）
+    static readonly Regex UG = PyRe(@"^\s*(#\s*include\s*<[^>]+>|#\s*pragma\s+(?:METAL|clang)\b.*|using\s+namespace\s+metal\s*;|constant int S2A_AT \[\[function_constant\(100\)\]\];.*|constant bool s2a_pb\d_c \[\[function_constant\(11\d\)\]\];.*)\s*$", RegexOptions.Multiline);
     // 入口：fragment / vertex / kernel，以及任务 / 网格着色器的 [[object]] void / [[mesh]] void（MeshStage.cs 出的形式；11-05 时之笛第十二版批量合编不认，抛 no entry point）
     static readonly Regex UE = PyRe(@"^((?:\[\[[^\]]*\]\]\s*)*(?:fragment|vertex|kernel|\[\[(?:object|mesh)\]\])\s+.*?\b)(main0\w*)(\s*\()", RegexOptions.Multiline);
     static readonly Regex Define = PyRe(@"^\s*#\s*define\s+(\w+)", RegexOptions.Multiline);
@@ -237,6 +238,13 @@ static class Unity
         var hs = head.OrderBy(HeadRank).ThenBy(l => l, PyCmp.I);
         return string.Join("\n", hs) + "\n" + body.ToString();
     }
+
+    /// <summary>变体（_se 采样模拟 / _vp 顶点补齐）合编一批的源码（Build.VarBatches）：函数前缀 = s<着色器键>_（宿主 nvn_mtl.m se_packed / vp_pack 按键算得出、不用另记）。
+    /// 不叫 main0… 的两个标记函数 Src 不改名、同批几键会重名，先改名再合：折行标记核 s2a_se_fold → main0_fold（成 s<键>_main0_fold），
+    /// 补齐掩码 dm_vp_mask_<十六进制> → main0_vpmask_<十六进制>（成 s<键>_main0_vpmask_<十六进制>）</summary>
+    public static string VarSrc(IEnumerable<(string Key, string Msl)> items) =>
+        Src(items.Select(x => (x.Key, x.Msl.Replace("kernel void s2a_se_fold()", "kernel void main0_fold()", StringComparison.Ordinal)
+                                           .Replace("vertex float4 dm_vp_mask_", "vertex float4 main0_vpmask_", StringComparison.Ordinal))), out _);
 
     // ================= 摘要、签名、批名 =================
     /// <summary>unity_flush dg：sha256(MSL 的 UTF-8) 十六进制前 16 位</summary>
@@ -445,6 +453,13 @@ static class Unity
             catch (ArgumentException e) { Console.Out.Write("ERR\t" + e.Message + "\n"); return 1; }
             File.WriteAllBytes(argv[1], Utf8.GetBytes(s)); return 0;
         }
+        if (argv.Length >= 4 && argv.Length % 2 == 0 && argv[0] == "var-src")   // 变体合编一批的源码（宿主单测 t_nvn_red / t_nvn_vpad 包内批库那一路用）
+        {
+            var items = new List<(string, string)>();
+            for (int i = 2; i < argv.Length; i += 2) items.Add((argv[i], Utf8.GetString(File.ReadAllBytes(argv[i + 1]))));
+            try { File.WriteAllBytes(argv[1], Utf8.GetBytes(VarSrc(items))); return 0; }
+            catch (ArgumentException e) { Console.Out.Write("ERR\t" + e.Message + "\n"); return 1; }
+        }
         if (argv.Length == 3 && argv[0] == "cut")
         {
             var ks = new List<string>(); var dgs = new Dictionary<string, string>(StringComparer.Ordinal); var sz = new Dictionary<string, long>(StringComparer.Ordinal);
@@ -521,7 +536,7 @@ static class Unity
         try
         {
             Store.Open(cas);
-            Metal.Init((Priv<string[]>("MacMetal"), Priv<string>("MacRecord"), "macosx"), null, work, nj);
+            if (Metal.Init((Priv<string[]>("MacMetal"), Priv<string>("MacRecord"), "macosx"), null, work, nj) is { } broken) { Console.Error.WriteLine(broken); return 1; }
             Build.Spill = new BlobFile(Path.Combine(work, "spill.dat"), compress: true); Build.MAC = new Side(work);
             foreach (var f in Directory.GetFiles(inDir).OrderBy(x => x, StringComparer.Ordinal))
             {

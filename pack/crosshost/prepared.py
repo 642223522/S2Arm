@@ -67,7 +67,8 @@ def _root(root):
 def _allowed(name, profile):
     # direct-profile-input.json：解包阶段写的直连配置版本旁注（pack/direct_profile_input.py），是解包快照的一部分；
     #   少了它跨宿主往下出包会在「missing content version」停下，所以跟着 unpack.tsv 一起入账本。
-    if name in ("unpack.tsv", "direct-profile-input.json") or name.startswith(("exefs/", "romfs/", "ctl/", "aoc/")):
+    # romfs.std：RomFS 不落散文件时的标准 RomFS 镜像（与 romfs/ 同级、二选一，graphics/nvn/tools/romfs_list.py image_of），解包角色
+    if name in ("unpack.tsv", "direct-profile-input.json", "romfs.std") or name.startswith(("exefs/", "romfs/", "ctl/", "aoc/")):
         return True
     if profile == "romfs-index" and name == "romfs.s2aidx":
         return True
@@ -129,7 +130,7 @@ def _inventory(root, profile):
                 raise PreparedError("检查点含未声明角色文件。")
             paths[name] = path
     required = {"unpack.tsv", "exefs/main", "exefs/main.npdm"}
-    if not required <= paths.keys() or not (root / "romfs").is_dir():
+    if not required <= paths.keys() or not ((root / "romfs").is_dir() or "romfs.std" in paths):
         raise PreparedError("缺少基础解包角色。")
     modules = []
     for name, path in paths.items():
@@ -151,7 +152,7 @@ def _inventory(root, profile):
             raise PreparedError("改写模块文件组不完整。")
         for name in paths:
             if "/" not in name and name not in required and name not in REWRITE_OPTIONAL and name not in optional_widen \
-                    and name != "direct-profile-input.json":   # 解包阶段写的直连版本旁注，跟着解包角色走、不是改写产物
+                    and name not in ("direct-profile-input.json", "romfs.std"):   # 解包阶段写的直连版本旁注、RomFS 镜像，跟着解包角色走、不是改写产物
                 raise PreparedError("改写产物不属于实际模块集合。")
     if profile == "romfs-index" and "romfs.s2aidx" not in paths:
         raise PreparedError("缺少 RomFS 索引。")

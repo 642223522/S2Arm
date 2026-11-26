@@ -19,7 +19,7 @@ cpatch.tsv：编号 / 模块 / 位 / 类别 / 段名 / 许可 / 来源 / 数据�
 pchtxt：@nsobid-<构建号>；行首偏移是含 0x100 文件头的偏移，@flag offset_shift <整数> 从该行起加位移（常见 0x100 即行首就是映像偏移）；@enabled / @disabled 开一段、空行收段、@stop 整个文件到此为止；
   只收字节行（偏移 + 十六进制），字符串行 / 模板占位（{hex1}）/ 其他写法的段整段不收。IPS / IPS32：文件名是构建号，偏移含 0x100 文件头"""
 import bisect, csv, glob, hashlib, math, os, re, shutil, struct, subprocess, sys, tempfile
-import os as _os, sys as _sys; _sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '../tools')); from nso_plain import plain as _nso_plain   # ZBIC（NSO 标志 0x80）先经 nx_unpack 规整成不压缩段，不各写一份解码（tools/nso_plain.py）
+import os as _os, sys as _sys; _sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '../tools')); from nso_plain import plain as _nso_plain; from patch_index import upres as _upres, UPRES_HEIGHTS as _UPRES_H   # ZBIC（NSO 标志 0x80）先经 nx_unpack 规整成不压缩段，不各写一份解码（tools/nso_plain.py）
 
 HDR = 0x100   # NSO 文件头：IPS 与不带 offset_shift 的 pchtxt 偏移都含它
 
@@ -41,6 +41,13 @@ def bid_match(ours, patch):
     return len(p) >= 16 and ours.startswith(p)
 
 
+def visible(text):
+    """去掉 Unicode 格式字符（Cf：零宽空格、BOM、方向控制符 U+202A–202E 等）：从网页 / 聊天复制补丁时常夹进来，看不见，
+    却让十六进制地址解析失败——#1775 风花雪月金手指「00000AFCC4\u202c」int(…, 16) 抛 ValueError，整次出包停在改写。补丁里没有合法的 Cf 字符"""
+    import unicodedata
+    return ''.join(ch for ch in text if unicodedata.category(ch) != 'Cf')
+
+
 def parse_pchtxt(text):
     """→ (首个构建号, [{bid, name, enabled, writes, bad}])；每段按自身 bid 匹配。切块即结束上一段，不要求额外 @stop。
     语义同 IPSwitch 规范与 Ryujinx IPSwitchPatcher（11-02 根修，docs/研究/情报/20261028_60帧补丁与宽屏补丁规律.md 2.3 三处出入）：
@@ -49,7 +56,7 @@ def parse_pchtxt(text):
       空行：结束当前段（同 Ryujinx；之后的字节行没有段，不收）。
     """
     blocks, lines, have_bid = [], [], False
-    for line in text.splitlines():
+    for line in visible(text).splitlines():
         if line.strip().split()[:1] == ['@stop']: break
         if line.strip().startswith('@nsobid'):
             if have_bid: blocks.append('\n'.join(lines)); lines = []
@@ -60,13 +67,17 @@ def parse_pchtxt(text):
     for block in blocks:
         m = re.search(r'@nsobid-([0-9A-Fa-f]+)', block)
         bid = m.group(1).upper() if m else ''
-        cur, name, shift = None, '', 0
+        cur, name, shift, prev_c = None, '', 0, False
         for line in block.splitlines():
             s = line.strip()
-            if not s: cur = None; continue
+            if not s: cur = None; prev_c = False; continue
             if s.startswith('//') or s.startswith('#'):
-                if s.startswith('//') or s.startswith('#'): name = s.lstrip('/#').strip()
-                continue
+                # 段名 = 段前紧挨着的那几行注释，连在一起（#1493：作者写「// 10320x4320 Docked」「// Use Extended Memory Layout」两行，
+                #   原先只取最后一行，玩家看到的名字成了「Use Extended Memory Layout」、分辨率丢了）；隔了空行或别的行就重新算
+                t = s.lstrip('/#').strip()
+                name = (f'{name} · {t}' if name and t else name or t) if prev_c else t
+                prev_c = True; continue
+            prev_c = False
             if s.startswith('@'):
                 w = s.split()[0]
                 if w in ('@enabled', '@disabled'): cur = {'bid': bid, 'name': name, 'enabled': w == '@enabled', 'writes': [], 'bad': ''}; secs.append(cur)
@@ -146,7 +157,7 @@ def scan(index_dirs, exefs, log=None):
     """→ [{module, cat, name, writes, license, path, base}]：程序号（前 13 位，含更新 / 追加内容的号）与模块构建号都对上的补丁段（只收开着的段、没有看不懂的行）。
     只比构建号会串款：sdk 等公共模块各游戏同一份二进制、构建号相同（10-27 暗黑3 的 sdk 匹配上古惑狼 / 奥日的帧率补丁）"""
     pid = program_id(os.path.join(exefs, 'main.npdm'))[:13]
-    mods = {f: module_bid(os.path.join(exefs, f)) for f in sorted(os.listdir(exefs)) if f not in ('rtld',) and not f.endswith('.npdm') and os.path.isfile(os.path.join(exefs, f))}
+    mods = {f: module_bid(os.path.join(exefs, f)) for f in sorted(os.listdir(exefs)) if f not in ('rtld',) and not f.endswith('.npdm') and not f.startswith('._') and os.path.isfile(os.path.join(exefs, f))}
     foreign = []   # 版本对不上的宽屏补丁段（跨版本移植的原料，见函数尾）
     out, skipped, taken = [], {}, {}   # taken：跨目录按编号去重（第二轮合集原样含第一轮文件，两轮同时在盘上时同一份补丁只收一次，否则写入翻倍）；编号 → 选份依据（重复出现时补全判不了的项）
     for base in index_dirs:
@@ -209,7 +220,7 @@ def scan(index_dirs, exefs, log=None):
                 text_end, ro, ln, key = module_layout(os.path.join(exefs, 'main'))
                 M = ((ln + 15) & ~15) + MIRROR_FPSL
                 try:
-                    w, rt = fpslocker.convert(miniyaml.load(open(full, encoding='utf-8', errors='replace').read()), (text_end, ro), (M, key))
+                    w, rt = fpslocker.convert(miniyaml.load(open(full, encoding='utf-8', errors='replace').read()), (text_end, ro), (M, key - FIX_LOCK_TAIL))
                 except (fpslocker.Unsupported, ValueError) as e:
                     skipped['FPSLocker：' + str(e)[:40]] = skipped.get('FPSLocker：' + str(e)[:40], 0) + 1
                     # 进补丁打入记录（11-15 #934：原先只打一行「跳过」，完成页、S 级页都看不出这款的帧率补丁没打进去、开关显示成开着）
@@ -224,7 +235,8 @@ def scan(index_dirs, exefs, log=None):
                 if not ms: mod_miss([bid]); continue
                 w = parse_ips(open(full, 'rb').read())
                 if w is None: skipped['IPS 格式不对'] = skipped.get('IPS 格式不对', 0) + 1; continue
-                if w: out.append({'module': ms[0], 'cat': cat, 'name': os.path.basename(os.path.dirname(path)), 'writes': w, 'license': r.get('license') or '', 'path': path, 'base': base, 'id': uid, 'meta': meta})
+                if w: out.append({'module': ms[0], 'cat': cat, 'name': os.path.basename(os.path.dirname(path)), 'writes': w, 'license': r.get('license') or '', 'path': path, 'base': base, 'id': uid, 'meta': meta,
+                                  'origin': r.get('origin') or path})   # 上游原路径：fps_group 按它分组（审计 P1-193 余项：IPS 这一支原先不带，退回缓存路径 files/<哈希>/…，同包 main / sdk 拆成两组）
     for k, v in sorted(skipped.items()): print(f'跳过 {v} 段：{k}', file=sys.stderr)
     # 跨版本移植（11-13 维护者：画幅补丁扩大泛化性，帧率 / 金手指不做）：主程序没有任何版本对得上的宽屏补丁时，同款别的版本的宽屏补丁逐段
     #   按「这一处原来是什么」移植到这份主程序（port_writes），移植成的照常进自适应合成。移植不了的（画幅值在新版里找不到）不收
@@ -692,21 +704,33 @@ def adapt_families(cands, exefs, log, root=None):
     for mod in sorted({c['module'] for c in rest}):
         mc = [c for c in rest if c['module'] == mod]; made, fid = {}, None
         for side, sel, goal in (('w', lambda A: A > ADAPT_R * 1.001, 2.17), ('n', lambda A: A < ADAPT_R * 0.999, 4 / 3)):
+            # 每份都试，取写死的字最少的一份做模板，平手按画幅离 goal 近（#2193 一款游戏：21:9 里排第一的那份带 22 处按 21:9 写死的界面调整，
+            #   只剩渲染尺寸能随画幅变；另一份只改比例常数、写死的只有 1 条 nop。原先取排第一个成功的，写死的那 22 处在别的画幅上照样是 21:9）
+            best = None
             for c in sorted((c for c in mc if sel(A0(c))), key=lambda c: abs(math.log(A0(c) / goal))):
-                u = _adapt_single(c, exefs, log, root, side, fid)
-                if u: made[side] = (c, u); fid = u['id'].split(':')[1]; break
+                lg = []; u = _adapt_single(c, exefs, lg, root, side, fid)
+                if u and (best is None or u['_fixed'] < best[1]['_fixed']): best = (c, u, lg)
+            if best:
+                made[side] = best[:2]; log.extend(best[2]); fid = best[1]['id'].split(':')[1]
+                log.append(f'选模板\twsauto:{fid}:{side}\t{mod}\t{best[0]["name"][:40]}\t写死 {best[1]["_fixed"]} 字（同侧候选里最少）')
         for side, other in (('w', 'n'), ('n', 'w')):   # 缺的一侧用另一侧的代表外推
             if side not in made and other in made:
                 u = _adapt_single(made[other][0], exefs, log, root, side, fid)
                 if u: made[side] = (made[other][0], u)
         if not made: continue
+        for u in (u for _, u in made.values()): u.pop('_fixed', None)
         out += [u for _, u in made.values()]
         cov = set()
         for c, _ in made.values(): cov |= {(off + k) & ~3 for off, b in c['writes'] for k in range(len(b))}
+        sides = {'w': lambda A: A > ADAPT_R * 1.001, 'n': lambda A: A < ADAPT_R * 0.999}
         for c in mc:
             if any(c is x for x, _ in made.values()): drop.add(id(c)); continue
             if {(off + k) & ~3 for off, b in c['writes'] for k in range(len(b))} & cov:
-                drop.add(id(c)); log.append(f'已覆盖\t{c["id"]}\t{mod}\t{c["name"][:40]}\t与 wsauto:{fid} 改同几处，由它按屏幕比例自适应')
+                drop.add(id(c)); log.append(f'已覆盖\t{c["id"]}\t{mod}\t{c["name"][:40]}\t与 wsauto:{fid} 改同几处，由它按屏幕比例自适应'); continue
+            # 同侧已有自适应模板：别家按单一画幅做的另一套宽屏实现也不进包（#2193：改的位置不同、不算「改同几处」，原先照样进包，
+            #   运行时定画幅那份按最近一档（21:9）开、与自适应同时生效，相机比例写死 21:9 → 2.17 的屏上下留边）
+            if any(sel(A0(c)) for sd, sel in sides.items() if sd in made):
+                drop.add(id(c)); log.append(f'已覆盖\t{c["id"]}\t{mod}\t{c["name"][:40]}\t同侧有 wsauto:{fid}（任何画幅都铺满），定画幅这份不进包')
     return [c for c in cands if id(c) not in drop] + out
 
 
@@ -845,6 +869,9 @@ def port_writes(writes, A, im, text_end):
     return [(moved[o], ww[o].to_bytes(4, 'little')) for o in sorted(moved)], rep
 
 
+RES_PARTNER_GAP = 16   # 只写了宽的渲染尺寸：高在程序里离它最多 16 字节（前后各 4 条；#2193 那款紧挨着下一条）
+
+
 def _adapt_single(c, exefs, log, root, side, fid=None):
     """一份定画幅宽屏补丁 → 它那一侧（side：w 比 16:9 宽 / n 比 16:9 窄）的自适应模板一份（编号 wsauto:<族号>:<侧>，族号缺省取份号）；一处画幅值也认不出 → None"""
     As = single_aspects(c)
@@ -868,6 +895,13 @@ def _adapt_single(c, exefs, log, root, side, fid=None):
             if a[2] or a[1] < 160 or o in rec: continue
             for p, b in sorted(mv.items()):
                 if p != o and p not in rec and _res_ok(a, b, A): rec[o] = ('x', None); rec[p] = ('h', None); break
+        # 只写了宽、高留在程序里的（#2193 一款网球游戏：补丁只把 orr w9,#1920 换成 movz w9,#2580，下一条 movz w10,#1080 是程序原来的）：
+        #   程序里前后 RES_PARTNER_GAP 字节内、补丁没写的位置找同形的高，宽 ÷ 高 = 画幅（_res_ok）才成对；高那条照「h」改成手机口径的高（同补丁自带一对时）
+        for o, a in sorted(mv.items()):
+            if a[2] or a[1] < 160 or o in rec or o >= text_end or isfill(o): continue
+            for p in sorted(range(o - RES_PARTNER_GAP, o + RES_PARTNER_GAP + 4, 4), key=lambda q: (abs(q - o), q)):
+                if p == o or p in wm or p in rec or not 0 <= p < text_end or isfill(p): continue
+                if _res_ok(a, _mov_imm(int.from_bytes(im[p:p + 4], 'little')), A): rec[o] = ('x', None); rec[p] = ('h', None); break
         for o, x in sorted(wm.items()):
             if o in rec: continue
             pr = _movpair_at(wm.get, o)
@@ -913,7 +947,8 @@ def _adapt_single(c, exefs, log, root, side, fid=None):
     if len(slots) > ADAPT_NSLOT: log.append(f'不参数化\t{c["id"]}\t{mod}\t{c["name"][:40]}\t值槽不够'); return None
     sl = [(f'k{s}', f'4/{k[1:]}' if k.startswith('y') else 8 if prec == 'd' else 4, k[:1]) for (k, prec), s in sorted(slots.items(), key=lambda x: x[1])]
     log.append(f'单份参数化\twsauto:{fid}\t{mod}\t{c["name"][:40]}\t画幅 {A:.4f}：' + '、'.join(f'+{o:#x} {v[0]}{"=" + v[1] if v[1] else ""}' for o, v in sorted(rec.items()) if v[0] != 'nop'))
-    return dict(module=mod, cat=c['cat'], name=f'自适应满屏（单份补丁参数化 · {"宽" if side == "w" else "窄"}屏模板）',
+    fixed = sum(1 for o in words if o not in rec)   # 写死、不随画幅变的字数（挑模板用：越少越好，见 adapt_families）
+    return dict(_fixed=fixed, module=mod, cat=c['cat'], name=f'自适应满屏（单份补丁参数化 · {"宽" if side == "w" else "窄"}屏模板）',
                  writes=sorted((o, x.to_bytes(4, 'little')) for o, x in words.items()), license=c['license'], path=c.get('origin') or c['path'], base=c['base'],
                  id=f'wsauto:{fid}:{side}', meta=dict(c['meta'], aspect=None, adapt=dict(side=side, marks=marks, adata=adata + sl)))
 
@@ -941,27 +976,36 @@ def _reg_writes(op):
 
 def parse_cheats(text):
     """→ (文件头里的 BID 或 '', [{name, master, writes:[(偏移, 字节)] 或 None（有不能编进包的行）}])"""
+    text = visible(text)
     m = re.search(r'BID\s*=\s*([0-9A-Fa-f]{16,64})', text.split('\n', 1)[0])
-    bid, out, cur, written = (m.group(1).upper() if m else ''), [], None, set()   # written：整份文件里有指令写的寄存器
+    bid, out, cur = (m.group(1).upper() if m else ''), [], None
     for line in text.splitlines():
         s = line.strip()
         h = re.match(r'^([\[{])(.*)[\]}]$', s)
-        if h: cur = {'name': h.group(2).strip(), 'master': h.group(1) == '{', 'writes': [], 'other': False}; out.append(cur); continue
+        if h: cur = {'name': h.group(2).strip(), 'master': h.group(1) == '{', 'writes': [], 'other': False, 'wr': set()}; out.append(cur); continue
         if cur is None or not s or s.startswith('//') or s.startswith('#'): continue
         w = s.split()
         if len(w) == 1 and re.fullmatch(r'20[0-9A-Fa-f]{6}', w[0]): continue   # 条件块结束（Atmosphere 只看第 2 位：0 = 结束；有的文件写 20000001），在没有条件块的条目里是空操作
         c = CHEAT_RE.match(w[0]) if len(w) in (3, 4) else None
         if not c or c.group(2) != '0':   # 区域 0 = 主程序；别的类型 / 区域交运行时
             cur['other'] = True
-            if not re.fullmatch(r'[0-9A-Fa-f]{8}', w[0]): written |= set(range(16))
-            elif w[0][0] != '0': written |= _reg_writes(w[0])
+            if not re.fullmatch(r'[0-9A-Fa-f]{8}', w[0]): cur['wr'] |= set(range(16))
+            elif w[0][0] != '0': cur['wr'] |= _reg_writes(w[0])
             continue
-        if c.group(3) != '0': cur.setdefault('regs', set()).add(int(c.group(3), 16))
-        width = int(c.group(1)); off = int(c.group(4) + w[1], 16)
-        val = int(''.join(w[2:]), 16)
+        try:
+            regs = int(c.group(3), 16); width = int(c.group(1)); off = int(c.group(4) + w[1], 16); val = int(''.join(w[2:]), 16)
+        except ValueError:   # 这一行地址 / 数值看不懂：这一条交运行时（不编进包），别的条目照收，不让整次出包失败
+            cur['other'] = True; continue
+        if regs: cur.setdefault('regs', set()).add(regs)
         if val >> (8 * width): cur['other'] = True; continue
         cur['writes'].append((off, val.to_bytes(width, 'little')))
-    return bid, [dict(e, writes=None if e['other'] or (e.get('regs', set()) & written) else e['writes']) for e in out if e['writes'] or e['other']]
+    # 偏移寄存器的值要在出包时确定才能编进包。编进包的行为跟我们运行时一致：运行时（Ryujinx Tamper，services/S2A.Services/Cheats.cs）每条一套寄存器、
+    #   起始为 0，别的条目写不到它；主代码在任一条开着时都跟着跑（真 Atmosphere 还和各条共用寄存器），所以只看「主代码 + 本条自己」写没写过它。
+    #   D-99H5（11-21，超级马力欧 RPG nxcheats）：原先按整份文件算，有一条给 E 装了常量，别的只拿 E 当偏移（= 0）的开关条目全被判成交运行时，
+    #   运行时又写不了代码页，开了也被停用（81 条里编进包 0 条）
+    master_wr = set().union(*(e['wr'] for e in out if e['master']))
+    return bid, [{k: v for k, v in e.items() if k != 'wr'} | {'writes': e['writes'] if not e['other'] and not (e.get('regs', set()) & (master_wr | e['wr'])) else None}
+                 for e in out if e['writes'] or e['other']]
 
 
 def module_layout(path):
@@ -971,10 +1015,14 @@ def module_layout(path):
     text_end, ro, data = segs[0][0] + len(segs[0][1]), segs[1][0], segs[2][0]
     ln = data + len(segs[2][1]) + struct.unpack_from('<I', hdr, 0x3c)[0]
     bias = (0x4000 - (data & 0x3fff)) & 0x3fff if data < ((text_end + 0x3fff) & ~0x3fff) else 0
-    return text_end, ro, ln, min((ln + 0x3fff) & ~0x3fff, ((ln + bias + 0x3fff) & ~0x3fff) - bias)
+    return text_end, ro, ln, min((ln + KEY_TAIL_MIN + 0x3fff) & ~0x3fff, ((ln + bias + KEY_TAIL_MIN + 0x3fff) & ~0x3fff) - bias)
+
+
+KEY_TAIL_MIN = 0x1000   # 映像结尾到键页至少留的可写空余（同 runtime/rewriter/rewriter.c KEY_TAIL_MIN；#1628 结尾压 16 KB 边界时原先为 0）
 
 
 MIRROR_FPSL = 0x400   # 映像结尾可写空余的分区：前 0x400 字节给金手指空洞开关表，之后给 FPSLocker 变量（各管各的，不重叠）
+FIX_LOCK_TAIL = 0x10   # 空余的最后 16 字节（键页前）留给游戏缺陷修补表的客体锁字（runtime/fix/README.md；跳板 adrp 键页再减 0x10），FPSLocker 变量不进
 
 
 def _cheat_mirror(entries, text_end, ro, ln, key, why):
@@ -1056,13 +1104,16 @@ def scan_cheats(dirs, exefs, log, ship=None):
             if not f.lower().endswith('.txt') or f in ('enabled.txt', 'status.txt'): continue
             fp = os.path.join(d, f)
             try: raw = open(fp, 'rb').read()
-            except OSError: continue
+            except OSError as e:   # 读不了：整份不收、写原因（结果页逐份列出，同「没写构建号」）；原先静默跳过，金手指悄悄少一份
+                log.append(f'不收\tcheat:{f[:40]}\tmain\t{f[:40]}\t读不了：{type(e).__name__}：{" ".join(str(e).split())[:200]}'); continue
             if len(raw) > 4 << 20: log.append(f'不收\tcheat\tmain\t{f[:40]}\t文件超过 4 MB'); continue
             fbid, entries = parse_cheats(raw.decode('utf-8', 'replace'))
             stem = os.path.splitext(f)[0]
             want = fbid or (stem if re.fullmatch(r'[0-9A-Fa-f]{16}', stem) else '')
-            if not want or not bid_match(bid, want):
-                log.append(f'不收\tcheat\tmain\t{f[:40]}\t版本不对：金手指是 {want or "（没写构建号）"}，这份游戏的主程序是 {bid[:16]}'); continue
+            if not want:   # #1321：文件名不是 16 位构建号、首行也没有 BID=：核不了版本，不编进包（写错版本的内存会坏存档）；单独写原因，结果页逐份列出（原先混在「版本不对」里被当成库里别的版本静默略过）
+                log.append(f'不收\tcheat:{f[:40]}\tmain\t{f[:40]}\t没写构建号：文件名不是 16 位构建号、首行也没有 BID=，核不了版本'); continue
+            if not bid_match(bid, want):
+                log.append(f'不收\tcheat\tmain\t{f[:40]}\t版本不对：金手指是 {want}，这份游戏的主程序是 {bid[:16]}'); continue
             if ship is not None and f not in {n for n, _ in ship}: ship.append((f, raw))
             sha = hashlib.sha256(raw).hexdigest()[:16]; picked = []
             for i, e in enumerate(entries):
@@ -1187,6 +1238,61 @@ def _dec_raw(word, addr):
         t = ins.operands[-1].imm
     kind = 'b' if m == 'b' else 'call' if m == 'bl' else 'cond' if t is not None else 'end' if m in ('ret', 'br', 'brk', 'hlt') or m.startswith(('ret', 'bra', 'eret')) else 'seq'
     return rd, wr, kind, t
+
+
+def res_rewrite(im, words, wh):
+    """满屏补丁写的渲染分辨率（_upres 认出的 movz 宽 wh[0] / 高 wh[1]）就地改成原生：高 = 原版这条指令本来的高（360–1080 的 movz，掌机 720 / 底座 1080 按款就对了），
+    取不到用 PHONE_H；宽 = 高 × 补丁原来的宽高比、取偶。补丁里写分辨率的 movz 只许这一对值（可以出现在多处），还有别的「高 > 1080 + 宽」组合（派生尺寸 / 另一档）
+    → 认不全，不改、返回 None。→ (新宽, 新高)"""
+    mz = lambda x: (x & 0x7F800000) == 0x52800000 and not (x >> 21) & 3
+    W, H = wh; cur = {o: int.from_bytes(bytes(nb), 'little') for o, nb in words.items()}
+    imms = {(x >> 5) & 0xFFFF for x in cur.values() if mz(x)}
+    if imms & _UPRES_H != {H}: return None   # 高 > 1080 的只许这一个（两档 / 派生尺寸 → 认不全）
+    hs = [o for o, x in cur.items() if mz(x) and (x >> 5) & 0xFFFF == H]; ws = [o for o, x in cur.items() if mz(x) and (x >> 5) & 0xFFFF == W]
+    if not hs or not ws: return None
+    nat = {(int.from_bytes(im[o:o + 4], 'little') >> 5) & 0xFFFF for o in hs if mz(int.from_bytes(im[o:o + 4], 'little'))}
+    nat = {h for h in nat if 360 <= h <= 1080}
+    H2 = nat.pop() if len(nat) == 1 else PHONE_H
+    W2 = max(2, int(round(H2 * W / H / 2)) * 2)
+    for o in hs: words[o] = bytearray(((cur[o] & ~(0xFFFF << 5)) | (H2 << 5)).to_bytes(4, 'little'))
+    for o in ws: words[o] = bytearray(((cur[o] & ~(0xFFFF << 5)) | (W2 << 5)).to_bytes(4, 'little'))
+    return W2, H2
+
+
+def nop_stale(im, text_end, words, limit=64):
+    """补丁把原版指令改成 nop 后，那条指令原本要写的寄存器在后面（顺序往下、到下次写入前，同一基本块内）被读，而且这个寄存器此前最近一次是被
+    函数调用改写的（调用把 x0–x18 改成被调用方留下的值）→ (改动点, 读的点, 寄存器)；没有 → None。
+    残值来自游戏自己的普通指令（前面 ldr / mov 写的）时真机和我们一样、是补丁作者有意利用的（「关动态分辨率」nop 掉 bl 后接着读前面 ldr 出的 x0），不挡；
+    来自调用时取决于被调用方内部，我们的实现和真机不一定一样——11-16 帖子 3 台 / 4 次 Mac 崩：画质补丁 nop 掉取名字地址的 adrp/add，x8 是前面 bl 留下的值，
+    被当名字指针读 0x8。被删的是 bl：返回值 x0 也算它写的。往下走到跳转 / 调用以外的块尾、往回走到块尾就停，判不了的不挡（宁可少挡）。
+    读写判定用 _dec（按操作数位置自己判，判不准按既读又写）"""
+    word = lambda a: int.from_bytes(bytes(words[a]), 'little') if a in words else int.from_bytes(im[a:a + 4], 'little')
+    def by_call(r, w0):
+        a = w0 - 4
+        while a >= 0 and a > w0 - 4 * limit:
+            _, wr, kind, _ = _dec(word(a), a)
+            if kind == 'call': return r <= 18
+            if r in wr: return False
+            if kind in ('b', 'end'): return False
+            a -= 4
+        return False
+    for w0 in sorted(words):
+        orig = int.from_bytes(im[w0:w0 + 4], 'little')
+        if word(w0) != 0xD503201F or orig == 0xD503201F or w0 + 4 > text_end: continue
+        _, wr0, kind0, _ = _dec(orig, w0)
+        live = {r for r in wr0 if r != _FLAGS and r != 30} | ({0} if kind0 == 'call' else set())
+        a = w0 + 4
+        while live and a + 4 <= text_end and a < w0 + 4 + 4 * limit:
+            rd, wr, kind, _ = _dec(word(a), a)
+            hit = live & (set(range(8)) if kind == 'call' else rd)
+            for r in sorted(hit):
+                if by_call(r, w0): return w0, a, _rname(r)
+            live -= hit
+            if kind == 'call': live -= set(range(19)); a += 4; continue
+            live -= wr
+            if kind != 'seq': break
+            a += 4
+    return None
 
 
 def _branch_pairs(text):
@@ -1327,6 +1433,38 @@ def fill(im, o):
     w0 = o & ~3; v = int.from_bytes(im[w0:w0 + 4], 'little'); return v == 0 or v >> 16 == 0
 
 
+def literal_pool(im, words):
+    """本份补丁自带的字面量池（#1321 金手指常见写法：新代码里 ldr w8, [pc+N] 读紧跟在 b 后面的常量字，常量也写在同一块空隙里）。
+    空隙原来不是填充（全 0 / udf）时这些字都走 p 行双路：原代码照旧在内存里，补丁路里照搬的 LDR 读到的是原字、不是补丁写的常量；
+    常量字本身还被当指令解（「p 点补丁指令解不出」）。认出来以后：LDR 那行带「=值」（改写器直接把值装进 Rt，rewriter.c cp_lit），常量字不出行。
+    words：{字地址: 新的 4 字节}（本份补丁在代码段上改的字）→ ({LDR 地址: 值}, {常量字地址})。只认：
+      LDR (literal) 本身和它读的字都在原代码上（非填充）、读的 4 / 8 字节全由本份补丁写；
+      常量字前一字是本份补丁的无条件转移（b / br / ret）或同池的常量字，本份补丁里没有跳转落到它上面（不是会被执行到的指令）。
+    不合这些条件的 LDR 不按池处理：常量字照旧出 p 行，由改写器记缺口、整份不收（如常量前一条不是转移、会落进常量里执行的写法）"""
+    new = {w0: int.from_bytes(bytes(nb), 'little') for w0, nb in words.items()}
+    def size(w):
+        if w & 0x3B000000 != 0x18000000: return 0
+        opc, v = w >> 30, (w >> 26) & 1
+        return (8 if opc == 1 else 0 if opc == 3 else 4) if not v else (4 if opc == 0 else 8 if opc == 1 else 0)
+    def uncond(w): return w & 0xFC000000 == 0x14000000 or w & 0xFFFFFC1F in (0xD61F0000, 0xD65F0000)   # b / br / ret
+    targets = set()
+    for a, w in new.items():
+        if w & 0x7C000000 == 0x14000000: targets.add(a + (_sx(w & 0x3FFFFFF, 26) << 2))   # b / bl
+        elif w & 0xFF000010 == 0x54000000 or w & 0x7E000000 == 0x34000000: targets.add(a + (_sx((w >> 5) & 0x7FFFF, 19) << 2))   # b.cond / cbz / cbnz
+        elif w & 0x7E000000 == 0x36000000: targets.add(a + (_sx((w >> 5) & 0x3FFF, 14) << 2))   # tbz / tbnz
+    want = {}
+    for a, w in new.items():
+        n = size(w)
+        if not n or fill(im, a): continue
+        t = a + (_sx((w >> 5) & 0x7FFFF, 19) << 2)
+        cells = [t + 4 * k for k in range(n // 4)]
+        if all(c in new and not fill(im, c) and c not in targets for c in cells): want[a] = (t, cells)
+    pool = set(c for t, cells in want.values() for c in cells)
+    ok = {a: int.from_bytes(b''.join(new[c].to_bytes(4, 'little') for c in cells), 'little')
+          for a, (t, cells) in want.items() if t - 4 in new and (uncond(new[t - 4]) or (t - 4 in pool and t - 4 not in cells))}
+    return ok, set(c for a in ok for c in want[a][1])
+
+
 def flow_hazard(im, text_end, mod, changed, text_cache):
     """changed：{字地址: (原字, 新字)}（本份补丁代码段里真改了的字）→ 不收原因（空串 = 安全）"""
     # 把调用（bl / blr）改成 nop、整数返回值被换成调用前的 32 位参数（11-15 奥德赛 1.3.0「Disable Dynamic Resolution」，上游注明 not device-validated）：
@@ -1447,10 +1585,19 @@ def flow_hazard(im, text_end, mod, changed, text_cache):
     return ''
 
 
+# 改写器在代码段尾巴新代码里也改写的系统指令（runtime/rewriter/rewriter.c scan() 扫 g_cptail，#1628）：读计时器 cntpct / cntvct、读 ctr、
+#   读写线程寄存器 tpidr_el0 / 读 tpidrro_el0（掩码去掉目标寄存器那 5 位），与 svc #imm
+TAIL_REWRITTEN = (0xd53be020, 0xd53be040, 0xd53b0020, 0xd53bd040, 0xd51bd040, 0xd53bd060)
+
+
 def tail_hazard(word):
-    """代码段结尾到 ro 开头之间（末页尾巴）的新代码改写器不扫不翻（runtime/rewriter/rewriter.c cpatch_rows phase 0），
-    这里挡掉改写器在代码段里会改写 / 报缺口的指令（同 rewriter.c scan()：svc / 线程寄存器 / 计时器 / ctr / 系统寄存器 / brk 0xB000–0xBFFF / x18）→ 原因或 ''"""
-    if (word & 0xff000000) == 0xd4000000 and (word & 3):   # svc / hvc / smc
+    """代码段结尾到 ro 开头之间（末页尾巴）的新代码：改写器按 g_cptail 逐字扫（不在任何函数里、不做函数分析），能改写的照常改写；
+    这里只挡改写器在尾巴里改写不了的（rewriter.c scan()）：hvc / smc、别的系统寄存器读写、brk 0xB000–0xBFFF、x18 → 原因或 ''"""
+    if (word & 0xffe0001f) == 0xd4000001:   # svc #imm：改写器照常走系统调用门
+        return ''
+    if (word & 0xffffffe0) in TAIL_REWRITTEN:   # 计时器 / ctr / 线程寄存器（#1628：FPSLocker 新函数读计时器）
+        return ''
+    if (word & 0xff000000) == 0xd4000000 and (word & 3):   # hvc / smc
         return f'{word:08x} 是系统调用'
     if (word & 0xffe0001f) == 0xd4200000 and 0xb000 <= (word >> 5) & 0xffff <= 0xbfff:
         return f'{word:08x} 是 brk #0x{(word >> 5) & 0xffff:x}（macOS 截走）'
@@ -1602,6 +1749,14 @@ def plan(root, default_on, index_dirs):
         if not why and uid.startswith('widescreen:'):
             r = phone_res(words, wkinds(mod))
             if r: log.append(f'改值\t{uid}\t{mod}\t渲染尺寸按手机口径：{r}')
+        if not why and uid.startswith(('widescreen:', 'wsauto:')) and (wh := _upres([int.from_bytes(bytes(nb), 'little') for nb in words.values()])):   # tools/patch_index.py upres
+            # 改内部渲染分辨率的满屏补丁（#b824d1 / D-Q3QJ：渲染目标放大、游戏堆放不下会崩 / 画坏）：分辨率改回原生高、宽按原比例等比缩（11-16 维护者「让补丁按咱们的需求正确生效，而不是直接拒掉」）；
+            #   画幅照补丁（定画幅变体）或照自适应模板。认不全（不止一对分辨率）才不收
+            done = res_rewrite(im, words, wh)
+            if done: log.append(f'改分辨率\t{uid}\t{mod}\t{u["name"][:40]}\t{wh[0]}x{wh[1]} → {done[0]}x{done[1]}（原生高、按原比例）')
+            else: why = f'改了内部渲染分辨率（{wh[0]}x{wh[1]}），而且不止一对分辨率常数、改写不全，不进满屏：渲染目标放大、游戏堆放不下会崩（#b824d1 / D-Q3QJ）'
+        if not why and not cheat and (st := nop_stale(im, text_end, words)):   # 见 nop_stale；金手指另有规则
+            why = f'把 {mod}+{st[0]:#x} 改成空指令后，它原本要写的 {st[2]} 在 {mod}+{st[1]:#x} 被读：读到的是残值，可能被当指针读而崩'
         if not why and any(fill(im, o) for o, k in marks.items() if k == 'kv'): why = f'取值点 {mod}+{min(o for o, k in marks.items() if k == "kv" and fill(im, o)):#x} 落在填充区（填充区常写，没有原路可分）'
         if not why:
             for o, n, k in adata:
@@ -1637,7 +1792,8 @@ def plan(root, default_on, index_dirs):
         needs_bit = not cheat or any(not fill(im, w0) and bytes(nb) != im[w0:w0 + 4] for w0, nb in words.items())
         if not why and needs_bit and not cheat and bits.get(mod, 0) >= 64: why = f'{mod} 已有 64 份补丁（槽 2046 位数用尽）'
         if not why:   # 数据流旁路（见 flow_hazard）：补丁设了又读的寄存器，原版有路从区间外跳进两者之间
-            ch = {w0: (int.from_bytes(im[w0:w0 + 4], 'little'), int.from_bytes(nb, 'little')) for w0, nb in words.items() if bytes(nb) != im[w0:w0 + 4]}
+            pool0 = literal_pool(im, words)[1]   # 字面量池的常量字是数据、不会被执行，不当指令查旁路
+            ch = {w0: (int.from_bytes(im[w0:w0 + 4], 'little'), int.from_bytes(nb, 'little')) for w0, nb in words.items() if bytes(nb) != im[w0:w0 + 4] and w0 not in pool0}
             if ch: why = flow_hazard(im, text_end, mod, ch, branch_cache)
         if why: log.append(f'不收\t{uid}\t{mod}\t{u["name"][:40]}\t{why}'); continue
         if cheat:   # 位等全部收完再按「共用这条改动的条目集合」分（见下）
@@ -1651,14 +1807,15 @@ def plan(root, default_on, index_dirs):
         for o in data: claim[(mod, o)] = (uid, False, None, False)
         for o, n, k in adata:
             for b in range(o, o + n): claim[(mod, b)] = (uid, False, None, False)
+        lits, pool = literal_pool(im, words)
         for w0, nb in sorted(words.items()):
             orig = int.from_bytes(im[w0:w0 + 4], 'little'); new = int.from_bytes(nb, 'little')
-            if new == orig: continue
+            if new == orig or w0 in pool: continue   # 字面量池的常量字不出行（读它的 LDR 带「=值」，见 literal_pool）
             if fill(im, w0):   # 填充（全 0 / udf #imm16）：常写；同处同值别的份已写过就不重复
                 r = f'w\t{mod}\t{w0:x}\t{orig:08x}\t{new:08x}' + ('\t@k' if marks.get(w0) == 'k' else '')
                 if not any(x.startswith(r + '\t') for x in rows): rows.append(f'{r}\t# {uid}')
             else:
-                rows.append(f'p\t{mod}\t{w0:x}\t{orig:08x}\t{new:08x}\t{bit}' + ('\t@k' if marks.get(w0) == 'kv' else '') + f'\t# {uid}')
+                rows.append(f'p\t{mod}\t{w0:x}\t{orig:08x}\t{new:08x}\t{bit}' + ('\t@k' if marks.get(w0) == 'kv' else f'\t={lits[w0]:x}' if w0 in lits else '') + f'\t# {uid}')
                 npath[(mod, w0)] = npath.get((mod, w0), 0) + 1
         runs, cur = [], None
         for o in sorted(data):
@@ -1684,12 +1841,12 @@ def plan(root, default_on, index_dirs):
     crows = []   # 金手指各条的行：倒序并进 rows（见上「后写的生效」）
     for uid, mod, u, words, data in cheats:
         if uid in dropped: log.append(f'不收\t{uid}\t{mod}\t{u["name"][:40]}\t{mod} 槽 2046 的 64 位用尽'); continue
-        im = img(mod)[0]; mine = []
+        im = img(mod)[0]; mine = []; lits, pool = literal_pool(im, words)
         for w0, nb in sorted(words.items()):
             orig = int.from_bytes(im[w0:w0 + 4], 'little'); new = int.from_bytes(nb, 'little')
-            if new == orig: continue
+            if new == orig or w0 in pool: continue   # 字面量池的常量字不出行（见 literal_pool）
             if fill(im, w0): r = f'w\t{mod}\t{w0:x}\t{orig:08x}\t{new:08x}'
-            else: r = f'p\t{mod}\t{w0:x}\t{orig:08x}\t{new:08x}\t{setbit[(mod, frozenset(owners[(mod, w0, bytes(nb))]))]}'
+            else: r = f'p\t{mod}\t{w0:x}\t{orig:08x}\t{new:08x}\t{setbit[(mod, frozenset(owners[(mod, w0, bytes(nb))]))]}' + (f'\t={lits[w0]:x}' if w0 in lits else '')
             mine.append((r, f'{r}\t# ' + ','.join(owners.get((mod, w0, bytes(nb)), [uid]))))
         crows.append(mine)
         runs, cur = [], None

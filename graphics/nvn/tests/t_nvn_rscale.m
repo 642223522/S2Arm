@@ -303,6 +303,7 @@ int main(int argc, char **argv) {
     paint(want, W, H, BLUE, NULL, 0, 1, 1); read_game(&C, got); compare(got, want, W, H, NULL, 0, 0, "C 退回后内容");
     done();
 
+
     // 6. 同一遍有不可缩的附件（D16 深度：缩放拷贝画不了）→ 颜色目标也不缩（黑名单在目标间传播）
     phase = "6 同遍有不可缩附件";
     make_tex(&E, NVN_FORMAT_RGBA8, NVN_TEXTURE_FLAGS_COMPRESSIBLE); make_tex(&Z, NVN_FORMAT_DEPTH16, NVN_TEXTURE_FLAGS_COMPRESSIBLE);
@@ -318,8 +319,11 @@ int main(int argc, char **argv) {
     { static uint8_t pkgdata[1 << 20]; for (int i = 0; i < W * H; i++) memcpy(pkgdata + 4 * i, GREY, 4);   // 宿主按存储大小（块线性，大于 W×H×4）拷
       NVNtexture P, PZ; texture_offset = (texture_offset + 65535) / 65536 * 65536;   // 新起一页：前面贴图所在页已被写保护（单测桩不接缺页钩子），建时拷打包数据会 SIGBUS
       make_tex_pkg(&P, NVN_FORMAT_RGBA8, NVN_TEXTURE_FLAGS_COMPRESSIBLE, pkgdata); make_tex(&PZ, NVN_FORMAT_DEPTH32F, NVN_TEXTURE_FLAGS_COMPRESSIBLE);
+      uint64_t up0 = g_pfv_upgrades;
       begin(); { const NVNtexture *ts[1] = {&P}; API(nvnCommandBufferSetRenderTargets)(&commands, 1, ts, NULL, &PZ, NULL); float f[4] = {0, 0, 1, 1};
           API(nvnCommandBufferSetScissor)(&commands, 0, 0, W, H); API(nvnCommandBufferClearColor)(&commands, 0, f, 15); API(nvnCommandBufferClearDepthStencil)(&commands, 1.0f, 1, 0, 0xff); } submit();
+      // #1634：打包贴图建时就带渲染目标用途，第一次当附件不再整张复制补用途（修前这一遍 +1）
+      printf("  打包颜色目标当附件：贴图升级 +%llu（期望 0）\n", (unsigned long long)(g_pfv_upgrades - up0)); REQUIRE(g_pfv_upgrades == up0);
       int cw = 0, ch = 0, zw = 0, zh = 0, cs = nvn_be_tex_storage_size(&P, &cw, &ch), zs = nvn_be_tex_storage_size(&PZ, &zw, &zh);
       printf("  颜色存储 %dx%d 记录 %d，深度存储 %dx%d 记录 %d（期望两者相同）\n", cw, ch, cs, zw, zh, zs);
       REQUIRE(cw == zw && ch == zh);
@@ -701,6 +705,54 @@ int main(int argc, char **argv) {
       nvn_be_tex_storage_read(&W2, raw, (size_t)WSW * 4); paint(rawwant, WSW, WSH, RED, r1, 1, WMUL, WDIV); compare(raw, rawwant, WSW, WSH, NULL, 0, 0, "W2 原样存储 = 手算的存储尺寸图");
       paint(want, W, H, RED, r1, 1, 1, 1); read_game(&W2, got); compare(got, want, W, H, NULL, 0, 0, "W2 ReadTexels = 游戏尺寸期望");
       present_grab(&W2, NULL); grab_is(W, H, W, H); paint(want, W, H, RED, r1f, 1, 1, 1); if (grab_w == W && grab_h == H) compare(grab_px, want, W, H, NULL, 0, 0, "W2 抓图 = 游戏尺寸期望（翻正）"); }
+    done();
+
+    // 30. 缩放过的深度（D32F）拷进打包的原尺寸深度图（打包贴图建时不带渲染目标用途），以及拷进普通的原尺寸深度图。D-HT4P：渲染倍率不是 1x 时，
+    //     1080x608 → 1440x810 这笔深度拷贝走到「没实现」、目标留旧深度，3D 场景按旧深度算雾 → 隔几帧蒙一层白。
+    //     期望（手算）：两笔拷贝都不走「没实现」（g_t2t_unimpl 不涨；修前打包目标那笔 +1）；普通目标读回全图 = 源清成的 0.25（证明深度缩放拷贝写得对）。
+    //     打包目标不读回：打包图的 ReadTexels 读包里数据，读存储对深度图本身不可用
+    phase = "30 缩放深度拷进不带渲染目标用途的原尺寸深度图";
+    { extern uint64_t g_t2t_unimpl; NVNtexture ZA, ZB, ZC; static uint8_t zpkg[1 << 20]; for (int i = 0; i < (1 << 20) / 4; i++) ((float *)zpkg)[i] = 0.5f;
+      make_tex(&ZA, NVN_FORMAT_DEPTH32F, NVN_TEXTURE_FLAGS_COMPRESSIBLE); make_tex_pkg(&ZB, NVN_FORMAT_DEPTH32F, 0, zpkg); make_tex(&ZC, NVN_FORMAT_DEPTH32F, 0);
+      begin(); { API(nvnCommandBufferSetRenderTargets)(&commands, 0, NULL, NULL, &ZA, NULL); API(nvnCommandBufferSetScissor)(&commands, 0, 0, W, H);
+          API(nvnCommandBufferClearDepthStencil)(&commands, 0.25f, 1, 0, 0xff); } submit();
+      uint64_t u0 = g_t2t_unimpl;
+      begin(); { NVNcopyRegion r = {0, 0, 0, W, H, 1}; API(nvnCommandBufferCopyTextureToTexture)(&commands, &ZA, NULL, &r, &ZB, NULL, &r, 0);
+          API(nvnCommandBufferCopyTextureToTexture)(&commands, &ZA, NULL, &r, &ZC, NULL, &r, 0); } submit();
+      printf("  走到「没实现」%llu 次（期望 0）\n", (unsigned long long)(g_t2t_unimpl - u0)); REQUIRE(g_t2t_unimpl == u0);
+      float *zw = (float *)want; for (int i = 0; i < W * H; i++) zw[i] = 0.25f;
+      read_game(&ZC, got); compare(got, want, W, H, NULL, 0, 0, "ZC 深度 = 0.25（缩放深度拷贝写对）"); }
+    done();
+
+    // 31. 片元着色器绑定检查（rs_bind_check）：尺寸表 ABI2 下 legacy_1x、原因全是「宿主从不缩放的种类」（翻译器 never_scaled_*，rs_never）的，读放大图不退回（二维取图走取图倍率）；
+    //     同样 legacy_1x、原因是别的（rs_never = 0），照旧在下一个安全点退回
+    phase = "31 只因读从不缩放种类而 legacy_1x 的片元着色器";
+    { NVNtexture G1, G2, G3; make_tex(&G3, NVN_FORMAT_RGBA8, NVN_TEXTURE_FLAGS_COMPRESSIBLE); make_tex(&G1, NVN_FORMAT_RGBA8, NVN_TEXTURE_FLAGS_COMPRESSIBLE); make_tex(&G2, NVN_FORMAT_RGBA8, NVN_TEXTURE_FLAGS_COMPRESSIBLE);
+      begin(); clear_rt(&G1, NULL, 0, BLUE); submit(); begin(); clear_rt(&G2, NULL, 0, BLUE); submit();
+      storage_is(&G1, SCALED_ST, SW, SH); storage_is(&G2, SCALED_ST, SW, SH);
+      NvShader *fs = [NvShader new]; fs->stage = 1; fs->exact = 1; fs->size_abi = 1; fs->size_exact = 0;
+      fs->rs_never = 1; rs_bind_check(tex_mtl((const tex_t *)&G1), fs, 1, 0);
+      fs->rs_never = 0; rs_bind_check(tex_mtl((const tex_t *)&G2), fs, 1, 0);
+      begin(); clear_rt(&G3, NULL, 0, RED); submit();   // 别的目标开遍：安全点
+      storage_is(&G1, SCALED_ST, SW, SH); storage_is(&G2, on ? RS_BLACK : RS_NONE, W, H);
+      printf("  rs_never=1 读后仍是放大存储，rs_never=0 读后退回原尺寸\n"); }
+    done();
+
+    // 32. 计算阶段读缩放图（11-22 D-ZR6V：主场景深度被计算着色器读、整遍退回）：尺寸表精确（size_abi && size_exact）的计算程序按槽号读（kind 0）不退回；
+    //     尺寸表不精确的、经统一缓冲句柄取图（kind 3）的、张量核网络顶替（tensor == 1）的，照旧在下一个安全点退回
+    phase = "32 计算阶段读缩放图";
+    { NVNtexture K1, K2, K3, K4, K5; NVNtexture *ks[] = { &K1, &K2, &K3, &K4 };
+      for (int k = 0; k < 4; k++) { make_tex(ks[k], NVN_FORMAT_RGBA8, NVN_TEXTURE_FLAGS_COMPRESSIBLE); begin(); clear_rt(ks[k], NULL, 0, BLUE); submit(); storage_is(ks[k], SCALED_ST, SW, SH); }
+      make_tex(&K5, NVN_FORMAT_RGBA8, NVN_TEXTURE_FLAGS_COMPRESSIBLE);
+      NvShader *cs = [NvShader new]; cs->stage = 5; cs->size_abi = 1; cs->size_exact = 1;
+      rs_bind_check(tex_mtl((const tex_t *)&K1), cs, 5, 0);                    // 精确、按槽号：放行
+      rs_bind_check(tex_mtl((const tex_t *)&K2), cs, 5, 3);                    // 精确、句柄取图：退回
+      cs->size_exact = 0; rs_bind_check(tex_mtl((const tex_t *)&K3), cs, 5, 0); // 不精确：退回
+      cs->size_exact = 1; cs->tensor = 1; rs_bind_check(tex_mtl((const tex_t *)&K4), cs, 5, 0); cs->tensor = 0;   // 张量核顶替：退回
+      begin(); clear_rt(&K5, NULL, 0, RED); submit();   // 别的目标开遍：安全点
+      storage_is(&K1, SCALED_ST, SW, SH);
+      for (int k = 1; k < 4; k++) storage_is(ks[k], on ? RS_BLACK : RS_NONE, W, H);
+      printf("  精确计算程序按槽号读后仍是放大存储；句柄取图 / 不精确 / 张量核顶替读后退回原尺寸\n"); }
     done();
     unlink(map); unlink(user);
     if (fails) { printf("t_nvn_rscale %s：%u 组、%u 项里 %u 项不通\n", argv[1], cases, checks, fails); return 1; }

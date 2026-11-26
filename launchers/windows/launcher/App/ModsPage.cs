@@ -1,6 +1,6 @@
 // S2Arm（不是上游文件）：Windows「Mod」页（11-15 维护者「咱们也可以支持 mod 导入」）。同 Mac 启动设置里的「资源 Mod」：
 //   看这款导入了哪些、导入 zip / 文件夹、删除。导入进这款游戏文件夹的 mods/（pack/jobs/mods.py，作业层找 romfs、标了别的程序号的不收），
-//   下次「装到 iPhone」时推进手机上本款文档根 mods/（pack/jobs/install.py push_mods，只推变了的），进游戏时服务层 RomFsMods.cs 叠上
+//   下次「推到 iPhone」时推进手机上本款文档根 mods/（pack/jobs/install.py push_mods，只推变了的），进游戏时服务层 RomFsMods.cs 叠上
 using System.Text.Json;
 using Avalonia.Controls;
 using Avalonia.Layout;
@@ -67,17 +67,37 @@ public sealed partial class EnvironmentWindow
         await RunModsAsync(new Dictionary<string, object?> { ["modsImport"] = list });
     }
 
+    /// <summary>mod 导入旁的「？」（11-17 维护者：玩家不知道 mod 支持什么格式、去哪找）：鼠标移上去展开说明（共享文案 mods.help：支持的两类 mod、
+    /// 认哪几种放法、什么时候生效、不收什么、去哪找），点一下也展开 / 收起（手柄、键盘够得着）。Mod 页导入按钮旁与出包页 S 级卡片「导入 Mod」旁两处；同 Mac ModHelpButton</summary>
+    private Control ModHelp()
+    {
+        var tip = new TextBlock { Text = T("mods.help"), TextWrapping = TextWrapping.Wrap, MaxWidth = 460, FontSize = 13, LineHeight = 20 };
+        var help = new Button
+        {
+            Content = "?", FontSize = 13, FontWeight = FontWeight.Bold, Width = 28, Height = 28, Padding = new Avalonia.Thickness(0),
+            CornerRadius = new Avalonia.CornerRadius(14), HorizontalContentAlignment = HorizontalAlignment.Center,
+            VerticalContentAlignment = VerticalAlignment.Center, VerticalAlignment = VerticalAlignment.Center
+        };
+        ToolTip.SetTip(help, tip); ToolTip.SetShowDelay(help, 150); ToolTip.SetPlacement(help, PlacementMode.Bottom);
+        help.Click += (_, _) => ToolTip.SetIsOpen(help, !ToolTip.GetIsOpen(help));
+        Avalonia.Automation.AutomationProperties.SetName(help, T("mods.help.label"));
+        AutomationId(help, "mods.help");
+        return help;
+    }
+
     private void RenderMods(StackPanel body)
     {
         if (modsFor is not { } game) return;
-        var head = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto,Auto,Auto"), ColumnSpacing = 10 };
+        var head = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto,Auto,Auto,Auto"), ColumnSpacing = 10 };
         head.Children.Add(Label(T("mods.page.title").Replace("{0}", game.Name), 22));
+        var help = ModHelp();
+        Grid.SetColumn(help, 1); head.Children.Add(help);
         var zip = Action("mods.page.importZip", () => _ = ImportModsAsync(false), !modsLoading && !libraryBusy);
-        Grid.SetColumn(zip, 1); head.Children.Add(zip);
+        Grid.SetColumn(zip, 2); head.Children.Add(zip);
         var dir = Action("mods.page.importFolder", () => _ = ImportModsAsync(true), !modsLoading && !libraryBusy);
-        Grid.SetColumn(dir, 2); head.Children.Add(dir);
-        var back = Action("cheats.page.back", () => { modsFor = null; Render(); });
-        Grid.SetColumn(back, 3); head.Children.Add(back);
+        Grid.SetColumn(dir, 3); head.Children.Add(dir);
+        var back = Action(page == "library" ? "cheats.page.back" : "nav.back", () => { modsFor = null; Render(); });   // 从出包页进来的写「返回」、回出包页（#1430），从游戏库进来的照旧「返回游戏库」
+        Grid.SetColumn(back, 4); head.Children.Add(back);
         body.Children.Add(head);
         var box = new StackPanel { Spacing = 10 };
         AutomationId(box, "mods.page");

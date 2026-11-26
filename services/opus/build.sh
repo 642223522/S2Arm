@@ -11,7 +11,7 @@ ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 source "$ROOT/android/tools/fetch_source.sh"   # 源码包按 sha256 进本机共享缓存（S2A_BUILD_CACHE/sources），命中不联网；下载按进展判挂死
 # 整机级缓存：键 = 本脚本内容（含版本与 sha256）+ 平台，各工作树共用
 C=${S2A_OPUS_CACHE:-${S2A_RUN_ROOT:-$HOME/.s2arm/run}/s2arm/cache/opus}; mkdir -p "$C"
-TCE=$ROOT/tools/toolchain.env; MMAC=$(sed -n 's/^MACOSX_DEPLOYMENT_TARGET=//p' "$TCE"); MIOS=$(sed -n 's/^IPHONEOS_DEPLOYMENT_TARGET=//p' "$TCE")   # 产物下限只取统一工具链那两行
+TCE=$ROOT/tools/toolchain.env; MMAC=$(sed -n 's/^MACOSX_DEPLOYMENT_TARGET=//p' "$TCE"); MIOS=$(sed -n 's/^IPHONEOS_DEPLOYMENT_TARGET=//p' "$TCE"); MTVOS=$(sed -n 's/^TVOS_DEPLOYMENT_TARGET=//p' "$TCE")   # 产物下限只取统一工具链那两行
 [ -n "$MMAC" ] && [ -n "$MIOS" ] || { echo "🔴 $(basename "$(dirname "$0")")：$TCE 里没有部署目标" >&2; exit 1; }
 OUT=$C/$RID-$VER-$( { cat "$0"; echo "$MMAC $MIOS"; } | shasum -a 256 | cut -c1-12)   # 下限进键：改了就重编
 # 几棵树同时编同一键时排队（.tmp 名字不撞）
@@ -22,6 +22,7 @@ case $RID in
   osx-arm64) MIN=-mmacosx-version-min=$MMAC; SDK=macosx ;;
   osx-x64) ARCH=x86_64; HOST=x86_64-apple-darwin; EXTRA=(--disable-asm --disable-intrinsics); MIN=-mmacosx-version-min=$MMAC; SDK=macosx ;;
   ios-arm64) MIN=-miphoneos-version-min=$MIOS; SDK=iphoneos ;;
+  tvos-arm64) MIN=-mtvos-version-min=$MTVOS; SDK=appletvos ;;   # Apple TV（11-15）
   *) echo "🔴 opus：不认识的平台 $RID" >&2; exit 1 ;;
 esac
 CC="xcrun --sdk $SDK clang -arch $ARCH $MIN"

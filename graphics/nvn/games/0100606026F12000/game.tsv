@@ -28,8 +28,7 @@ zip_store	.pak:.ttf:.txt:.ucas:.utoc:.metallib
 # 60 fps (30 on the Switch): the engine's Switch device profile sets rhi.syncinterval=2 (BaseSwitchDeviceProfiles.ini), so the game asks for present interval 2, and the game sets no t.MaxFPS.
 # The host writes rhi.SyncInterval 1 into its console variable (hle_fpslock.c), whenever the game sets it back (at level loads), so the game asks for present interval 1 itself. Unreal steps
 # the game by the time that really passed: DM_NVN_REGLUM traces of the same keys from the same save at 30 and 60 fps (59.8 fps, frame time p99 18 ms on the Mac) match from the load
-# through a 3 s walk (thumbnail difference ≤ 0.006). DM_FPS_TARGET=30 (Documents/env.txt on the iPhone) keeps the game's 30 and saves power
-fps_target	60
+# through a 3 s walk (thumbnail difference ≤ 0.006). S2A_FPS=30 (env.txt; on the iPhone it is the settings page's frame-rate limit) keeps 30 and saves power
 
 # ---- Memory ----
 # Unreal Engine 5.6.1: nninitStartup (main+0x13370) reserves one 62 GB region for the engine (-SwitchVirtualAddressSpaceSize= in MB up to 4095, game_args below), and its FMallocBinned3

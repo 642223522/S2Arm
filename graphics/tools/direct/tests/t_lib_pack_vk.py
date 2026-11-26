@@ -6,7 +6,9 @@
 #      同一份输入打出来的（写死在 GOLD_*；改容器格式时用 --gold 在改前的树上重算）；头部 36–47 这 12 字节全 0
 #   ② Vulkan 库：三键的 _b.json（种类 1）+ _b.spv（种类 52）给指纹打包 → 记录按 (键, 种类) 升序、每段字节 = 原文件、16 字节对齐、
 #      头部魔数 / 版本 1 / 链号同 Metal 口径，36–43 = 指纹（u64 小端，按十六进制解），44–47 为 0；其余字节与 Metal 库的写法一致（同一份 PackFiles）
-#   ③ 反证（都退出 1、输出目录不留分片 / 索引 / 临时文件）：_b.spv 不给指纹；指纹不是 16 位小写十六进制；给了指纹又混进 Metal 段（_b.metallib）
+#   ②g 原生几何阶段（DshVk.CompileGeometry）：K3 再带 _vg0 / _vg1 / _vg3 的 json + spv → 种类 112+t / 120+t，按 (键, 种类) 升序排在 K3 的 1 / 52 之后，每段字节 = 原文件
+#   ③ 反证（都退出 1、输出目录不留分片 / 索引 / 临时文件）：_b.spv 不给指纹；_vg3.spv 不给指纹；指纹不是 16 位小写十六进制；给了指纹又混进 Metal 段（_b.metallib）；
+#      _vg5（输入图元编号超出 0–4）认不出
 import hashlib, os, struct, subprocess, sys, tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -49,6 +51,11 @@ def vk_files():
             for i, k in enumerate((K1, K2, K3)) for x in ('json', 'spv')}
 
 
+def vg_files():   # K3 的原生几何三份（点 0 / 线 1 / 三角 3）
+    return {f'{K3}_vg{t}.{x}': (b'{"key": "%s_vg%d", "stage": "gs", "bindings": []}' % (K3.encode(), t) if x == 'json' else b'\x03\x02\x23\x07gs' + bytes([t]) * 8)
+            for t in (0, 1, 3) for x in ('json', 'spv')}
+
+
 def sha(p): return hashlib.sha256(open(p, 'rb').read()).hexdigest()
 
 
@@ -86,12 +93,30 @@ with tempfile.TemporaryDirectory() as t:
         check(magic == b'S2ALIB\0\0' and ver == 1 and chain == CHAIN.encode(), f'头：魔数 / 版本 1 / 链号同 Metal 口径（{magic} {ver} {chain}）')
         check(struct.unpack_from('<Q', idx, 36)[0] == int(VKFP, 16) and idx[44:48] == bytes(4), f'头部 36–43 = 指纹（u64 小端 {idx[36:44].hex()} = {VKFP}）、44–47 为 0')
 
+    print('②g Vulkan 库的原生几何种类')
+    gsrc = os.path.join(t, 'vkg'); gf = write(gsrc, {**vk_files(), **vg_files()}); gout = os.path.join(t, 'b-vkg')
+    r = pack(gsrc, gout, VKFP)
+    check(r.returncode == 0 and sorted(os.listdir(gout)) == ['lib.000.pak', 'lib.idx'], f'带 _vg 的 Vulkan 库打包退出 0（{(r.stdout + r.stderr).strip()[-120:]}）')
+    if r.returncode == 0:
+        idx, magic, ver, chain, sizes, recs = parse(gout)
+        want = [(int(k, 16), kind, f'{k}_b.{x}') for k in (K1, K2, K3) for kind, x in ((1, 'json'), (52, 'spv'))]
+        want += [(int(K3, 16), base + tt, f'{K3}_vg{tt}.{x}') for base, x in ((112, 'json'), (120, 'spv')) for tt in (0, 1, 3)]
+        want.sort(key=lambda w: (w[0], w[1]))
+        check([(x[0], x[1]) for x in recs] == [(w[0], w[1]) for w in want],
+              f'记录 12 段、_vg<t>.json 种类 112+t / _vg<t>.spv 种类 120+t（{[(hex(x[0]), x[1]) for x in recs if x[1] >= 112]}）')
+        pak = open(os.path.join(gout, 'lib.000.pak'), 'rb').read()
+        check(all(pak[x[5]:x[5] + x[4]] == gf[w[2]] for x, w in zip(recs, want)), '几何段字节 = 原文件')
+
     print('③ 反证')
     def bad(name, src, *fp):
         o = os.path.join(t, 'bad-' + name); r = pack(src, o, *fp)
         left = sorted(os.listdir(o)) if os.path.isdir(o) else []
         check(r.returncode == 1 and left == [], f'{name} → 退出 1、输出目录不留东西（rc={r.returncode}，留 {left}；{(r.stdout + r.stderr).strip()[-100:]}）')
     bad('_b.spv 不给指纹', vsrc)
+    gonly = os.path.join(t, 'gonly'); write(gonly, {f'{K3}_vg3.spv': b'\x03\x02\x23\x07gs'})
+    bad('_vg3.spv 不给指纹', gonly)
+    g5 = os.path.join(t, 'g5'); write(g5, {**vk_files(), f'{K3}_vg5.spv': b'\x03\x02\x23\x07gs'})
+    bad('_vg5（输入图元编号超出 0–4）认不出', g5, VKFP)
     bad('指纹不是 16 位小写十六进制', vsrc, '7D7CCAEE95F9F398')
     mix = os.path.join(t, 'mix'); write(mix, {**vk_files(), f'{K1}_b.metallib': b'metal'})
     bad('给了指纹又混进 Metal 段', mix, VKFP)

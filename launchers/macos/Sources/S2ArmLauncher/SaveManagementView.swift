@@ -112,7 +112,7 @@ struct SaveManagementView: View {
                 Button(L("取消"),role:.cancel) {}
                 Button(L("恢复并保留原副本"),role:.destructive) { restore() }
             } message: {
-                Text(L("当前游戏存档将替换为已检查的备份。恢复前的存档会自动保留；游戏、用户或版本不符时不会恢复。"))
+                Text(L("当前游戏存档将替换为已检查的备份。恢复前的存档会自动保留；备份属于另一款游戏时不会恢复，用户或版本不符会先提示。"))
             }
     }
 

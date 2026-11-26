@@ -16,7 +16,7 @@ static void make(tex_t *t, pool_t *pool, size_t off, int target, int depth) {
     t->d = (nvn_texdesc){.target = target, .format = NVN_FORMAT_RGBA8, .width = 16, .height = 16, .depth = depth, .levels = 1};
     t->pool = pool; t->off = off; t->mem = pool->mem + off; nvn_tex_layout(&t->d, &t->L); nvn_be_tex_init(t); REQUIRE(tex_mtl(t));
 }
-static id<MTLTexture> get(int tid) { pthread_mutex_lock(&g_rmu); id<MTLTexture> t = tex_by_id(tid); pthread_mutex_unlock(&g_rmu); return t; }
+static id<MTLTexture> get(int tid) { os_unfair_lock_lock(&g_rmu); id<MTLTexture> t = tex_by_id(tid); os_unfair_lock_unlock(&g_rmu); return t; }
 int main(void) { @autoreleasepool {
     setvbuf(stdout, NULL, _IOLBF, 0); alarm(60);
     mtl_init(); printf("BACKEND %s\n", g_m3 ? "Metal3" : "Metal4");

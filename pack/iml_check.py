@@ -14,9 +14,18 @@ import sys
 from pathlib import Path
 
 # Script execution and importlib users (pack/jobs/ipa.py) share the same reader.
-if str(Path(__file__).resolve().parent) not in sys.path:
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
-from iml_formats import FormatError, read_macho_entitlements, read_plist, read_profile
+# 不往全局 sys.path 塞本目录（#1424）：pack/ 下有 pack.py，作业进程里插在最前会顶掉引擎包 pack，之后 from pack.orch … 报「'pack' is not a package」。
+#   当脚本跑时本目录本来就在 sys.path[0]；按路径加载（pack/jobs/ipa.py）时同样按路径载入同目录的 iml_formats
+try:
+    from iml_formats import FormatError, read_macho_entitlements, read_plist, read_profile
+except ImportError:
+    import importlib.util
+    _spec = importlib.util.spec_from_file_location("iml_formats", Path(__file__).resolve().parent / "iml_formats.py")
+    _formats = importlib.util.module_from_spec(_spec)
+    sys.modules["iml_formats"] = _formats
+    _spec.loader.exec_module(_formats)
+    FormatError, read_macho_entitlements, read_plist, read_profile = (
+        _formats.FormatError, _formats.read_macho_entitlements, _formats.read_plist, _formats.read_profile)
 
 IML_KEY = "com.apple.developer.kernel.increased-memory-limit"
 

@@ -14,9 +14,11 @@ if ((args.Length == 5 || args.Length == 6 && args[5] == "--consume") && args[0] 
     Console.WriteLine(n);
     return 0;
 }
-if (!(args.Length == 1 || args.Length == 3 && args[1] == "--list") || !Directory.Exists(Path.Combine(args[0], "romfs")))
+// RomFS 只有镜像 romfs.std（romfs/ 不在，graphics/nvn/tools/romfs_list.py image_of 的约定）：清单（--list）就是从镜像盘点的，索引只按清单里的路径与长度建、不读目录，同样能建
+bool listed = args.Length == 3 && args[1] == "--list";
+if (!(args.Length == 1 || listed) || !(Directory.Exists(Path.Combine(args[0], "romfs")) || listed && File.Exists(Path.Combine(args[0], "romfs.std"))))
 {
-    Console.Error.WriteLine("用法：romfs_index <游戏数据根（含 romfs/）> [--list <RomFS 清单>]");
+    Console.Error.WriteLine("用法：romfs_index <游戏数据根（含 romfs/；只有镜像 romfs.std 时要给 --list）> [--list <RomFS 清单>]");
     return 2;
 }
 

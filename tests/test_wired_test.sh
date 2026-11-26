@@ -1,7 +1,7 @@
 #!/bin/bash
 # 门禁覆盖：*.sh *.py Makefile *.mk
-# 单测接线扫描（tools/test_wired_lint.py，约 1 秒）：bash tests/test_wired_test.sh
-# 期望：① 本仓库全部接线或在白名单 → 退出 0；② 本仓库换成空白名单 → 退出 1 且点名仍需私有数据 / 参数的三支手动单测；
+# 单测接线扫描（tools/test_wired_lint.py，全仓一遍约 25 秒）：bash tests/test_wired_test.sh
+# 期望：① 本仓库全部接线或在白名单 → 退出 0；② 本仓库换成空白名单（同一次扫描出的第二份结论）→ 退出 1 且点名仍需私有数据 / 参数的三支手动单测；
 #   ③ 临时仓库：门禁调到的、经已接线脚本再调的、Python import 的、Makefile 配方里调的都算接上；只在注释里提到的、谁都没调的报出；
 #   白名单没写原因、白名单写了不存在 / 其实已接上的单测只提示，没写原因的报一条；不合格的白名单行不豁免（没写原因的那支照报没接线）
 #   ⑤ 文字提及、非执行选项、heredoc、同名不同目录都不算接线；真调用正控仍判接上；解析失败点名文件和原因。
@@ -16,10 +16,10 @@ fixture_lint() {
     git -C "$root" add -A || return
     python3 "$lint" "$root"
 }
-o=$(cd "$H" && python3 tools/test_wired_lint.py 2>&1); r=$?
+o=$(cd "$H" && S2A_WIRED_EMPTY_OUT=$T/empty.out python3 tools/test_wired_lint.py 2>&1); r=$?   # 同一次扫描顺带出空白名单那份结论（②用，不整仓重扫）
 ck "① 本仓库：全部接线或在白名单（$(echo "$o" | tail -1 | cut -c1-120)）" '[ $r = 0 ]'
 [ $r = 0 ] || echo "$o" | head -10
-: > "$T/empty.tsv"; o=$(cd "$H" && S2A_WIRED_OK=$T/empty.tsv python3 tools/test_wired_lint.py 2>&1); r=$?
+o=$(sed '$d' "$T/empty.out"); r=$(tail -1 "$T/empty.out" | sed 's/^退出码 //')
 ck "② 空白名单：退出 1（rc=${r}）" '[ $r = 1 ]'
 # 拼扩展名：现有扫描器会把断言里的完整文件名误当调用（#484 另行修复）。
 for stem in t_pkz_real t_smbw_bnsh t_fout_rule; do
@@ -47,6 +47,25 @@ o3=$(fixture_lint $R/tools/test_wired_lint.py $R 2>&1)
 ck "③b 子目录没人调的 key_orphan_test.sh 报没接线" 'grep -q "tests/visual/key_orphan_test.sh 没有门禁脚本调它" <<< "$o3"'
 ck "③b 顶层自动入口 tests/top_auto_test.sh 不报" '! grep -q "top_auto_test.sh" <<< "$o3"'
 rm -f $R/tests/visual/key_orphan_test.sh $R/tests/top_auto_test.sh
+# ③c 间接调用（文件头「门禁间接：<调用方> <说明>」，11-20 android/gate.sh 接回）：调用方按通配逐个跑、静态引用追不到。
+#   调用方已接线 → 算接上，并接着追它调的脚本；调用方没接线 → 照报；没写说明 / 调用方不存在 → 声明不对报红
+mkdir -p $R/graphics/x/tests/standalone
+printf 'for f in graphics/x/tests/standalone/*.sh; do bash "$f"; done\n' > $R/graphics/x/tests/run_all.sh
+printf 'bash graphics/x/tests/run_all.sh\n' >> $R/graphics/gate.sh
+printf '# 门禁间接：graphics/x/tests/run_all.sh 默认档按通配逐个跑\npython3 graphics/x/tests/t_behind.py\n' > $R/graphics/x/tests/standalone/glob_a_test.sh
+echo 'print(1)' > $R/graphics/x/tests/t_behind.py
+printf 'echo nobody\n' > $R/graphics/x/tests/unwired_runner.sh
+printf '# 门禁间接：graphics/x/tests/unwired_runner.sh 按通配跑\necho b\n' > $R/graphics/x/tests/standalone/glob_b_test.sh
+printf '# 门禁间接：graphics/x/tests/run_all.sh\necho c\n' > $R/graphics/x/tests/standalone/glob_c_test.sh
+printf '# 门禁间接：graphics/x/tests/no_such.sh 按通配跑\necho d\n' > $R/graphics/x/tests/standalone/glob_d_test.sh
+o4=$(fixture_lint $R/tools/test_wired_lint.py $R 2>&1)
+ck "③c 调用方已接线：glob_a_test.sh 算接上" '! grep -q "glob_a_test.sh 没有门禁脚本调它" <<< "$o4"'
+ck "③c 间接单测再调的 t_behind.py 也算接上" '! grep -q "t_behind.py 没有门禁脚本调它" <<< "$o4"'
+ck "③c 调用方没接线：glob_b_test.sh 照报" 'grep -q "glob_b_test.sh 没有门禁脚本调它" <<< "$o4"'
+ck "③c 没写说明：glob_c_test.sh 声明报红" 'grep -q "门禁间接」 graphics/x/tests/standalone/glob_c_test.sh 没写说明" <<< "$o4"'
+ck "③c 调用方不存在：glob_d_test.sh 声明报红" 'grep -q "glob_d_test.sh 的调用方 graphics/x/tests/no_such.sh 不是仓库里的文件" <<< "$o4"'
+rm -rf $R/graphics/x/tests/standalone $R/graphics/x/tests/run_all.sh $R/graphics/x/tests/t_behind.py $R/graphics/x/tests/unwired_runner.sh
+sed -i.bak '/run_all.sh/d' $R/graphics/gate.sh && rm -f $R/graphics/gate.sh.bak
 
 # ⑤ 独立反例：字面期望不从扫描器结果生成，不执行任何合成测试文件。
 Q=$T/mentions; mkdir -p "$Q/graphics/a/tests"
@@ -57,6 +76,12 @@ ck "⑤ 真调用正控：退出 0、扫 1 支且调到 1" '[ $r2 = 0 ] && grep 
 printf 's2a_gate_step python3 graphics/a/tests/t_alpha.py\n' > "$Q/graphics/gate.sh"
 o2=$(fixture_lint "$H/tools/test_wired_lint.py" "$Q" 2>&1); r2=$?
 ck "⑤ 门禁摘要包装的真调用仍接线" '[ $r2 = 0 ] && grep -Fq "扫 1 支单测：门禁调到 1、白名单 0、没接线 0" <<< "$o2"'
+printf '"${S2A_PY:-python3}" tools/nostall.py 300 -- python3 graphics/a/tests/t_alpha.py\n' > "$Q/graphics/gate.sh"
+o2=$(fixture_lint "$H/tools/test_wired_lint.py" "$Q" 2>&1); r2=$?
+ck "⑤ 无进展看门狗包装的真调用仍接线" '[ $r2 = 0 ] && grep -Fq "扫 1 支单测：门禁调到 1、白名单 0、没接线 0" <<< "$o2"'
+printf 'bash tools/idle_timeout.sh "${X_IDLE_S:-600}" 1800 "$LOG/x.log" -- python3 graphics/a/tests/t_alpha.py\n' > "$Q/graphics/gate.sh"
+o2=$(fixture_lint "$H/tools/test_wired_lint.py" "$Q" 2>&1); r2=$?
+ck "⑤ idle_timeout 包装的真调用仍接线" '[ $r2 = 0 ] && grep -Fq "扫 1 支单测：门禁调到 1、白名单 0、没接线 0" <<< "$o2"'
 printf 's2a_gate_step echo python3 graphics/a/tests/t_alpha.py\n' > "$Q/graphics/gate.sh"
 o2=$(fixture_lint "$H/tools/test_wired_lint.py" "$Q" 2>&1); r2=$?
 ck "⑤ 包装的文字提及不是调用" '[ $r2 = 1 ] && grep -Fq "graphics/a/tests/t_alpha.py 没有门禁脚本调它" <<< "$o2"'
@@ -265,7 +290,7 @@ for t in t_wrap t_say; do echo 'print(1)' > $M/plat/tests/$t.py; done
 printf -- '-include $(sort $(wildcard */build.mk))\n' > $M/Makefile
 printf 'gated:\n\tpython3 graphics/tests/t_gated.py\nnotgated:\n\tpython3 graphics/tests/t_notgated.py\nagg: sub-a\nsub-a:\n\tpython3 graphics/tests/t_pre.py\nsub-b:\n\t$(MAKE) -C graphics/m inner\nnative-test-x:\n\tpython3 graphics/tests/t_pat.py\ndry:\n\tpython3 graphics/tests/t_dry.py\nTEST_TARGETS += notgated\n' > $M/graphics/build.mk
 printf 'inner:\n\tpython3 ../tests/t_inner.py\n' > $M/graphics/m/Makefile
-printf 'make -s gated\ntimeout "$GT" make -s agg sub-b\nfor k in x; do make -s "native-test-$k"; done\nmake -n dry\n' > $M/graphics/gate.sh
+printf 'make -s gated\ntimeout -k 15 "$GT" make -s agg sub-b\nfor k in x; do make -s "native-test-$k"; done\nmake -n dry\n' > $M/graphics/gate.sh
 echo '<Project><PropertyGroup><OutputType>Exe</OutputType></PropertyGroup></Project>' > $M/plat/Py.Tests/Py.Tests.csproj; cp $M/plat/Py.Tests/Py.Tests.csproj $M/plat/Lone.Tests/Lone.Tests.csproj
 printf 'from pathlib import Path\nhere = Path(__file__).resolve().parent\ncmd = ["dotnet", "build", str(here / "Py.Tests/Py.Tests.csproj")]\n' > $M/plat/run_py.py
 printf 'from pathlib import Path\nprint("Lone.Tests.csproj")\n' > $M/plat/mention.py
@@ -319,6 +344,19 @@ cp "$H/tools/test_wired_lint.py" "$H/tools/gate_decl.py" "$F/tools/"
 printf 'raise RuntimeError("must not execute")\n' > "$F/tests/t_unwired.py"
 o=$(fixture_lint "$F/tools/test_wired_lint.py" "$F" 2>&1); r=$?
 ck "⑪ 路由入口缺失明确报红" '[ $r = 1 ] && grep -Fq "门禁钩子发现失败" <<< "$o"'
+
+# ⑮ 负对照标记（11-23）：做负对照的单测，反证输出要包进「【负对照开始】」「【负对照结束】」（门禁红步摘要靠它剔除按设计红出的行）。期望手写：
+#   新单测提到负对照却没标记 → 报红点名；有标记 → 不报；在存量表 tools/negctl_unmarked.tsv 里 → 不报；存量表里已加标记的 → 只提示可删
+N=$T/negctl; mkdir -p "$N/tools" "$N/tests"; cp "$H/tools/test_wired_lint.py" "$H/tools/gate_decl.py" "$H/tools/gate_route.py" "$N/tools/"
+printf 'printf "【负对照开始】\\n"; echo neg; printf "【负对照结束】\\n"  # 负对照\n' > $N/tests/neg_marked_test.sh
+printf '# 负对照：变异后必须红\necho mutant\n' > $N/tests/neg_new_test.sh
+printf '# negative control\necho x\n' > $N/tests/neg_old_test.sh
+printf 'tests/neg_old_test.sh\t存量\ntests/neg_marked_test.sh\t存量（已加标记）\n' > $N/tools/negctl_unmarked.tsv
+o=$(fixture_lint "$N/tools/test_wired_lint.py" "$N" 2>&1)
+ck "⑮ 新单测做负对照没标记 → 报红点名" 'grep -q "tests/neg_new_test.sh 做了负对照但反证输出没包进" <<< "$o"'
+ck "⑮ 有标记的不报" '! grep -q "tests/neg_marked_test.sh 做了负对照" <<< "$o"'
+ck "⑮ 存量表里的不报" '! grep -q "tests/neg_old_test.sh 做了负对照" <<< "$o"'
+ck "⑮ 存量表里已加标记的只提示可删" 'grep -q "negctl_unmarked.tsv 里的 tests/neg_marked_test.sh 已加标记" <<< "$o"'
 
 [ $bad = 0 ] && echo "test_wired 单测全过" || { echo "$o" | head -20; echo "test_wired 单测有不通"; }
 exit $bad

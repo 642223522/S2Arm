@@ -17,6 +17,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 import uuid
 
 JOBS = Path(__file__).resolve().parents[1]
@@ -176,7 +177,10 @@ class InputInterfaceTests(unittest.TestCase):
         self.install_host(self.without_symbol)
         cat = library.catalog(self.c)
         game = next(g for g in cat["games"] if g["id"] == self.tid)
-        pre = toolchain.preflight(self.c)
+        # 只核手柄输入接口一项；装机的 Apple ID 检查（install.mac_plume）要真引擎树里的 pack/orch，夹具引擎树没有，跟本项无关，关掉
+        import install
+        with patch.object(install, "mac_plume", lambda c: False):
+            pre = toolchain.preflight(self.c)
         # 两处必须一致（原来是各自硬编码 True，UI 判断用了两套来源）
         self.assertEqual(game["inputConfig"], pre["engineInfo"]["inputConfig"])
         self.assertIs(game["inputConfig"], False)

@@ -12,7 +12,7 @@
 set -u
 H=$(cd "$(dirname "$0")/.." && pwd); T=$(mktemp -d); trap 'rm -rf "$T"' EXIT; bad=0
 chk() { if [ "$2" = "$3" ]; then echo "🟢 $1"; else echo "🔴 $1：期望「$2」→ 真结果「$3」"; bad=1; fi; }
-mkdir -p "$T/bin" "$T/tree/tools"; cp "$H/tools/host_build.sh" "$T/tree/tools/"
+mkdir -p "$T/bin" "$T/tree/tools"; cp "$H/tools/host_build.sh" "$H/tools/plock.sh" "$H/tools/flock_hold.py" "$T/tree/tools/"   # host_build.sh 的锁走 plock.sh → flock_hold.py
 cat > "$T/bin/make" <<'EOF'
 #!/bin/bash
 # 替身 make：只认 -C <树>，按 S2A_CS 模拟配置戳与重链

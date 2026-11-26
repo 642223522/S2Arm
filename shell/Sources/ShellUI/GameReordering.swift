@@ -1,3 +1,4 @@
+#if !os(tvOS)   // tvOS 不编本文件：拖动排序（电视版库界面见 TVLibraryView.swift，UPSTREAM.md「我方改动」）
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 S2Arm contributors
 import SwiftUI
@@ -104,3 +105,4 @@ struct GameOrderMove {
         before = reordered.indices.contains(lastIndex + 1) ? reordered[lastIndex + 1] : nil
     }
 }
+#endif   // !os(tvOS)

@@ -19,7 +19,12 @@ public struct GameIdentityStore {
     public init(root: URL) { self.root = root }
     public static var live: GameIdentityStore {
         let env = ProcessInfo.processInfo.environment["S2A_SHELL_DOCS"]   // 只给单测
-        let docs = env.map { URL(fileURLWithPath: $0, isDirectory: true) } ?? FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        #if os(tvOS)
+        let fallback = S2ArmContainer.docsRoot()   // tvOS 不能写 Documents（S2ArmContainer）
+        #else
+        let fallback = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        #endif
+        let docs = env.map { URL(fileURLWithPath: $0, isDirectory: true) } ?? fallback
         return GameIdentityStore(root: docs)
     }
     private func folder(_ id: String) -> URL { root.appendingPathComponent("games", isDirectory: true).appendingPathComponent(id, isDirectory: true) }
@@ -74,7 +79,7 @@ public struct GameIdentityStore {
     }
 }
 
-#if canImport(UIKit)
+#if canImport(UIKit) && !os(tvOS)   // tvOS 没有 PhotosPicker；电视上不出「名字和封面」这一行（S2ArmGameSettings）
 /// 改名字和封面的编辑页：盖在库界面上，只用触屏。
 struct S2ArmGameIdentityView: View {
     let title: String

@@ -106,9 +106,11 @@ final class GameFingerprint {
     static final class Verification {
         final List<Stamp> stamps;
         final int hits, recalculated;
+        final java.util.BitSet hashed;
         final boolean changed;
-        Verification(List<Stamp> stamps, int hits, int recalculated, boolean changed) {
+        Verification(List<Stamp> stamps, int hits, int recalculated, java.util.BitSet hashed, boolean changed) {
             this.stamps=stamps; this.hits=hits; this.recalculated=recalculated; this.changed=changed;
+            this.hashed=hashed;
         }
     }
     /** Per-admission diagnostics. Constructed only when the debug log gate is enabled. */
@@ -223,6 +225,39 @@ final class GameFingerprint {
         } catch (IOException | RuntimeException invalid) { return null; }
     }
 
+    // A delta has already matched the old index by path, size and SHA. Read the old table
+    // without retaining a second index, and trust matches only after verifying its whole digest.
+    static Stamp[] readSelected(File revision, List<GamePack.Entry> entries, String oldIndexSha, Reference ref,
+                                java.util.function.ToIntFunction<String> match) {
+        if (ref == null || reserved(entries)) return null;
+        Path path = revision.toPath().resolve(ref.path);
+        try {
+            if (!Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS) || Files.size(path) > MAX_TABLE) return null;
+            MessageDigest digest = GamePack.digest();
+            try (DigestInputStream input = new DigestInputStream(Files.newInputStream(path, LinkOption.NOFOLLOW_LINKS), digest);
+                 BufferedReader rows = new BufferedReader(new InputStreamReader(input, StandardCharsets.UTF_8))) {
+                String prefix = "s2a-boot-fingerprint-v1\t" + oldIndexSha + "\t";
+                String header = rows.readLine();
+                if (header == null || !header.startsWith(prefix)) return null;
+                int remaining = Integer.parseInt(header.substring(prefix.length()));
+                if (remaining < 0) return null;
+                Stamp[] stamps = new Stamp[entries.size()];
+                for (String row; (row = rows.readLine()) != null; ) {
+                    int tab = row.indexOf('\t');
+                    if (tab < 0 || --remaining < 0) return null;
+                    int i = match.applyAsInt(row.substring(0, tab));
+                    if (i < 0) continue;
+                    Stamp stamp = parseRow(row, entries.get(i));
+                    if (stamp == null || stamps[i] != null) return null;
+                    stamps[i] = stamp;
+                }
+                return remaining == 0 && GamePack.hex(digest.digest()).equals(ref.sha256) ? stamps : null;
+            }
+        } catch (IOException | RuntimeException invalid) {
+            return null;
+        }
+    }
+
     // One table row "path\tsize\tdev\tino\tsec\tnanos": single scan, no column array allocation.
     private static Stamp parseRow(String row, GamePack.Entry e) {
         String p=e.path;
@@ -299,8 +334,11 @@ final class GameFingerprint {
     /** 按索引里的大小读够就停的 SHA-256：不为确认末尾多读一次（vivo 上经共享存储 FUSE 读大文件，「读到末尾」那次 read
      *  曾一直不返回，见 GameInstall.store）。读不够 size 字节返回 null（文件比索引短）。 */
     static String sha256Exact(File file, long size, java.util.function.LongConsumer progress) throws IOException {
+        return sha256Exact(file, size, new byte[1<<20], progress);
+    }
+
+    static String sha256Exact(File file, long size, byte[] buf, java.util.function.LongConsumer progress) throws IOException {
         MessageDigest md=GamePack.digest();
-        byte[] buf=new byte[1<<20];
         long got=0;
         try (java.io.InputStream in=new java.io.FileInputStream(file)) {
             for (int n; got<size && (n=in.read(buf,0,(int)Math.min(buf.length,size-got)))>0; ) {
@@ -321,6 +359,7 @@ final class GameFingerprint {
         for (int n=0;n<entries.size();n++) ord.put(entries.get(n).path,n);
         Stamp[] fresh=new Stamp[entries.size()];
         boolean[] seen=new boolean[entries.size()];
+        java.util.BitSet hashedRows = new java.util.BitSet(entries.size());
         int[] counters={0,0,0}; // hits, recalculated, seq
         boolean[] changed={saved==null};
         BootContract.BadGame[] badGame={null};
@@ -391,6 +430,7 @@ final class GameFingerprint {
                 if (hit && executable==null) {
                     counters[0]++;
                 } else {
+                    hashedRows.set(n);
                     counters[1]++; if (!hit) changed[0]=true;
                     // Full recalculation still resolves through under(): hashing opens the
                     // canonical file, same as the old per-entry flow.
@@ -423,7 +463,7 @@ final class GameFingerprint {
             if (!seen[n]) throw new IOException(inPlace ? "in-place file is missing: "+entries.get(n).path+" (under "+revision+")"
                                                         : "revision file fails size / SHA-256: "+entries.get(n).path);
         Timing.end(timing,"fingerprint_verify_loop",phase);
-        return new Verification(java.util.Arrays.asList(fresh),counters[0],counters[1],changed[0]);
+        return new Verification(java.util.Arrays.asList(fresh),counters[0],counters[1],hashedRows,changed[0]);
     }
 
     // Replays only already-resolved paths, outside the normal resource timer. Its result is

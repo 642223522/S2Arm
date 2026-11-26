@@ -101,8 +101,10 @@ enum LauncherPadSpatial {
     }
     private func registeredControls(in window: NSWindow) -> [PadControl] {
         let registered = controls.values.filter { $0.view.window === window && !$0.view.isHiddenOrHasHiddenAncestor }
+        // 展开的下拉最优先；其次是面板里的浮层（scope "layer"，例如手柄面板的四键布局）：开着时方向键只在浮层里走，不落到底下的面板
         let modal = registered.filter { $0.scope == "dropdown" && controlTarget($0) != nil }
-        return (modal.isEmpty ? Array(registered) : modal).filter { $0.enabled && !$0.shortcutOnly }
+        let layer = registered.filter { $0.scope == "layer" && controlTarget($0) != nil }
+        return (!modal.isEmpty ? modal : !layer.isEmpty ? layer : Array(registered)).filter { $0.enabled && !$0.shortcutOnly }
     }
     private func controlTarget(_ control: PadControl, includeOffscreen: Bool = false) -> LauncherPadTarget? {
         let full = Self.screenFrame(control.view), clip = Self.clippingFrame(control.view)
@@ -113,6 +115,13 @@ enum LauncherPadSpatial {
     }
     func controlTargets(in window: NSWindow) -> [LauncherPadTarget] {
         registeredControls(in: window).compactMap { controlTarget($0) }.sorted(by: Self.order)
+    }
+    /// 单测失败时的现场：这个窗口登记的全部控件（含被筛掉的）与筛掉原因，按 id 排序一行一个
+    func registrationReport(in window: NSWindow) -> String {
+        controls.values.filter { $0.view.window === window }.sorted { $0.id < $1.id }.map { c in
+            let full = Self.screenFrame(c.view), clip = Self.clippingFrame(c.view)
+            return "\(c.id) scope=\(c.scope) enabled=\(c.enabled) shortcutOnly=\(c.shortcutOnly) hidden=\(c.view.isHiddenOrHasHiddenAncestor) frame=\(full) visible=\(full.intersection(clip))"
+        }.joined(separator: "\n")
     }
     func shortcutTargets(in window: NSWindow) -> [PadShortcut: [String]] {
         var result: [PadShortcut: [String]] = [:]
@@ -144,8 +153,10 @@ enum LauncherPadSpatial {
         if previousScope == scope, let id = previousID, !id.hasPrefix("card.") {
             let selected = all.first { $0.id == id }
             let complete = selected.map { ($0.clippingFrame ?? window.frame).insetBy(dx: -1, dy: -1).contains($0.unclippedFrame ?? $0.frame) } ?? false
-            if !complete {
-                let scroll = controls.values.first { $0.id == id && $0.view.window === window }?.view.enclosingScrollView
+            let scroll = controls.values.first { $0.id == id && $0.view.window === window }?.view.enclosingScrollView
+            // 只有滚动区里的控件被滚出视野才换到附近的完整控件。不在滚动区里的控件（顶栏搜索框）被裁只是展开 / 收起动画的一瞬，
+            // 这时换走焦点就再也回不来：手柄关屏幕键盘后焦点跳到「刷新」「清空」
+            if !complete, scroll != nil {
                 let completeTargets = all.filter { ($0.clippingFrame ?? window.frame).insetBy(dx: -1, dy: -1).contains($0.unclippedFrame ?? $0.frame) }
                 let nearby = completeTargets.filter { ($0.element as? NSView)?.enclosingScrollView === scroll }
                 let candidates = nearby.isEmpty ? completeTargets : nearby
@@ -232,10 +243,13 @@ enum LauncherPadSpatial {
             })
         }
     }
-    func detach() {
+    /// teardown：SwiftUI 正在拆这棵视图（dismantleNSView，NSHostingView.deinit 里）。这时不写 presentation 的发布属性——
+    ///   拆图期间发布变更会撞上 SwiftUI 自己的独占访问，fatalError 关窗闪退（#1516，0.5.3–0.5.5）。拆完 presentation 随视图释放，
+    ///   重新接上窗口时 source.updatePresentation 照实写；窗口关闭通知那条路（图还在）照旧清
+    func detach(teardown: Bool = false) {
         source.stop(); clearRings(); keyboard?.close(apply: false); keyboard = nil
         nativeButtons.restore(); source.refresh = {}; source.updatePresentation = { _, _ in }
-        presentation.connected = false; presentation.symbols = [:]
+        if !teardown { presentation.connected = false; presentation.symbols = [:] }
         for monitor in monitors { NSEvent.removeMonitor(monitor) }; monitors.removeAll()
         for observer in notifications { NotificationCenter.default.removeObserver(observer) }; notifications.removeAll()
         for overlay in overlays.values { overlay.removeFromSuperview() }; overlays.removeAll()
@@ -384,7 +398,15 @@ enum LauncherPadSpatial {
                 if !S2ALauncherAX.pick(selected.element) { sendKey(36, "\r", in: currentWindow) }
             }
         case .back:
-            if !S2ALauncherAX.cancel(currentWindow) { sendKey(53, "\u{1b}", in: currentWindow) }
+            // B 只关最里面那一层：开着的下拉选单先关（选单没有自己的「返回」钮，落到窗口取消会把整个面板关掉）
+            if hasDropdown { NotificationCenter.default.post(name: .launcherDropdownClose, object: currentWindow); break }
+            if S2ALauncherAX.cancel(currentWindow) { break }
+            // 不再发 Esc（会触发 macOS 系统提示音「咚」）：主窗口无层可关时静默忽略，弹窗/浮层直接用 AppKit 关
+            if currentWindow !== window {
+                if let sheetParent = currentWindow.sheetParent { sheetParent.endSheet(currentWindow) }
+                else if let panel = currentWindow as? NSSavePanel { panel.cancel(nil) }
+                else { currentWindow.close() }
+            }
         case .left, .right, .up, .down:
             let step = action == .left ? -1 : 1
             if action == .left || action == .right,
@@ -519,12 +541,13 @@ private final class LauncherPadRing: NSView {
         defer { NSGraphicsContext.restoreGraphicsState() }
         if let clip { NSBezierPath(rect: clip).addClip() }
         NSColor(srgbRed: 1, green: 0.94, blue: 0.84, alpha: 1).setStroke()
+        let width = LauncherTheme.Focus.lineWidth
         guard let radius else {
-            let ring = NSBezierPath(roundedRect: target.insetBy(dx: -3, dy: -3), xRadius: 10, yRadius: 10)
-            ring.lineWidth = 3; ring.stroke(); return
+            let r = LauncherTheme.Focus.plainRadius
+            let ring = NSBezierPath(roundedRect: target.insetBy(dx: -LauncherTheme.Focus.plainPaddingX, dy: -LauncherTheme.Focus.plainPaddingY), xRadius: r, yRadius: r)
+            ring.lineWidth = width; ring.stroke(); return
         }
         // 有边框的控件：焦点框画在它自己的边框上（同一外缘、同一圆角），与按钮边框对齐
-        let width: CGFloat = 2
         let edge = target.insetBy(dx: -outset, dy: -outset)
         let r = max(0, min(radius, target.height / 2, target.width / 2) + outset - width / 2)
         let ring = NSBezierPath(roundedRect: edge.insetBy(dx: width / 2, dy: width / 2), xRadius: r, yRadius: r)
@@ -542,5 +565,5 @@ struct LauncherPadHost: NSViewRepresentable {
     }
     func makeNSView(context: Context) -> Host { let host = Host(); host.navigation = navigation; return host }
     func updateNSView(_ view: Host, context: Context) { update(); if let window = view.window { navigation.attach(window) } }
-    static func dismantleNSView(_ view: Host, coordinator: ()) { if view.navigation?.window === view.lastWindow { view.navigation?.detach() } }
+    static func dismantleNSView(_ view: Host, coordinator: ()) { if view.navigation?.window === view.lastWindow { view.navigation?.detach(teardown: true) } }
 }

@@ -1,0 +1,68 @@
+diff --git a/src/Ryujinx.Horizon/S2AHorizonHooks.cs b/src/Ryujinx.Horizon/S2AHorizonHooks.cs
+index ce99dd46a013a059472f785aa7ced4f750158482..f83de287135ba205b4aba234cfc8cdd2639529a9 100644
+--- a/src/Ryujinx.Horizon/S2AHorizonHooks.cs
++++ b/src/Ryujinx.Horizon/S2AHorizonHooks.cs
+@@ -22,5 +22,13 @@ namespace Ryujinx.Horizon
+         // A session was registered (after accept / CreateSession, and after each processed request); when set, the session
+         // is not linked to the manager's wait list (the service thread's loop never serves it)
+         public static Action<ServerManagerBase, ServerSession> SessionRegistered;
++
++        // Instant snapshot (same as Ryujinx.HLE S2AHooks.SnapForceDomainIds for HLE domains): requests are processed on the calling
++        // thread, so these are per thread. SnapOutIds collects the domain object ids this request reserved (the log records them);
++        // SnapForceDomainIds, set while a logged request is replayed, makes the domain hand out the ids it gave when it was logged
++        // (objects closed in between are no longer in the log, so allocating in order would hand out smaller ids)
++        [ThreadStatic] public static System.Collections.Generic.List<int> SnapOutIds;
++        [ThreadStatic] public static System.Collections.Generic.Queue<int> SnapForceDomainIds;
++        public static int SnapForceDomainIdMiss;
+     }
+ }
+diff --git a/src/Ryujinx.Horizon/Sdk/Sf/Cmif/ServerDomainManager.cs b/src/Ryujinx.Horizon/Sdk/Sf/Cmif/ServerDomainManager.cs
+index 8612ec37de6ba385924b6250bf0a3a9f086f57ef..24a297ee935aec9b90a570709dd8bdefe121bf54 100644
+--- a/src/Ryujinx.Horizon/Sdk/Sf/Cmif/ServerDomainManager.cs
++++ b/src/Ryujinx.Horizon/Sdk/Sf/Cmif/ServerDomainManager.cs
+@@ -51,6 +51,21 @@ namespace Ryujinx.Horizon.Sdk.Sf.Cmif
+                 }
+             }
+ 
++            // S2Arm instant snapshot replay: the entry with this id if it is free (S2AHorizonHooks.SnapForceDomainIds), else null
++            public Entry S2AAllocateEntry(int id)
++            {
++                lock (_freeList)
++                {
++                    Entry entry = GetEntry(id);
++                    if (entry == null || entry.Owner != null || !_freeList.Remove(entry))
++                    {
++                        return null;
++                    }
++
++                    return entry;
++                }
++            }
++
+             public void FreeEntry(Entry entry)
+             {
+                 lock (_freeList)
+@@ -147,7 +162,14 @@ namespace Ryujinx.Horizon.Sdk.Sf.Cmif
+             {
+                 for (int i = 0; i < outIds.Length; i++)
+                 {
+-                    EntryManager.Entry entry = _manager._entryManager.AllocateEntry();
++                    EntryManager.Entry entry = null;
++                    var forced = S2AHorizonHooks.SnapForceDomainIds;
++                    if (forced != null && forced.Count > 0 && (entry = _manager._entryManager.S2AAllocateEntry(forced.Dequeue())) == null)
++                    {
++                        S2AHorizonHooks.SnapForceDomainIdMiss++;
++                    }
++
++                    entry ??= _manager._entryManager.AllocateEntry();
+                     if (entry == null)
+                     {
+                         return SfResult.OutOfDomainEntries;
+@@ -156,6 +178,7 @@ namespace Ryujinx.Horizon.Sdk.Sf.Cmif
+                     DebugUtil.Assert(entry.Owner == null);
+ 
+                     outIds[i] = entry.Id;
++                    S2AHorizonHooks.SnapOutIds?.Add(entry.Id);
+                 }
+ 
+                 return Result.Success;

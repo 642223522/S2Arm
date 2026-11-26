@@ -29,6 +29,7 @@ final class FakeRunner: JobProcessRunner {
     func start(executable: URL, arguments: [String], environment: [String: String],
                onLine: @escaping (Data) -> Void, onStderr: @escaping (Data) -> Void,
                onExit: @escaping (Int32) -> Void) throws -> JobProcessHandle {
+        objc_sync_enter(self); defer { objc_sync_exit(self) }   // 作业客户端在并发线程池里同时调 start：替身状态串行改（无锁并发追加数组会 SIGSEGV 带崩整个测试进程）
         let path = arguments.last ?? ""
         let data = try Data(contentsOf: URL(fileURLWithPath: path))
         let request = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]

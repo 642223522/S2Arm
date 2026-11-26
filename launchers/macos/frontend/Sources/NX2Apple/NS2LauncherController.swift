@@ -59,7 +59,9 @@ final class NS2LauncherController: ObservableObject {
         }
     }
     /// 两个连接程序的手柄合起来（最多 4 只）
-    var allDevices: [PlayerAssignment.Device] { devices + extras.flatMap(\.devices) }
+    var allDevices: [PlayerAssignment.Device] { devices + extras.flatMap(\.devices) + simulatedDevices }
+    /// 模拟的 Joy-Con 2（本地 / 自测构建的 App 菜单「模擬手把」，ControllerColorSimulator）：只进分配，不发给连接程序
+    private var simulatedDevices: [PlayerAssignment.Device] { ControllerColorSimulator.allowed ? ControllerColorSimulator.shared.ns2Devices : [] }
     private var playerOf: [String: Int] { Dictionary(allDevices.map { ($0.id, $0.player) }, uniquingKeysWith: { a, _ in a }) }
 
     /// 顶栏提示 / 读屏用的手柄名（#901）：两条通道合并看——Switch 2 连着（hasSystemController 这时为假）写 Switch 2 的标题，否则系统手柄连着写它的名字
@@ -593,6 +595,7 @@ final class NS2LauncherController: ObservableObject {
             var merged: Set<Int> = []
             if kind == 4 && players == 1 { merged.insert(0) }
             for extra in extras where extra.kind == 4 && extra.players == 1 { merged.insert(extra.group) }
+            if ControllerColorSimulator.allowed { merged.formUnion(ControllerColorSimulator.shared.ns2MergedGroups) }
             assignment.reconcile(devices: allDevices, mergedGroups: merged, system: systemKeys, gen1: gen1Devices)
             syncSecond()
             return
@@ -600,6 +603,7 @@ final class NS2LauncherController: ObservableObject {
         var merged: Set<Int> = []
         if kind == 4 && players == 1 { merged.insert(0) }
         for extra in extras where extra.kind == 4 && extra.players == 1 { merged.insert(extra.group) }
+            if ControllerColorSimulator.allowed { merged.formUnion(ControllerColorSimulator.shared.ns2MergedGroups) }
         if assignment.reconcile(devices: allDevices, mergedGroups: merged, system: systemKeys, gen1: gen1Devices) { persist() }
         let split = players == 2
         if !devices.isEmpty && (phase == .ready || phase == .handedOff) && assignment.wantsSplit(devices: devices) != split {
@@ -609,8 +613,15 @@ final class NS2LauncherController: ObservableObject {
         syncSecond()
     }
     private func persist() {
+        sendLights()
         if let data = try? JSONEncoder().encode(assignment) { defaults.set(data, forKey: "S2AMacNS2PlayerAssignment") }
         Self.writeOrderFile(assignment.orderFile(playerOf: playerOf), to: orderFileURL)
+    }
+    /// 手柄上的玩家灯跟着分配（同原机）：整份发给每个连接程序，各自只认自己连着的那几台；没变的连接程序那边不重写
+    private func sendLights() {
+        guard let json = try? JSONSerialization.data(withJSONObject: assignment.lightMasks()), let text = String(data: json, encoding: .utf8) else { return }
+        send("lights \(text)\n")
+        for extra in extras where !extra.devices.isEmpty { extra.send("lights \(text)\n") }
     }
     private func sendPlan() {
         if let json = try? JSONSerialization.data(withJSONObject: assignment.helperPlan(devices: devices)), let text = String(data: json, encoding: .utf8) {
@@ -657,6 +668,7 @@ final class NS2LauncherController: ObservableObject {
             let reserve = lone.flatMap { l in l.group == g.group ? nil : (l.devices[0].kind == 2 ? "R" : "L") } ?? "none"
             g.send("missing \(reserve)\n")
         }
+        sendLights()
     }
 
     /// 游戏的手柄设置画面来请求：接下（state → open），面板弹出、进分配玩家；完成 / 取消时回给游戏（state → done / cancel）
@@ -670,7 +682,7 @@ final class NS2LauncherController: ObservableObject {
             var fitted = assignment
             let wants = PlayerAssignment.GameWants(styles: styles, min: (object["min"] as? NSNumber)?.intValue ?? 1, max: (object["max"] as? NSNumber)?.intValue ?? 0)
             if fitted.autoFit(wants, devices: allDevices) {
-                let changed = fitted.units != assignment.units
+                let changed = fitted.slots != assignment.slots
                 assignment = fitted
                 if changed {
                     assignment.finish(presentSystem: systemKeys, devices: allDevices, gen1: gen1Devices)
@@ -716,7 +728,7 @@ final class NS2LauncherController: ObservableObject {
     }
     /// 这一位按了键：亮 0.6 秒（连按就从最后一下再算），key = 按的哪个键
     func flashPlayer(key: String? = nil, where match: (PlayerAssignment.Unit) -> Bool) {
-        guard let index = assignment.units.firstIndex(where: match) else { return }
+        guard let index = assignment.slots.firstIndex(where: { $0.map(match) == true }) else { return }
         let token = UUID()
         flashTokens[index] = token
         flashingPlayers.insert(index)
@@ -800,8 +812,22 @@ final class NS2LauncherController: ObservableObject {
         }
     }
 
+    /// 分配玩家时选中的目标空槽（nil = 默认放入最小空槽；点击空槽可指定分配到该槽）
+    @Published private(set) var assignTargetSlot: Int?
+    func toggleAssignTargetSlot(_ slot: Int) {
+        guard assigning, slot >= 0, slot < PlayerAssignment.maxPlayers else { return }
+        if slot < assignment.slots.count, assignment.slots[slot] != nil { return }
+        assignTargetSlot = assignTargetSlot == slot ? nil : slot
+    }
+    private func consumeAssignTargetSlot() {
+        if let target = assignTargetSlot, target < assignment.slots.count, assignment.slots[target] != nil {
+            assignTargetSlot = nil
+        }
+    }
+
     func startAssign() {
         beforeAssign = assignment
+        assignTargetSlot = nil
         assigning = true
         if process == nil { startProcess() }   // 没连着也能分配：先起连接程序搜手柄
         send("assign start\n")
@@ -817,6 +843,7 @@ final class NS2LauncherController: ObservableObject {
     func cancelAssign() {
         guard assigning else { return }
         assigning = false
+        assignTargetSlot = nil
         assignment = beforeAssign
         send("assign cancel\n")
         extras.forEach { $0.send("assign cancel\n") }
@@ -827,6 +854,7 @@ final class NS2LauncherController: ObservableObject {
     func finishAssign() {
         guard assigning else { return }
         assigning = false
+        assignTargetSlot = nil
         assignment.finish(presentSystem: systemKeys, devices: allDevices, gen1: gen1Devices)
         sendPlan()
         persist()
@@ -835,19 +863,23 @@ final class NS2LauncherController: ObservableObject {
     }
     func registerGen1(id: String, side: Int, gesture: Int, at time: TimeInterval = ProcessInfo.processInfo.systemUptime) {
         guard assigning else { return }
-        assignment.gen1(id: id, side: side, gesture: gesture, at: time, present: gen1Devices, system: systemKeys)
+        assignment.gen1(id: id, side: side, gesture: gesture, at: time, present: gen1Devices, system: systemKeys, targetSlot: assignTargetSlot)
+        consumeAssignTargetSlot()
     }
     func registerKeyboard() {
         guard assigning else { return }
-        assignment.keyboard()
+        assignment.keyboard(targetSlot: assignTargetSlot)
+        consumeAssignTargetSlot()
     }
     func registerSystem(name: String, index: Int, at time: TimeInterval = ProcessInfo.processInfo.systemUptime) {
         guard assigning else { return }
-        assignment.system(name: name, index: index, at: time)
+        assignment.system(name: name, index: index, at: time, targetSlot: assignTargetSlot)
+        consumeAssignTargetSlot()
     }
     func receiveAssign(_ event: [String: Any], at time: TimeInterval = ProcessInfo.processInfo.systemUptime) {
         guard assigning, let id = event["id"] as? String else { return }
-        assignment.ns2(id: id, kind: (event["kind"] as? NSNumber)?.intValue ?? 0, gesture: (event["gesture"] as? NSNumber)?.intValue ?? 0, at: time)
+        assignment.ns2(id: id, kind: (event["kind"] as? NSNumber)?.intValue ?? 0, gesture: (event["gesture"] as? NSNumber)?.intValue ?? 0, at: time, targetSlot: assignTargetSlot)
+        consumeAssignTargetSlot()
     }
     nonisolated static func writeOrderFile(_ object: [String: Any], to url: URL = PlayerAssignment.orderFileURL) {
         guard let data = try? JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys]) else { return }

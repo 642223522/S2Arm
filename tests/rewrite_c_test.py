@@ -45,6 +45,12 @@ EXTRA_CASES = [
       svc #32
       ret
     """),
+    dict(name='20b_pacga_deterministic', asm="""
+      .inst 0x9ad13262
+      .inst 0x9ac733c7
+      .inst 0x9adf3002
+      ret
+    """),
     dict(name='21_cond_and_pc', asm="""
       adr x18, out
       cbz x18, out
@@ -390,11 +396,19 @@ def shared_page_layout(native, golden, problems):
                 output['main.fixups.tsv'].decode().splitlines() if line.startswith('# '))
             android = target == 'android'
             expected = {'TEXT_END': 0xe10, 'RO_OFF': 0x2000, 'DATA_OFF': 0x3000,
-                'KEY_PAGE_OFF': 0x4000 if android else 0x7000,
+                # 映像结尾 0x4000；键页前至少留 0x1000 可写空余（#1628，FPSLocker 变量 / 金手指开关表）：
+                #   安卓无偏置 align16K(0x4000 + 0x1000) = 0x8000；苹果偏置 0x1000：align16K(0x4000 + 0x1000 + 0x1000) − 0x1000 = 0x7000（空余本就 0x3000）
+                'KEY_PAGE_OFF': 0x8000 if android else 0x7000,
                 'PATCH_OFF': 0x10000 if android else 0xf000, 'KEY_PAGE_SIZE': 0x4000}
             for key, value in expected.items():
                 assert int(header[key], 16) == value, (target, key, header[key], hex(value))
             assert int(header.get('LOAD_BIAS', '0'), 16) == (0 if android else 0x1000), (target, header)
+            # 出包侧镜像（pack/cpatch.py module_layout，金手指开关表 / FPSLocker 变量按它放）：取各平台键页的较小者，
+            #   苹果等于表头、安卓不超过表头；空余 ≥ 0x1000
+            sys.path.insert(0, str(ROOT / 'pack')); import cpatch
+            _, _, image_end, mirror_key = cpatch.module_layout(str(source))
+            assert (mirror_key <= int(header['KEY_PAGE_OFF'], 16)) if android else (mirror_key == int(header['KEY_PAGE_OFF'], 16)), (target, hex(mirror_key), header['KEY_PAGE_OFF'])
+            assert mirror_key - image_end >= 0x1000, (target, hex(image_end), hex(mirror_key))
             if android:
                 assert 'LOAD_BIAS' not in header, header
                 assert header['TARGET'] == 'android', header

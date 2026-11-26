@@ -38,6 +38,16 @@ namespace Ryujinx.Graphics.Gpu.Synchronization
             return _syncpoints[id].Increment();
         }
 
+        /// <summary>
+        /// S2A：即时存档恢复把同步点抬回快照时的值（到值的等待照常回调）；已经不小于就不动
+        /// </summary>
+        public void S2ARaiseTo(uint id, uint value)
+        {
+            ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(id, (uint)MaxHardwareSyncpoints);
+
+            _syncpoints[id].S2ARaiseTo(value);
+        }
+
         /// <inheritdoc/>
         public uint GetSyncpointValue(uint id)
         {

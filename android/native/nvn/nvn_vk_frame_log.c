@@ -3,6 +3,7 @@
 #include "nvn_vk_frame_log.h"
 #include "sha256.h"
 
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -23,19 +24,45 @@ void s2a_fl_reset(struct s2a_frame_log *fl) {
     fl->dropped = 0;
     fl->w = 0;
     fl->kept = 0;
+    fl->sealed = 0;
     atomic_store(&fl->fence_ns_acc, 0);
     atomic_store(&fl->fence_n_acc, 0);
 }
 
 void s2a_fl_fence(struct s2a_frame_log *fl, uint64_t wait_ns) {
     while (atomic_exchange_explicit(&fl->snapshot_lock, 1, memory_order_acquire)) {}
-    atomic_fetch_add(&fl->fence_ns_acc, wait_ns);
-    atomic_fetch_add(&fl->fence_n_acc, 1);
+    if (!fl->sealed) {
+        atomic_fetch_add(&fl->fence_ns_acc, wait_ns);
+        atomic_fetch_add(&fl->fence_n_acc, 1);
+    }
     atomic_store_explicit(&fl->snapshot_lock, 0, memory_order_release);
+}
+
+// 新回放层（nvk）的 GPU 读数源（#1501 D①）：后端每段完成时报这一段的 GPU 时间戳跨度（nvk_gputime 开着才有），
+// 上屏段完成时把「上一次上屏段完成以来」累计的跨度结成一帧，带帧号发布。段在后端工作线程上按提交顺序完成，
+// 上屏段排在本帧各段之后，所以一帧 = 两个上屏段之间完成的那些段。读数比 present 记录晚到（GPU 延迟），
+// gpu_seq 标明它属于第几次上屏，宿主按 seq 对号；没开 nvk_gputime 时从不发布，记录里照旧是 UINT32_MAX。
+static pthread_mutex_t g_fgpu_mu = PTHREAD_MUTEX_INITIALIZER;
+static uint64_t g_fgpu_acc, g_fgpu_ns, g_fgpu_seq, g_fgpu_frames;   // 全在 g_fgpu_mu 里动：写者是后端工作线程，读者是 present 线程，每帧各一两次
+static int g_fgpu_have;
+static uint64_t g_fl_gpu_seen;   // 上一次写进记录的 gpu_seq（同一帧只报一次）；转储清环时一起清，新会话的帧号从 1 重新数
+static int fl_gpu_frame_last(uint64_t *ns, uint64_t *seq) {
+    pthread_mutex_lock(&g_fgpu_mu);
+    int ok = g_fgpu_seq != 0; *ns = g_fgpu_ns; *seq = g_fgpu_seq;
+    pthread_mutex_unlock(&g_fgpu_mu);
+    return ok;
+}
+static void fl_gpu_frame_reset(void) {
+    pthread_mutex_lock(&g_fgpu_mu); g_fgpu_acc = g_fgpu_ns = g_fgpu_seq = g_fgpu_frames = 0; g_fgpu_have = 0; g_fl_gpu_seen = 0; pthread_mutex_unlock(&g_fgpu_mu);
 }
 
 uint64_t s2a_fl_note_timed(struct s2a_frame_log *fl, uint64_t boot_us, uint64_t acquire_ns, uint64_t present_ns) {
     while (atomic_exchange_explicit(&fl->snapshot_lock, 1, memory_order_acquire)) {}
+    if (fl->sealed) {
+        uint64_t dropped = fl->dropped;
+        atomic_store_explicit(&fl->snapshot_lock, 0, memory_order_release);
+        return dropped;
+    }
     // 先快照帧内 fence 账（present 之后到达的等待归下一帧），再落记录。
     // acc 存 ns 避免逐次截断；记录字段是 µs（封顶 UINT32_MAX ≈ 71 分钟，远超单帧）。
     uint64_t fus = atomic_exchange(&fl->fence_ns_acc, 0) / 1000;
@@ -51,13 +78,15 @@ uint64_t s2a_fl_note_timed(struct s2a_frame_log *fl, uint64_t boot_us, uint64_t 
     // （debug.s2a.gpu_time，默认关）。同一结算帧只报一次（seq 去重）；没有新结算写
     // UINT32_MAX——不写 0，与 iOS host_adapt.m gpu_us 空口径一致。
     extern int nvn_vk_first_draw_gpu_last(double *, int *, uint64_t *) __attribute__((weak));
+    //   新回放层没有 first_draw（不链），改读上面的段时间戳汇总；两路同一局只有一路有读数。
     r->gpu_us = UINT32_MAX; r->gpu_seq = UINT32_MAX;
-    if (nvn_vk_first_draw_gpu_last) {
-        double gms = 0.0; uint64_t gf = 0;
-        if (nvn_vk_first_draw_gpu_last(&gms, NULL, &gf)) {
-            static uint64_t fl_gpu_seen;
-            if (gf != fl_gpu_seen) {
-                fl_gpu_seen = gf;
+    {
+        double gms = 0.0; uint64_t gf = 0, gns = 0; int have = 0;
+        if (nvn_vk_first_draw_gpu_last && nvn_vk_first_draw_gpu_last(&gms, NULL, &gf)) have = 1;
+        else if (fl_gpu_frame_last(&gns, &gf)) { gms = (double)gns / 1e6; have = 1; }
+        if (have) {
+            if (gf != g_fl_gpu_seen) {
+                g_fl_gpu_seen = gf;
                 uint64_t u = (uint64_t)(gms * 1000.0 + 0.5);
                 r->gpu_us = u > UINT32_MAX - 1 ? UINT32_MAX - 1 : (uint32_t)u;
                 r->gpu_seq = gf > UINT32_MAX - 1 ? UINT32_MAX - 1 : (uint32_t)gf;
@@ -218,24 +247,28 @@ void s2a_fl_dump(const struct s2a_frame_log *fl, void (*emit)(void *ctx, const c
 // ---------------- 生产钩子（单例 + 开关） ----------------
 
 static struct s2a_frame_log g_fl;
-static int g_fl_on = -1;   // 开关缓存：属性一次性读入，之后每帧/每等只比标志
+static _Atomic int g_fl_on = -1;   // 属性缓存由 present、后端和停局线程共用
 
 // 诊断开关（默认关）：Android 走两道门（编译期 S2A_ANDROID_DEBUG_ENV + 运行期
 // debug.s2a.debug_env=1，见 native/debug_gate.h）后还要看 debug.s2a.frame_log=1——
 // 写法同 nvn_vk_compute_bridge.c 的 debug.s2a.compute_trace；正式构建门关着，
 // 玩家包里本开关恒为缺省关。宿主探针走同名环境变量——与 vk_device.c prop_int 同一惯例。
 static int s2a_fl_enabled(void) {
-    if (g_fl_on < 0) {
+    int enabled = atomic_load_explicit(&g_fl_on, memory_order_relaxed);
+    if (enabled < 0) {
 #if defined(__ANDROID__)
         char b[PROP_VALUE_MAX] = {0};
-        g_fl_on = s2a_debug_entries_open()
+        int configured = s2a_debug_entries_open()
                   && __system_property_get("debug.s2a.frame_log", b) == 1 && b[0] == '1';
 #else
         const char *e = getenv("debug.s2a.frame_log");
-        g_fl_on = (e && atoi(e)) ? 1 : 0;
+        int configured = e && atoi(e);
 #endif
+        if (atomic_compare_exchange_strong_explicit(&g_fl_on, &enabled, configured,
+                                                    memory_order_relaxed, memory_order_relaxed))
+            enabled = configured;
     }
-    return g_fl_on;
+    return enabled;
 }
 
 // 开关缓存标志（弱符号调用点先判它再计时/记账）：0=关 1=开。
@@ -253,6 +286,19 @@ void s2a_frame_log_present_timed(uint64_t acquire_ns, uint64_t present_ns) {
 }
 void nvn_vk_frame_log_present(void) { s2a_frame_log_present_timed(UINT64_MAX, UINT64_MAX); }
 
+// GPU 读数的写入端（见文件上部 g_fgpu_*）：开关关着只判一次缓存标志。
+void nvn_vk_frame_log_gpu_segment(uint64_t gpu_ns) {
+    if (!s2a_fl_enabled()) return;
+    pthread_mutex_lock(&g_fgpu_mu); g_fgpu_acc += gpu_ns; g_fgpu_have = 1; pthread_mutex_unlock(&g_fgpu_mu);
+}
+void nvn_vk_frame_log_gpu_frame_end(void) {
+    if (!s2a_fl_enabled()) return;
+    pthread_mutex_lock(&g_fgpu_mu);
+    g_fgpu_frames++;
+    if (g_fgpu_have) { g_fgpu_ns = g_fgpu_acc; g_fgpu_seq = g_fgpu_frames; }
+    g_fgpu_acc = 0; g_fgpu_have = 0;
+    pthread_mutex_unlock(&g_fgpu_mu);
+}
 void nvn_vk_frame_log_fence_wait(uint64_t wait_ns) {
     if (!s2a_fl_enabled()) return;
     s2a_fl_fence(&g_fl, wait_ns);
@@ -268,8 +314,16 @@ static void s2a_fl_platform_emit(void *ctx, const char *line) {
 #endif
 }
 
-void nvn_vk_frame_log_dump(void) {
-    if (!s2a_fl_enabled() || !g_fl.seq) return;
+// 封存与 present 记录、fence 记账共用短锁。先放锁再编码和写文件，迟到写者读到 sealed 就退出。
+static int fl_seal(int retained) {
+    while (atomic_exchange_explicit(&g_fl.snapshot_lock, 1, memory_order_acquire)) {}
+    int dump = !g_fl.sealed && g_fl.seq != 0;
+    if (dump || retained) g_fl.sealed = 1;
+    atomic_store_explicit(&g_fl.snapshot_lock, 0, memory_order_release);
+    return dump;
+}
+
+static void fl_dump_records(void) {
     FILE *file = NULL;
 #if defined(__ANDROID__)
     // PID 文件名由 READY 进程身份定位；每个进程第一次转储截断旧文件，后续段追加。
@@ -289,8 +343,18 @@ void nvn_vk_frame_log_dump(void) {
         __android_log_print(ANDROID_LOG_WARN, "S2Arm", "direct frame-log file write failed errno=%d", errno);
 #endif
     }
-    // 进程内可能再起新会话（直连↔兜底退回）：转储过的数据清掉，下一份转储只属于下一段会话。
+}
+
+void nvn_vk_frame_log_dump(void) {
+    if (!s2a_fl_enabled() || !fl_seal(0)) return;
+    fl_dump_records();
+    // 调用者已停稳前端。清环供同一进程的下一段会话使用。
     s2a_fl_reset(&g_fl);
+    fl_gpu_frame_reset();
+}
+
+void nvn_vk_frame_log_dump_retained(void) {
+    if (s2a_fl_enabled() && fl_seal(1)) fl_dump_records();
 }
 
 // 托管层入口：direct 与 generic 共用同一单例；generic 的 present 线程与 direct 不同，

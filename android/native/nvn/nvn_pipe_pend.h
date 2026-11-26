@@ -37,6 +37,7 @@ typedef struct nvk_pp {
     pthread_mutex_t mu;
     int ready;
     size_t key_bytes;
+    uint64_t reset_seq;          // 仅 reset 递增；与等待者在 mu 下核对取消边界
     struct nvk_pp_ent ent[NVK_PP_MAX];
     uint64_t enters, followers, published, failed, timeouts_late, timeouts_stuck, full, evicted;
 } nvk_pp;
@@ -55,6 +56,7 @@ int  nvk_pp_state(nvk_pp *t, const void *key, int (*eq)(const void *, const void
                   void **obj, int *code, char *why, size_t why_cap);
 
 // 有界等待离开 COMPILING。wait_ms = 0：只查一次不等（SKIP 预算耗尽时的口径）。
+// 等待期间发生 reset 返回 ABSENT，输出保持空；尚在 COMPILING 的预算到期仍返回 TIMEOUT。
 int  nvk_pp_wait(nvk_pp *t, const void *key, int (*eq)(const void *, const void *), uint32_t wait_ms,
                  void **obj, int *code, char *why, size_t why_cap);
 

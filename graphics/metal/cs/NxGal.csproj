@@ -20,5 +20,6 @@
     <ProjectReference Include="caps/NxGalCaps.csproj" />
     <ProjectReference Include="$(RyuGpu)/src/Ryujinx.Graphics.GAL/Ryujinx.Graphics.GAL.csproj" />
     <ProjectReference Include="$(RyuGpu)/src/Ryujinx.Memory/Ryujinx.Memory.csproj" />   <!-- NxTrack：MemoryTracking / MemoryPermission -->
+    <ProjectReference Include="$(RyuGpu)/src/Ryujinx.Graphics.Texture/Ryujinx.Graphics.Texture.csproj" />   <!-- NxTexture：BC 经 ASTC 包没命中时用 BCnDecoder 解压（同旧路） -->
   </ItemGroup>
 </Project>

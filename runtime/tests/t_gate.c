@@ -5,6 +5,7 @@
 // ③ C# 未处理：回 0xF201 并报红，在途照样归 0
 // ④ 虚拟核（S2A_CORES）：IPC 从 C# 回来后卡在等核的线程不算在途（10-23 真机 CORES 局 3/5 收局「还有 1 个系统调用在 C# 里没回」：C# 已回、人在等核）
 // ⑤ 收局后进门的线程停住前放开虚拟核（否则从 C# 回来等这个核的线程永远等不到）
+// 等事件的上限只当兜底（11-19：原先 1～5 秒，负载高时线程没跑到就判红 → 一律 30 秒，正常时一到就返回）
 #include "../src/native.h"
 #include <pthread.h>
 #include <stdatomic.h>
@@ -13,6 +14,7 @@ int g_det;
 uint64_t guest_tick(void) { return 0; }
 module_t *module_of(const void *p) { (void)p; return NULL; }
 static int n_va; __attribute__((visibility("default"), used)) void s2a_guest_va_report(const char *w) { (void)w; n_va++; }   // gate.c 按名取（dlsym）
+static int n_sa; __attribute__((visibility("default"), used)) void s2a_sainit_gate(uint64_t *r) { n_sa++; if (!r[1]) r[2] = 4ull << 30; }   // 分配器初始化闸处理（svc_mem.c）的桩：地址空时把尺寸改成 4 GiB
 void s2a_backtrace(uint64_t fp) { (void)fp; }
 int s2a_det_out_regs(int num) { (void)num; return 1; }
 static _Atomic int n_leave, block_core, at_core;
@@ -66,6 +68,13 @@ int main(void) {
         r[0] = 0xE401; uint64_t g1 = gate_dispatch(ar, r);
         check("aregion 门：返回 0xE401（失败）→ 原样回 0xE401、打一次别名区账", g1 == 0xE401 && r[0] == 0xE401 && n_va == 1);
     }
+    {   // 分配器初始化闸（aregion 参数 1，改写器挂在 StandardAllocator 初始化入口；进门前 x0 已清零）：交给 s2a_sainit_gate 改 x2，不走「地址区分配失败」报红
+        static uint8_t sc[16]; uint64_t sr = (uint64_t)&sc[4]; gate_register(sr, "aregion", 1, (uint64_t)&sc[0]);
+        uint64_t r[32] = {0}; r[2] = 62ull << 30; int va0 = n_va; uint64_t g = gate_dispatch(sr, r);
+        check("分配器初始化闸：地址空 → 处理函数把 x2 改成 4 GiB、回 x0 = 0、不打别名区账", n_sa == 1 && r[2] == (4ull << 30) && g == 0 && n_va == va0);
+        r[0] = 0x1234; r[1] = 0x5000; r[2] = 62ull << 30; gate_dispatch(sr, r);
+        check("分配器初始化闸：带缓冲（x1 非空）→ x2 原样、x0 非零也不报红", n_sa == 2 && r[2] == (62ull << 30) && n_va == va0);
+    }
     static uint8_t code[64];   // 假门块返回点：登记一个 svc 0x21 门
     uint64_t ret = (uint64_t)&code[8];
     gate_register(ret, "svc", 0x21, 0xd4000421);
@@ -91,12 +100,12 @@ int main(void) {
     }
     // at_core 先清：前面每次 IPC 都置过
     atomic_store(&at_core, 0); atomic_store(&block_core, 1); pthread_t th; pthread_create(&th, NULL, ipc_thread, (void *)ret);
-    for (int i = 0; i < 2000 && !atomic_load(&at_core); i++) usleep(1000);   // 等它从 C# 回来、卡在取核
+    for (int i = 0; i < 30000 && !atomic_load(&at_core); i++) usleep(1000);   // 等它从 C# 回来、卡在取核
     check("（前提）IPC 线程已从 C# 回来、卡在取核", atomic_load(&at_core));
     int left = s2a_svc_park_all(300);   // 收局入口：回仍在 C# 里的系统调用数（此后门进即停，单测到此为止）
     check("全部调用回来后在途 0（进 / 出配对；卡在等核的不算在途）", left == 0);
     int l0 = atomic_load(&n_leave); pthread_create(&th, NULL, ipc_thread, (void *)ret);   // 收局后再进门：应停住
-    for (int i = 0; i < 2000 && atomic_load(&n_leave) == l0; i++) usleep(1000);
+    for (int i = 0; i < 30000 && atomic_load(&n_leave) == l0; i++) usleep(1000);
     check("收局后进门的线程停住前放开虚拟核", atomic_load(&n_leave) > l0);
     {   // 门数过 2048（10-26 普查 3 款 FATAL「门太多（2049）」）：登记 5000 个 cntpct 门，表应自动扩到 ≥ 4 × 5000 槽、每个门都查回自己的寄存器号
         int s2a_gate_count(void); unsigned s2a_gate_bits(void);
@@ -108,6 +117,6 @@ int main(void) {
             printf("✗ 门数过 2048：应登记 %d 个、表 ≥ 4 倍、全部查回；实 %d 个、表 2^%u、查回错 %d\n", n0 + 5000, s2a_gate_count(), bits, bad_back); fails++; }
         else printf("  门数过 2048：登记 %d 个，表扩到 2^%u 槽，5000 个全部查回\n", s2a_gate_count(), bits);
     }
-    printf("%s t_gate：%d 处不符（共 15 项）\n", fails ? "✗" : "✓", fails);
+    printf("%s t_gate：%d 处不符（共 17 项）\n", fails ? "✗" : "✓", fails);
     return fails != 0;
 }

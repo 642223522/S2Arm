@@ -1,12 +1,13 @@
 #!/bin/bash
-# 门禁只看：graphics/nvn/tests/t_present_settings.m graphics/nvn/tests/t_present_settings.sh tests/present_settings_test.sh tests/present_settings_env_test.sh
+# 门禁只看：graphics/nvn/tests/t_present_settings.m graphics/nvn/tests/t_present_settings.sh graphics/nvn/tests/t_present_settings.py graphics/widen/publish_native.sh tools/weak_link_decl.py tests/present_settings_test.sh tests/present_settings_env_test.sh
+# 门禁清单：graphics/nvn/tests/t_present_settings.link.txt
 # 门禁预算：600
 # 门禁显卡：独占
 # t_present_settings 的宿主显示环境探针（屏睡/无活动屏 → WindowServer 撤 NSWindowOcclusionStateVisible
 #   位，与焦点无关——无人值守跑门禁必中，11-11 实测双屏 Display Asleep、CGGetActiveDisplayList=0 时
 #   18 格全死在该检查）：
 #   ① S2A_PS_ENV=sleep → 建窗前早探针退 77、打「未证」；② awake+S2A_PS_WINDOW=occluded → 探针过、
-#   原检查照旧红退 1；③ offspace → 500ms 晚探针退 77；④ .sh 全程 sleep → 18 格全未证 rc=75（环境未就绪，不当绿）、
+#   原检查照旧红退 1；③ offspace → 500ms 晚探针退 77；④ .sh 全程 sleep → 24 格（加 Fsr 一列前 18）全未证 rc=75（环境未就绪，不当绿）、
 #   跑前清 edge 图使跨跑残留假图不复活
 set -u
 cd "$(dirname "$0")/.."
@@ -49,13 +50,14 @@ for d in "$out"/mtl3-None-Nearest "$out"/mtl3-SmaaMedium-Nearest "$out"/mtl3-Sma
          "$out"/mtl4-None-Nearest "$out"/mtl4-SmaaMedium-Nearest "$out"/mtl4-SmaaHigh-Nearest \
          "$out"/mtl3-None-Bilinear "$out"/mtl4-None-Bilinear "$out"/mtl3-None-MetalFX "$out"/mtl4-None-MetalFX \
          "$out"/mtl3-SmaaMedium-Bilinear "$out"/mtl4-SmaaMedium-Bilinear "$out"/mtl3-SmaaHigh-Bilinear "$out"/mtl4-SmaaHigh-Bilinear \
-         "$out"/mtl3-SmaaMedium-MetalFX "$out"/mtl4-SmaaMedium-MetalFX "$out"/mtl3-SmaaHigh-MetalFX "$out"/mtl4-SmaaHigh-MetalFX; do
+         "$out"/mtl3-SmaaMedium-MetalFX "$out"/mtl4-SmaaMedium-MetalFX "$out"/mtl3-SmaaHigh-MetalFX "$out"/mtl4-SmaaHigh-MetalFX \
+         "$out"/mtl3-None-Fsr "$out"/mtl3-SmaaMedium-Fsr "$out"/mtl3-SmaaHigh-Fsr "$out"/mtl4-None-Fsr "$out"/mtl4-SmaaMedium-Fsr "$out"/mtl4-SmaaHigh-Fsr; do
     mkdir -p "$d"; printf x > "$d/edge-native.bgra"; printf x > "$d/edge-scaled.bgra"
 done
 S2A_PS_ENV=sleep bash tests/present_settings_test.sh >"$T/sh.log" 2>&1; s=$?
 ck "④ .sh 全程未证 → rc=75（环境未就绪，不当绿）" test "$s" = 75
-ck "④ 18 格全 UNPROVEN" bash -c '[ "$(grep -c "^UNPROVEN " "$1")" = 18 ]' _ "$T/sh.log"
-ck "④ 尾行单列未证数" grep -q '18 cells 未证' "$T/sh.log"
+ck "④ 24 格全 UNPROVEN" bash -c '[ "$(grep -c "^UNPROVEN " "$1")" = 24 ]' _ "$T/sh.log"
+ck "④ 尾行单列未证数" grep -q '24 cells 未证' "$T/sh.log"
 ck "④ 无 FAIL 行（假图不复活成 distinctions 红）" bash -c '! grep -q "^FAIL" "$1"' _ "$T/sh.log"
 ck "④ 假 edge 图已被清掉" bash -c '! find "$1" -name "edge-*.bgra" -size +0 -print -quit | grep -q .' _ "$out"
 

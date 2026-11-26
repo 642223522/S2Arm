@@ -45,4 +45,24 @@ o6=$(DP $T/s6 $T/d6); r6=$?
 ck "⑥ 库内形态：rc=${r6}、输出「${o6}」、旧 romfs.img $([ -e $T/d6/romfs.img ] && echo 还在 || echo 删了)" '[ $r6 = 0 ] && [ ! -e $T/d6/romfs.img ] && [ "$(cat $T/d6/romfs.files/a)$(cat $T/d6/romfs.files/sub/b)" = IMAGE ] && [ ! -e $T/d6/romfs.files/stray ]'
 o7=$(DP $T/s6 $T/d6); r7=$?
 ck "⑥ 再交付一次镜像行没变：rc=${r7}、输出「${o7}」（克隆 0）" '[ $r7 = 0 ] && [ "$(cut -f3 <<< "$o7")" = 0 ]'
+# ⑦ RomFS 不落散文件：源里没有 romfs.img、没有 romfs.files/、有 romfs.std（库内镜像，不在索引里）→ 交付这一个文件（克隆 x.bin 0 个 + romfs.std 1 个 = 1），
+#    目标里上一次的 romfs.files/（⑥ 交付的）删掉；再交付一次镜像行没变 → 克隆 0；负对照：源里镜像也没有 → 退出非 0（不许静默交付一个缺 RomFS 的包）
+mk $T/s7 x.bin:XX; cp $T/s6/index.tsv $T/s6/romfs.s2aidx $T/s6/romfs.imgmap $T/s7/; printf 'STDIMAGE' > $T/s7/romfs.std
+o8=$(DP $T/s7 $T/d6); r8=$?
+ck "⑦ 镜像形态：rc=${r8}、输出「${o8}」、romfs.std「$(cat $T/d6/romfs.std 2> /dev/null)」、romfs.files $([ -e $T/d6/romfs.files ] && echo 还在 || echo 删了)" \
+  '[ $r8 = 0 ] && [ "$(cut -f3 <<< "$o8")" = 1 ] && [ "$(cat $T/d6/romfs.std)" = STDIMAGE ] && [ ! -e $T/d6/romfs.files ] && [ ! -e $T/d6/romfs.img ]'
+o9=$(DP $T/s7 $T/d6); r9=$?
+ck "⑦ 再交付一次镜像行没变：rc=${r9}、输出「${o9}」（克隆 0）" '[ $r9 = 0 ] && [ "$(cut -f3 <<< "$o9")" = 0 ]'
+rm $T/s7/romfs.std; rm -rf $T/d7; DP $T/s7 $T/d7 > /dev/null 2>&1; r10=$?
+ck "⑦ 负对照：源里镜像 / 逐文件 / romfs.img 都没有 → 退出非 0：rc=${r10}" '[ $r10 != 0 ]'
+# ⑧ 非 macOS（Windows）交付 romfs.std 先硬链、不另占盘（诊断 #9ac7f7：原先整份真拷，镜像占两份、大游戏交付写满盘 WinError 112）：
+#    进程内把 sys.platform 设成 win32 调 link_image → 目标与源同一个 inode（链接数 2）；目标已有旧文件先换掉
+printf 'OLD' > $T/s7/romfs.std.old; printf 'STDIMAGE8' > $T/s8std
+o11=$(cd "$H" && python3 -c "
+import os, sys; sys.path.insert(0, 'pack/oneclick'); import deliver_pack as d
+sys.platform = 'win32'
+d.link_image('$T/s8std', '$T/s7/romfs.std.old')
+a, b = os.stat('$T/s8std'), os.stat('$T/s7/romfs.std.old')
+print(a.st_ino == b.st_ino, b.st_nlink, open('$T/s7/romfs.std.old').read())" 2>&1)
+ck "⑧ 非 macOS 交付镜像：同 inode / 链接数 / 内容「${o11}」" '[ "$o11" = "True 2 STDIMAGE8" ]'
 [ $bad = 0 ] && echo "deliver_pack 单测全过" || { echo "deliver_pack 单测有不通"; exit 1; }

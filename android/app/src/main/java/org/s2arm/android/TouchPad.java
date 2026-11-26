@@ -3,7 +3,9 @@ package org.s2arm.android;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.function.Consumer;
 
 /**
  * On-screen gamepad state: layout and multi-touch tracking, no Android types (unit-tested).
@@ -42,6 +44,8 @@ final class TouchPad {
         }
     }
 
+    private static final String[] DIRECTIONS = {"UP", "DOWN", "LEFT", "RIGHT"};
+
     private static final String[][] KEYS = {   // F01 id, label, Npad bit
         {"A", "A", "0"}, {"B", "B", "1"}, {"X", "X", "2"}, {"Y", "Y", "3"}, {"LS", "LS", "4"}, {"RS", "RS", "5"},
         {"L", "L", "6"}, {"R", "R", "7"}, {"ZL", "ZL", "8"}, {"ZR", "ZR", "9"}, {"PLUS", "+", "10"}, {"MINUS", "−", "11"}};
@@ -53,6 +57,9 @@ final class TouchPad {
     private final int[] axes = new int[4];   // lx, ly, rx, ry
     private TouchLayout custom;              // null: Android's built-in layout for the current box
     private TouchLayout current;
+    private int layoutGeneration;
+    private Consumer<String> layoutTrace;
+    private boolean layoutTracePendingInput;
     private final float[] box = new float[4];
 
     List<Control> controls() { return controls; }
@@ -69,16 +76,43 @@ final class TouchPad {
     TouchLayout layoutModel() { return current; }
     float[] box() { return box.clone(); }
 
+    /** Publish the current layout on enable, then publish each completed generation. */
+    void setLayoutTrace(Consumer<String> trace) {
+        boolean changed = (layoutTrace == null) != (trace == null);
+        layoutTrace = trace;
+        if (changed) traceLayout();
+    }
+
+    private void traceLayout() {
+        layoutTracePendingInput = layoutTrace != null && current != null;
+        if (layoutTracePendingInput) logLayout();
+    }
+
+    /** The collector may miss startup logs. Replay the current layout once on live input. */
+    void traceInput(boolean active) {
+        if (!active || !layoutTracePendingInput) return;
+        layoutTracePendingInput = false;
+        logLayout();
+    }
+
+    private void logLayout() {
+        StringBuilder line = new StringBuilder("touchpad layout:");
+        for (Control c : controls) {
+            String name = c.label;
+            if (c.kind == STICK) name = c.bit == 0 ? "LSTICK" : "RSTICK";
+            if (c.kind == DPAD) name = "DPAD";
+            line.append(String.format(Locale.ROOT, " %s=(%.0f,%.0f,r%.0f)", name, c.x, c.y, c.radius));
+        }
+        layoutTrace.accept(line.append(" generation=").append(layoutGeneration).toString());
+    }
+
     /**
      * Lay the controls out in the area left, top, width x height (view pixels, inside the system
      * bars). Landscape uses the whole area; portrait puts the pad in a landscape-shaped box at
      * the bottom. Geometry is the F01 layout projected into that box; the four direction keys
      * become one D-pad disc and sticks sit fixed at their activation centres.
      */
-    int layouts;   // how many times layout() ran (debug logging)
-
     void layout(float left, float top, float width, float height) {
-        layouts++;
         float bw = width, bh = height, by = top;
         if (height > width) { bh = width * 0.56f; by = top + height - bh; }
         box[0] = left; box[1] = by; box[2] = bw; box[3] = bh;
@@ -116,6 +150,8 @@ final class TouchPad {
             add(c);
         }
         update();
+        layoutGeneration++;
+        traceLayout();
     }
 
     private void add(Control c) {
@@ -130,10 +166,23 @@ final class TouchPad {
         return null;
     }
 
-    /** Editor drag: move a control's centre, kept inside the pad box. Input state is not touched. */
+    /** Editor drag: keep every direction frame in bounds when translating the D-pad as a group. */
     void moveControl(Control c, float x, float y) {
-        c.x = Math.max(box[0], Math.min(box[0] + box[2], x));
-        c.y = Math.max(box[1], Math.min(box[1] + box[3], y));
+        if (c.kind == DPAD) {
+            double minDx = -box[2], maxDx = box[2], minDy = -box[3], maxDy = box[3];
+            for (String key : DIRECTIONS) {
+                TouchLayout.Rect frame = current.frameForButton(key, box[0], box[1], box[2], box[3]);
+                minDx = Math.max(minDx, box[0] - frame.x);
+                maxDx = Math.min(maxDx, (double) box[0] + box[2] - frame.x - frame.width);
+                minDy = Math.max(minDy, box[1] - frame.y);
+                maxDy = Math.min(maxDy, (double) box[1] + box[3] - frame.y - frame.height);
+            }
+            c.x = (float) (c.homeX + Math.max(minDx, Math.min(maxDx, (double) x - c.homeX)));
+            c.y = (float) (c.homeY + Math.max(minDy, Math.min(maxDy, (double) y - c.homeY)));
+        } else {
+            c.x = Math.max(box[0], Math.min(box[0] + box[2], x));
+            c.y = Math.max(box[1], Math.min(box[1] + box[3], y));
+        }
     }
 
     boolean edited() {
@@ -154,7 +203,7 @@ final class TouchPad {
             if (c.x == c.homeX && c.y == c.homeY) continue;
             if (c.kind == BUTTON) centres.put(c.id, new double[] {c.x, c.y});
             else if (c.kind == DPAD)
-                for (String key : new String[] {"UP", "DOWN", "LEFT", "RIGHT"}) {
+                for (String key : DIRECTIONS) {
                     TouchLayout.Rect f = current.frameForButton(key, left, top, width, height);
                     centres.put(key, new double[] {f.x + f.width / 2 + (c.x - c.homeX), f.y + f.height / 2 + (c.y - c.homeY)});
                 }

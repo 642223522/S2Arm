@@ -135,7 +135,7 @@ struct PlaySessionView: View {
                     Button { model.play(game, uiLanguage: uiLanguage) } label: {
                         Label(loc.t("s2arm.play.again"), systemImage: "play.fill").font(.manrope(13, .semibold))
                     }
-                    .controllerButtonStyle(LauncherSecondaryButtonStyle()).disabled(model.busy)
+                    .controllerButtonStyle(LauncherSecondaryButtonStyle()).disabled(!model.canPlay(game.id))   // 开局判据：出别的款时也能再开
                     .controllerID("play.again").controllerShortcut(.rightTrigger, focused: true)
                 }
                 CopyReportButton(model: model, gameID: session.gameID, operations: ["launch"], fallback: session.message)
@@ -154,7 +154,7 @@ struct PlaySessionView: View {
         HStack(spacing: 14) {
             Spacer(minLength: 0)
             if finished == nil {
-                Button { model.stop() } label: { Label(loc.t("s2arm.play.stop"), systemImage: "stop.fill") }
+                Button { model.stopPlay() } label: { Label(loc.t("s2arm.play.stop"), systemImage: "stop.fill") }
                     .controllerButtonStyle(LauncherPrimaryButtonStyle(prominent: true)).disabled(session.phase == .stopping)
                     .keyboardShortcut(".", modifiers: .command).controllerID("play.stop").controllerShortcut(.rightTrigger)
             } else {

@@ -61,7 +61,11 @@ import S2ArmAppleAdapter
 private final class QueueRunner: JobProcessRunner {
     final class Handle: JobProcessHandle { func terminate() {} }
 
-    private(set) var requests: [[String: Any]] = []
+    // start 由作业客户端在后台队列上调、测试在主线程读：requests / held 的读写都经 lock（原先无锁并发追加数组，
+    //   偶发 _swift_release_dealloc SIGSEGV 把整个测试进程带崩，后面的用例全成「未完成」）
+    private let lock = NSLock()
+    private var _requests: [[String: Any]] = []
+    var requests: [[String: Any]] { lock.lock(); defer { lock.unlock() }; return _requests }
     var holdExports = false
     private var held: [() -> Void] = []
 
@@ -74,7 +78,7 @@ private final class QueueRunner: JobProcessRunner {
         }
     }
 
-    func releaseHeld() { let h = held; held = []; h.forEach { $0() } }
+    func releaseHeld() { lock.lock(); let h = held; held = []; lock.unlock(); h.forEach { $0() } }
 
     func start(executable: URL, arguments: [String], environment: [String: String],
                onLine: @escaping (Data) -> Void, onStderr: @escaping (Data) -> Void,
@@ -86,7 +90,7 @@ private final class QueueRunner: JobProcessRunner {
             DispatchQueue.main.async { onLine(Data("{}".utf8)); onExit(0) }
             return Handle()
         }
-        requests.append(request)
+        lock.lock(); _requests.append(request); lock.unlock()
         let operation = request["operation"] as? String ?? ""
         let result: [String: Any] = operation == "catalog"
             ? ["games": [["id": "0100A", "name": "Alpha", "ready": true, "missing": []],
@@ -99,7 +103,7 @@ private final class QueueRunner: JobProcessRunner {
             onLine(try! JSONSerialization.data(withJSONObject: event))
             onExit(state == "succeeded" ? 0 : 1)
         }
-        if operation == "export" && holdExports { held.append { DispatchQueue.main.async(execute: finish) } }
+        if operation == "export" && holdExports { lock.lock(); held.append { DispatchQueue.main.async(execute: finish) }; lock.unlock() }
         else { DispatchQueue.main.async(execute: finish) }
         return Handle()
     }

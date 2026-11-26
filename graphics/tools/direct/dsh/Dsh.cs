@@ -2,7 +2,7 @@
 // 每个函数名与离线链同名（Python 原文在 dmsh_build.py / dmsh_geometry.py），改动只在三处，都是运行时没有的东西：
 //   · 不出 .metallib（iOS 上运行时编出的库存不成文件）：MTL.compile 那步不做，<键>_b.metal 由载入端 newLibraryWithSource 编；
 //     随之「带层 / 整数输出入口编不过就去掉重编」的退路（finish 的 MTL.compile 失败分支）也不做——它要编过才知道；
-//   · _bv（影子输入库，DshVin）/ _bf（读帧缓冲版，DshFetch）/ _ft（输出类型变体，DshFt）只写源码 + 元数据（<键>_bv/_bf/_ft.metal + .json，Finish 末尾），不编、_b.json 不带 vin / fetch：
+//   · _bv（影子输入库，DshVin）/ _bp（拉取式顶点输入，DshPull）/ _bf（读帧缓冲版，DshFetch）/ _ft（输出类型变体，DshFt）只写源码 + 元数据（<键>_bv/_bf/_ft.metal + .json，Finish 末尾），不编、_b.json 不带 vin / fetch：
 //     出包时由 Python 编排层编库并写回索引（同离线 vin_finish / fetch_finish / ft_finish）；载入端缺省时各有退路，见 DshCApi.cs 文件头；
 //   · json 的 chain_metal 写本库的编法（载入端不读它），source / pc_paired 取 shader_map.tsv，表里没有这个键时写 "s2a_dsh" / null。
 // 翻译器 dmsh_xlate/Program.cs 原样编进本程序集，进程内用临时目录写 job.json、反射调它的 Main。
@@ -58,16 +58,17 @@ namespace S2A.Dsh
         const int TF_SLOT = 8;
 
         /// <summary>Android Vulkan 运行时补编的翻译段：与 iOS 现编同一 JobFor / 翻译器，只取 SPIR-V + 反射，不出 MSL。
-        /// 没有离线答案表时用空表（查询按缺省）；返回 control 键（也是 .xgs 文件名）与 c1。</summary>
+        /// 没有离线答案表时用空表（查询按缺省）；返回 control 键（也是 .xgs 文件名）与 c1。
+        /// imgLoadRaw = 目标档案的 shaderStorageImageReadWithoutFormat（job imgload_raw）：缺省 false = 最低档案，只读非缓冲图像声明具体格式。</summary>
         public static (string Key, byte[] Spv, JsonObject Res, byte[] C1) TranslateForVulkan(
-            string stage, byte[] code, byte[] ctl, string workRoot = null)
+            string stage, byte[] code, byte[] ctl, string workRoot = null, bool imgLoadRaw = false)
         {
             if (Array.IndexOf(Stages, stage) < 0) throw new DshError("bad stage", "阶段 " + stage + " 不支持（只认 vs / ps / cs / gs）");
             if (ctl == null || ctl.Length < 0x880) throw new DshError("bad record", $"控制段只有 0x{ctl?.Length ?? 0:x} 字节（要 0x880）");
             string key = Convert.ToHexStringLower(Sha256.HashData(ctl.AsSpan(0, 0x880)))[..16];
             string w = Path.Combine(workRoot ?? Path.GetTempPath(), "dshvk_" + key + "_" + Guid.NewGuid().ToString("N")[..8]);
             Directory.CreateDirectory(w);
-            var c = new Ctx { Key = key, Out = w, W = w, Xc = null, T = DshTables.Empty() };
+            var c = new Ctx { Key = key, Out = w, W = w, Xc = null, T = DshTables.Empty(), ImageLoadRaw = imgLoadRaw };
             try
             {
                 (JsonObject j, byte[] c1) = c.JobFor(stage, code, ctl);
@@ -81,7 +82,7 @@ namespace S2A.Dsh
 
         public const string AstMemKept = "_astmem_kept";   // #1429 验收计数在出包产物（PackFiles）里的后缀
         /// <summary>出一个键：成功返回写出的文件名；失败抛 DshError。tablesDir = 答案表 / 配对表所在目录（运行时 $S2A_GAME_DATA/shaders/direct）</summary>
-        public static List<string> Compile(string key, string stage, byte[] code, byte[] ctl, string outDir, ISpvCross xc, string tablesDir, string workRoot = null)
+        public static List<string> Compile(string key, string stage, byte[] code, byte[] ctl, string outDir, ISpvCross xc, string tablesDir, string workRoot = null, bool bindlessUniformHandles = true)
         {
             if (!Regex.IsMatch(key ?? "", @"\A[0-9a-f]{16}\z")) throw new DshError("bad key", "键不是 16 位小写十六进制：" + key);
             if (Array.IndexOf(Stages, stage) < 0 && !(PackOut && (stage == "hs" || stage == "ds")))   // 曲面外壳 / 域只在出包（dsh_batch）翻：设备首遇现编不支持曲面阶段（宿主没有曲面现编路径）
@@ -97,6 +98,7 @@ namespace S2A.Dsh
             {
                 if (!PackOut) foreach (var n in OutNames(key)) { try { File.Delete(Path.Combine(outDir, n)); } catch { } }   // 这次出的就是留下的（离线链部分重建先删这些键的产物）
                 var (j, c1) = c.JobFor(stage, code, ctl);
+                j["bindless_uniform_handles"] = bindlessUniformHandles;
                 c.TranslateFirst(j);
                 c.Finish(j, c1);
                 // #1429 验收：本键各次翻译里 #1414 规则保留下来的定义数（每线程计数，本线程刚翻完本键），随产物进出库缓存，dsh_batch 汇总行「ast mem order kept」读它
@@ -135,6 +137,9 @@ namespace S2A.Dsh
         internal sealed class Ctx
         {
             public string Key, Out, W; public ISpvCross Xc; public DshTables T;
+            // 出库目标档案的 shaderStorageImageReadWithoutFormat（job imgload_raw）：false = 最低档案，只读非缓冲图像声明具体格式，
+            //   在任何设备上都是合法 SPIR-V；真档案有这能力才写 true 声明 Unknown（dmsh_xlate Accessor 答问，#1774 ②）
+            public bool ImageLoadRaw;
             public readonly List<string> Written = new();
             string Spv => Path.Combine(W, Key + ".spv");
 
@@ -157,7 +162,7 @@ namespace S2A.Dsh
                 }
                 string cp = Path.Combine(W, Key + ".bin"); XIo.WriteAllBytes(cp, code);
                 var tf = stage == "vs" ? TfLayout(Key, ctl) : null;
-                var j = new JsonObject { ["key"] = Key, ["stage"] = stage, ["code"] = cp, ["tex"] = new JsonObject(), ["img"] = new JsonObject(), ["attr"] = new JsonObject(), ["fout"] = new JsonObject(), ["c1"] = Convert.ToHexStringLower(c1) };
+                var j = new JsonObject { ["key"] = Key, ["stage"] = stage, ["code"] = cp, ["tex"] = new JsonObject(), ["img"] = new JsonObject(), ["attr"] = new JsonObject(), ["fout"] = new JsonObject(), ["c1"] = Convert.ToHexStringLower(c1), ["imgload_raw"] = ImageLoadRaw };
                 if (tf != null) j["tf"] = TfJson(tf);
                 if (stage == "gs" && TfLayout(Key, ctl) is { } gtf) j["gs_tf"] = TfJson(gtf);   // 几何着色器的变换反馈由宿主按输出记录写（同 dmsh_build.py tf_entries → geometry_finish geo_tf，审计 P2-40）
                 // S2Arm 曲面细分：域着色器的模式在控制段 +0x738 / +0x73c / +0x744（GL 枚举，TessCtl.Nvn1）；外壳没有自己的模式，取本款第一种域的，其余域在 TessFinish 里重翻
@@ -199,10 +204,16 @@ namespace S2A.Dsh
                 if (stage is "ts" or "ms") return MeshJob(stage, code, ctl, ilen, c1);
                 code = Sl(code, 0, (int)ilen);
                 string cp = Path.Combine(W, Key + ".bin"); XIo.WriteAllBytes(cp, code);
-                var j = new JsonObject { ["key"] = Key, ["stage"] = stage, ["code"] = cp, ["arch"] = "sm86", ["tex"] = new JsonObject(), ["img"] = new JsonObject(), ["attr"] = new JsonObject(), ["fout"] = new JsonObject(), ["c1"] = Convert.ToHexStringLower(c1) };
+                var j = new JsonObject { ["key"] = Key, ["stage"] = stage, ["code"] = cp, ["arch"] = "sm86", ["tex"] = new JsonObject(), ["img"] = new JsonObject(), ["attr"] = new JsonObject(), ["fout"] = new JsonObject(), ["c1"] = Convert.ToHexStringLower(c1), ["imgload_raw"] = ImageLoadRaw };
                 if (stage == "cs") j["tensor_mma_count"] = DshTensor.Count(code);
                 // 计算阶段的驱动常量在 c[0] 里按程序排（推送常量字数 +0xa9，uniform / storage / 纹理项数 +0xb1..+0xb3，分离纹理 / 分离采样器项数 +0xb4 / +0xb5（图像在它们之后，上游参考实现（MIT）67f1d0055），大小 +0xba），翻译器按它映射（InstEmitAmpere.cs AMapC0）
-                if (stage == "cs") j["nvn2_cs"] = new JsonArray(ctl[0xb1], ctl[0xb2], ctl[0xb3], BitConverter.ToUInt16(ctl, 0xba), ctl[0xa9] * 4, ctl[0xb4], ctl[0xb5]);
+                //   推常量块 1（+0xaa 字数，排在推常量块 0 之后、uniform 项之前）：游戏推进来的 {地址, 大小} 存储缓冲项或 8 字节句柄，翻译器映射到推常量槽 1 = c[25]（上游参考实现（MIT）nvn2_cs[7]）。
+                //   不给它时，一款 Switch 2 游戏的计算着色器（+0xb2 = 0、+0xaa = 4 × 1..7）把这些项读进了 uniform / 句柄表的位置，存储缓冲解不出槽、整支不载
+                if (stage == "cs") j["nvn2_cs"] = new JsonArray(ctl[0xb1], ctl[0xb2], ctl[0xb3], BitConverter.ToUInt16(ctl, 0xba), ctl[0xa9] * 4, ctl[0xb4], ctl[0xb5], ctl[0xaa] * 4);
+                // 早期深度（NVN2）：像素着色器控制段 +0x5b（NVN1 在 +0x718，见上）。原先 NVN2 不读，Switch 2 款里该先测深度再着色的像素着色器（先写内存、后测深度）全部晚测，
+                //   被遮挡的像素也整片着色。搬 nxnative a888e668（MIT）：NVN2 驱动按单字节读 +0x58..+0x62 的片元标志，+0x5b 即早测；对方读数（一款第三方 Switch 2 游戏，M4 Pro）GPU 19.0 → 16.6 ms、
+                //   p95 64 → 26 ms；040074A01BF12000 的 13546 支像素着色器里 2855 支、0400486024DEC000 的 22352 支里 746 支带它。自己写深度的（SPH 字 19 位 1，OmapDepth）不提前：先测的深度不是它算出的那个
+                if (stage == "ps" && ctl.Length > 0x5b && ctl[0x5b] != 0 && !(code.Length >= 0x50 && (BitConverter.ToUInt32(code, 19 * 4) & 2) != 0)) j["early_z"] = true;
                 if (stage == "ds") j["tess_mode"] = (long)Nvn2.TessMode(ctl);
                 if (stage == "hs") j["tess_mode"] = T.TessModes.Count > 0 ? (long)T.TessModes.First().Value : 1L;
                 j["debug"] = stage is "gs" or "cs"; j["reduced"] = true;
@@ -239,7 +250,7 @@ namespace S2A.Dsh
                 if (size > MeshStage.METAL_MAX_SHARED && !(stage == "ms" && MeshStage.Relay(mi))) throw new DshError("mesh stage failed", $"{stage}: 阶段内存 {size} 字节超 Metal 线程组内存 {MeshStage.METAL_MAX_SHARED}");
                 if (mi.Threads == 0 || mi.Threads > 1024) throw new DshError("mesh stage failed", $"{stage}: 控制段 +0x58 每组线程数 {mi.Threads}");
                 string cp = Path.Combine(W, Key + ".bin"); XIo.WriteAllBytes(cp, code);
-                var j = new JsonObject { ["key"] = Key, ["stage"] = "cs", ["code"] = cp, ["arch"] = "sm86", ["tex"] = new JsonObject(), ["img"] = new JsonObject(), ["attr"] = new JsonObject(), ["fout"] = new JsonObject(), ["c1"] = Convert.ToHexStringLower(c1) };
+                var j = new JsonObject { ["key"] = Key, ["stage"] = "cs", ["code"] = cp, ["arch"] = "sm86", ["tex"] = new JsonObject(), ["img"] = new JsonObject(), ["attr"] = new JsonObject(), ["fout"] = new JsonObject(), ["c1"] = Convert.ToHexStringLower(c1), ["imgload_raw"] = ImageLoadRaw };
                 j["stage_memory"] = new JsonArray(lay.Select(v => (JsonNode)JsonValue.Create((long)v)).ToArray());
                 j["local"] = new JsonArray(JsonValue.Create((long)mi.Threads), JsonValue.Create(1L), JsonValue.Create(1L));
                 j["shared"] = JsonValue.Create((long)size);
@@ -352,6 +363,8 @@ namespace S2A.Dsh
                 if (s == null) throw new DshError(status, Sl(e ?? "", 0, 160));
                 s = GatherOffsets(s);   // 四偏移 gather 拆成四次常量偏移（见 GatherOffsets）
                 s = PoolArrays(s);   // 追不到槽的句柄读宿主的池表（见 PoolArrays）
+                s = MulExtended(s);   // 标量宽乘法离开 optnone 模板（见 MulExtended）
+                s = WideLoads(s);   // 同一只读存储缓冲的相邻字一次读（见 WideLoads）
                 string resPath = Path.Combine(Path.GetDirectoryName(spvPath) ?? "", (resKey ?? Path.GetFileNameWithoutExtension(spvPath)) + ".res.json");
                 return XIo.Exists(resPath) ? PoolNoInline(s, JsonNode.Parse(XIo.ReadAllText(resPath)) as JsonObject) : s;
             }
@@ -417,6 +430,7 @@ namespace S2A.Dsh
                 if (stage == "ps" || stage == "cs") src = FsLb(src);   // #800 采样器偏置进主体，在整数输出入口复制前
                 var first = new List<(string Name, long Word, long Value)>();
                 if (stage == "cs") (src, first) = FirstStore(src, j["local"] as JsonArray);   // 只有第一个调用做的存储挪给宿主（见 FirstStore）
+                if (stage == "cs") src = MaxThreads(src, j["local"] as JsonArray);   // 线程组大的计算核声明线程数上限（见 MaxThreads）
                 string colorAnalysis = src;
                 if (stage == "ps") src = NxgalSpvCross.ColorRound(src);
                 var pad = new List<object>();
@@ -434,9 +448,10 @@ namespace S2A.Dsh
                     full = VsPush(full);
                 }
                 // 片元：Alpha 测试与多重采样关的可选函数常量（FsAlphaMs，族 34 / 37）进库里的主入口；src 不带它（反射、可读瓦片 _bf、输出类型 _ft 照旧读 src）
-                string srcx = stage == "ps" ? FsAlphaMs(src) : src;
+                string srcx = stage == "ps" ? FsFout(FsAlphaMs(src)) : src;
                 if (stage == "ps") full = srcx;
-                var (fu, uMask) = stage == "ps" ? FsUint(srcx, colorAnalysis) : (null, 0u);
+                bool fout = srcx.Contains(FOUT_MARK, StringComparison.Ordinal);   // 输出类型由常量选（FsFout）：不再另出整数输出入口 main0_u / 输出类型变体 _ft
+                var (fu, uMask) = stage == "ps" && !fout ? FsUint(srcx, colorAnalysis) : (null, 0u);
                 if (fu != null) { plain = srcx; full = fu; }
                 var res = JsonNode.Parse(XIo.ReadAllText(Path.Combine(W, Key + ".res.json"))).AsObject();
                 full = DshFlat.GiantFix(full).Item1;   // 巨型着色器的尾部阶梯压平（同 dmsh_build.py giant_fix）
@@ -477,11 +492,13 @@ namespace S2A.Dsh
                     refl["pos_ubo"] = pu;
                 }
                 if (stage == "ps" && res["uses_frag_coord"] is JsonNode ufc && (bool)ufc) refl["frag_coord"] = true;   // 宽屏：读片元坐标（同 dmsh_build.py，宿主按它写 render_scale[0]）
+                if (stage == "ps" && FragZ(src)) refl["frag_z"] = true;   // 读片元深度 gl_FragCoord.z（分量级，frag_coord 连只读 .xy 也算）：宿主据此给「拿它和深度贴图比」的绘制补 Apple GPU 的 1 ULP 差（nvn_mtl.m draw_pass_state）
                 if (res["cbuf_use"] is JsonNode cu) refl["cbuf_use"] = (string)cu;   // 宽屏：每个常量寄存器读哪些 vec4（同 dmsh_build.py，宿主交给 s2a_widen_shader）
                 foreach (var field in ScaleMetadata(res)) refl[field.Key] = field.Value;
                 SaveJson(Key + "_b.json", refl);
                 if (PackOut && stage == "vs") VinFinish(full);   // 同 dmsh_build.py finish：vin_finish(key, open(msl).read(), refl)，msl 此时 = 写出的 _b.metal（全部入口、压平后）
-                if (PackOut && stage == "ps") { FtFinish(src, refl); BfFinish(src, refl); }   // 同 fetch_finish(key, src, refl)：src = color_round 之后、未接 main0_u（fs_uint 只出 fu，不改 src）
+                if (PackOut && stage == "vs") PullFinish(full);   // 拉取式顶点输入变体 _bp（DshPull，照上游参考实现（MIT）dmsh_pull：pull_finish 同样从全部入口的源码出）
+                if (PackOut && stage == "ps") { if (!fout) FtFinish(src, refl); BfFinish(src, refl); }   // 同 fetch_finish(key, src, refl)：src = color_round 之后、未接 main0_u（fs_uint 只出 fu，不改 src）
             }
 
             // ---- 任务 / 网格（上游参考实现（MIT） dmsh_build.py finish 1d4b8e82b，MIT）：计算核 MSL 包成对象 / 网格函数（MeshStage.ToStage）；反射字段按接口约定 6 ----
@@ -528,6 +545,19 @@ namespace S2A.Dsh
                 Save(Key + "_bv.json", Dumps(new PyDict { ["vin"] = new PyDict { ["entry"] = "main0", ["entry_z"] = "main0_z", ["shadow"] = shadows } }));
             }
 
+            // ---- pull_finish（变体源码部分，DshPull）：有顶点属性输入的顶点着色器出拉取版 <键>_bp；编库与写 refl['pull'] 归编排层（Build.cs PullBuild），json 给它要的 pull / 认不出的原因 ----
+            void PullFinish(string full)
+            {
+                var (v, info) = DshPull.Variant(full);
+                if (v == null)
+                {
+                    if ((string)info != "no stage input") Save(Key + "_bp.json", Dumps(new PyDict { ["pull_fail"] = info }));   // 编排层打 [RED] 行
+                    return;
+                }
+                Save(Key + "_bp.metal", v);
+                Save(Key + "_bp.json", Dumps(new PyDict { ["pull"] = info }));
+            }
+
             // ---- ft_finish（拼 MSL 部分，DshFt）：<键>_ft.json = {"want": [[u, s], …]}；拼不出 {"ft_fail": true}；表里有本键但全被过滤 {"ft_covered": true}（编排层计数）----
             void FtFinish(string src, PyDict refl)
             {
@@ -557,22 +587,36 @@ namespace S2A.Dsh
             //   json 的 tess 写各域的库名、记录标志（gal_internal.h GAL_REC_*）与输出控制点数
             static readonly Dictionary<int, string> TESS_DOM = new() { [0] = "isolines", [1] = "triangles", [2] = "quads" };
             const uint TESS_BASE = 20;   // 曲面接口缓冲的第一个 Metal 槽（同 dmsh_build.py TESS_BASE）
+            // 外壳要出的各域 →（域, 模式字, 是否本款扫到）。本款域着色器扫到的域按扫到的模式字在前（第一种进 <键>_b，同原先）；没扫到的域也补上：运行时才配上的域着色器
+            //   （romfs 晚装、设备上现编）用到它时包里就有核（诊断 18 款「hull shader … has no isolines-domain kernel (variants: triangles)」，那组曲面绘制整笔跳过）。
+            //   补的域取外壳自己的模式字、换掉低 2 位的域（外壳翻译里只有域改变曲面因子的布局，分区 / 绕序 / 点模式运行时由域着色器交给固定核）。域着色器只出它自己那一个域
+            internal static List<(int Dom, uint Mode, bool Seen)> TessDomains(string stage, long mode, IReadOnlyDictionary<int, uint> seen)
+            {
+                var r = new List<(int, uint, bool)>();
+                if (stage != "hs") { r.Add(((int)(mode & 3), (uint)mode, true)); return r; }
+                if (seen.Count > 0) foreach (var kv in seen) r.Add((kv.Key, kv.Value, true));
+                else r.Add(((int)(mode & 3), (uint)mode, true));
+                for (int d = 0; d < 3; d++) if (!r.Any(x => x.Item1 == d)) r.Add((d, (uint)((mode & ~3L) | (long)d), false));
+                return r;
+            }
             void TessFinish(JsonObject j, byte[] c1)
             {
                 string stage = (string)j["stage"]; long mode = (long)j["tess_mode"];
-                var doms = stage == "hs" && T.TessModes.Count > 0 ? T.TessModes.Keys.ToList() : new List<int> { (int)(mode & 3) };
                 var variants = new PyDict(); string first = null;
-                foreach (int d in doms)
+                foreach (var (d, dmode, seen) in TessDomains(stage, mode, T.TessModes))
                 {
                     string lk = Key + (first == null ? "_b" : "_b_t" + d), spv = Spv;
                     if (stage == "hs" && first != null)   // 同一外壳按这一域的模式再翻一次
                     {
-                        var jj = (JsonObject)j.DeepClone(); jj["key"] = Key + "_t" + d; jj["tess_mode"] = (long)T.TessModes[d];
+                        var jj = (JsonObject)j.DeepClone(); jj["key"] = Key + "_t" + d; jj["tess_mode"] = (long)dmode;
                         var (rc, err) = RunXlate(WriteJobs(new[] { jj }, "job_t_" + Key + "_" + d + ".json"), W); spv = Path.Combine(W, Key + "_t" + d + ".spv");
-                        if (rc != 0 || !XIo.Exists(spv)) throw new DshError("translation failed", Sl($"hull shader for {TESS_DOM.GetValueOrDefault(d, d.ToString())}: " + err.Trim(), 0, 160));
+                        if (rc != 0 || !XIo.Exists(spv)) {
+                            if (!seen) continue;   // 补出的域翻不出来：只是少这一域，本款扫到的域照旧（原先没有它）
+                            throw new DshError("translation failed", Sl($"hull shader for {TESS_DOM.GetValueOrDefault(d, d.ToString())}: " + err.Trim(), 0, 160));
+                        }
                     }
                     var (src, flags, ocp) = NxgalSpvCross.TessMsl(NxgalSpvCross.Harden(XIo.ReadAllBytes(spv)), 0, TESS_BASE);
-                    src = Precise(PoolArrays(GatherOffsets(src))); Save(lk + ".metal", src);
+                    src = Precise(WideLoads(MulExtended(PoolArrays(GatherOffsets(src))))); Save(lk + ".metal", src);
                     variants[TESS_DOM.GetValueOrDefault(d, d.ToString())] = new PyDict { ["library"] = lk, ["flags"] = (long)flags, ["output_control_points"] = (long)ocp };
                     first ??= src;
                 }
@@ -726,6 +770,17 @@ namespace S2A.Dsh
         const string FirstStoreOne = @"(?:\(\*\w+\.(?<n>\w+)\)\._m0\[(?<w>\d+)\] = (?<v>\d+u|uint\(\w+\));"
             + @"|uint (?<i>\w+) = uint\((?<w>\d+)\);\s*if \(\k<i> < \w+\)\s*\{\s*\(\*\w+\.(?<n>\w+)\)\._m0\[min\(\k<i>, \w+\)\] = (?<v>\d+u|uint\(\w+\));\s*\})";
         static readonly Regex s_firstOne = R(FirstStoreOne);
+        // #2118（11-23，玩家在 M1 Pro 实测）：SPIRV-Cross 出的计算核不带线程数上限，Metal 编译器按寄存器压力自定管线上限——游戏要 1024×1×1 的实例剔除核
+        //   管线只给 640，宿主照样按 1024 派发（未定义行为），剔除结果不对、场景物件不显示；核前加 [[max_total_threads_per_threadgroup(1024)]] 后上限 1024、物件恢复。
+        //   线程组 > 256 的核按本地尺寸声明（≤ 256 的不改源码：库键不动）；属性单独一行，「kernel void main0(」行首不变（Outline.Entry 按行首认入口）
+        internal static string MaxThreads(string msl, JsonArray local)
+        {
+            long n = local is { Count: 3 } ? local.Aggregate(1L, (a, v) => a * v.GetValue<long>()) : 0;
+            if (n <= 256 || n > 1024) return msl;
+            int at = msl.StartsWith("kernel void main0(", StringComparison.Ordinal) ? 0 : msl.IndexOf("\nkernel void main0(", StringComparison.Ordinal) + 1;
+            if (at <= 0 && !msl.StartsWith("kernel void main0(", StringComparison.Ordinal)) return msl;
+            return msl.Insert(at, $"[[max_total_threads_per_threadgroup({n})]]\n");
+        }
         internal static (string Src, List<(string Name, long Word, long Value)> Stores) FirstStore(string msl, JsonArray local)
         {
             var none = (msl, new List<(string, long, long)>());
@@ -783,6 +838,96 @@ namespace S2A.Dsh
         static readonly Regex s_poolArr = new(@"^(\s*)array<(.+), (\d+)> (\w+) \[\[\s*id\(", RegexOptions.Multiline | RegexOptions.CultureInvariant);
         static readonly Regex s_poolMember = new(@"^(\s*)(.+?)\s+(\w+)\s*\[\[\s*id\((\d+)\)\s*((?:,[^\]]*)?)\]\];", RegexOptions.Multiline | RegexOptions.CultureInvariant);
         static readonly Regex s_poolOwnSide = new(@"\bdiscard_fragment\b|\[\[\s*depth\(|\[\[\s*sample_mask\s*\]\]|\[\[\s*stencil\s*\]\]|\.write\(|\batomic_\w+_explicit\b|^\s*device\s", RegexOptions.Multiline | RegexOptions.CultureInvariant);
+        /// <summary>存储缓冲逐字读合并（照 nxnative dm/gfx/tools/dmsh_wide.py，MIT；改成适配本链加固后的写法）。
+        /// Ampere 一次读 64 / 128 位存储缓冲（LDG.E.64 / .128），翻译器拆成 32 位逐字读，SPIRV-Cross 再给每个字各写一个下标，加固（gal_spvx.c spv_bounds，#1204 T1）
+        /// 又给每个字各钳一次末项：
+        ///     uint _1613 = uint(int(uint(_77 + 220) >> uint(2)));
+        ///     float _103 = as_type&lt;float&gt;((*spvDescriptorSet0.vp_s2)._m0[min(_1613, _1580)]);
+        /// Metal 的前端认不出这些字是相邻的，每个字一次读、各带一套地址运算。Switch 2 的着色器大量这样读（随机抽 120 个批库：设备读 75% 是同一基址上的连续字）。
+        /// 这里把同一只读（const device）缓冲、同一根值、字节偏移 k, k+4, …（一段直线代码里、末项表达式相同）的相邻字改成一次 packed_uint2/3/4 读：
+        ///     uint wb = min(i0, max(L, N-1) - (N-1)); packed_uintN w = *(const device packed_uintN*)&amp;buf._m0[wb];   第 k 个字 = w[min(i_k, L) - wb]
+        /// 不越界时一次读 N 个字，各字的值与改前逐位相同（(x + 4k) >> 2 = (x >> 2) + k）。越界时整块往回挪到缓冲末尾，各字仍按原逐字钳位 min(i_k, L) 取同一个字
+        /// （11-14 改：原先越界时直接取第 k 个分量，和逐字钳位不是同一个字，游戏读到的值变了）。
+        /// 缓冲不足 N 个字（L &lt; N-1）时从 0 起读 N 个字，会读出绑定范围最多 N-1 个字（仍在游戏的内存池里）；N 个字以内的存储缓冲没见过。
+        /// 不用「越界就逐字照原样」的三目写法：M5 Max 上微基准（2^20 线程 × 64 次循环 × 20 个字）改前 0.71 ms，三目写法 1.50 ms（反而慢一倍），本写法 0.34 ms（2.1 倍）、
+        /// 结果与改前逐位相同（不越界时）。
+        /// 一串从根值的 16 字节边界开始、最多 4 个字（同原来的宽读），最低的字要最先读；碰到可能写内存或改值的行（下标 / 指针存储、原子、屏障、图像写、给已有变量赋值）、
+        /// 花括号就断开，所以别的绑定对同一内存的写、或根值的改变，不会落在一串字中间：把后面的字提前读，读到的值相同。函数体按第 0 列的 '{' / '}' 分段，各段各自建表</summary>
+        static readonly Regex s_wAdd = R(@"^\s*int (_\w+) = (_\w+) \+ \(?(-?\d+)\)?;\s*$");
+        static readonly Regex s_wIdx = R(@"^\s*uint (_\w+) = uint\(int\(uint\((_\w+)(?: \+ \(?(-?\d+)\)?)?\) >> uint\(2\)\)\);\s*$");
+        static readonly Regex s_wLoad = R(@"\(\*spvDescriptorSet0\.([a-z]p_s\d+)\)\._m0\[min\((_\w+), ((?:[^\[\]()]|\([^()]*\))+)\)\]");
+        static readonly Regex s_wRo = new(@"^\s*const device _\w+\* ([a-z]p_s\d+) \[\[id\(\d+\)\]\];", RegexOptions.Multiline | RegexOptions.CultureInvariant);
+        const string WOP = @"(?:[-+*/%|&^]|<<|>>)?=(?!=)";
+        static readonly Regex s_wWrite = R(@"atomic_|_barrier\(|\.write\(|\]\s*" + WOP + @"|^\s*\*|^\s*_\w+\s*" + WOP);
+        internal static string WideLoads(string msl)
+        {
+            if (!msl.Contains(" >> uint(2)", StringComparison.Ordinal) || !msl.Contains("._m0[min(", StringComparison.Ordinal)) return msl;
+            var ro = new HashSet<string>(); foreach (Match m in s_wRo.Matches(msl)) ro.Add(m.Groups[1].Value);
+            if (ro.Count == 0) return msl;
+            string[] lines = msl.Split('\n');
+            var edits = new SortedDictionary<int, List<(int S, int E, string Rep, string Decl)>>(); int n = 0;
+            var segs = new List<(int A, int B)>(); int open = -1;
+            for (int i = 0; i < lines.Length; i++) { if (lines[i] == "{") open = i; else if (lines[i] == "}" && open >= 0) { segs.Add((open, i)); open = -1; } }
+            string[] lane = { "x", "y", "z", "w" };
+            foreach (var (a, b) in segs)
+            {
+                var adds = new Dictionary<string, (string V, long K)>(); var idx = new Dictionary<string, (string V, long K)>();
+                for (int i = a; i < b; i++)
+                {
+                    var ma = s_wAdd.Match(lines[i]); if (ma.Success) { adds[ma.Groups[1].Value] = (ma.Groups[2].Value, long.Parse(ma.Groups[3].Value)); continue; }
+                    var mi = s_wIdx.Match(lines[i]); if (mi.Success) idx[mi.Groups[1].Value] = (mi.Groups[2].Value, mi.Groups[3].Success ? long.Parse(mi.Groups[3].Value) : 0);
+                }
+                var words = new Dictionary<(int Block, string Buf, string Root, string Last), SortedDictionary<long, (int Line, Match M)>>(); int block = 0;
+                var order = new List<(int, string, string, string)>();
+                for (int i = a + 1; i < b; i++)
+                {
+                    string ln = lines[i];
+                    if (ln.Contains('{') || ln.Contains('}') || s_wWrite.IsMatch(ln)) { block++; continue; }
+                    var ms = s_wLoad.Matches(ln); if (ms.Count != 1) continue;
+                    var m = ms[0]; string buf = m.Groups[1].Value, iv = m.Groups[2].Value;
+                    if (!ro.Contains(buf) || !idx.TryGetValue(iv, out var ix)) continue;
+                    string v = ix.V; long off = ix.K;
+                    for (int g = 0; g < 64 && adds.TryGetValue(v, out var ad); g++) { v = ad.V; off += ad.K; }
+                    if (off % 4 != 0) continue;
+                    var key = (block, buf, v, m.Groups[3].Value);
+                    if (!words.TryGetValue(key, out var by)) { words[key] = by = new SortedDictionary<long, (int, Match)>(); order.Add(key); }
+                    by.TryAdd(off, (i, m));
+                }
+                foreach (var key in order)
+                {
+                    var by = words[key];
+                    var bases = new SortedSet<long>(); foreach (long o in by.Keys) bases.Add(o - ((o % 16) + 16) % 16);
+                    foreach (long bs in bases)
+                    {
+                        var run = new List<(int Line, Match M)>();
+                        while (run.Count < 4 && by.TryGetValue(bs + 4 * run.Count, out var w)) run.Add(w);
+                        if (run.Count < 2 || run.Exists(w => w.Line < run[0].Line)) continue;
+                        int N = run.Count; string name = "_dmw" + n++, vec = "packed_uint" + N, i0 = run[0].M.Groups[2].Value, last = key.Item4;
+                        string bb = $"(*spvDescriptorSet0.{key.Item2})._m0";
+                        // 基址 b = min(i0, max(L, N-1) - (N-1))：不越界时 b = i0，一次读 i0..i0+N-1；越界时整块挪到缓冲末尾。
+                        //   每个字仍按原逐字钳位取值：第 w 个字 = 块里第 min(i_w, L) - b 个分量（不越界时恰是 w；越界时与原 min(i_w, L) 读到同一个字）。
+                        //   11-14 改：原先越界时直接取第 w 个分量，读到的是末尾往回第 N-1-w 个字，和逐字钳位不是同一个字——某款游戏卡在第 1390 帧（游戏线程等一个值、GPU 空闲）的头号嫌疑
+                        string decl = $"uint {name}b = min({i0}, max({last}, {N - 1}u) - {N - 1}u); {vec} {name} = *(const device {vec}*)&{bb}[{name}b];";
+                        for (int w = 0; w < N; w++)
+                        {
+                            var (li, mm) = run[w];
+                            if (!edits.TryGetValue(li, out var el)) edits[li] = el = new List<(int, int, string, string)>();
+                            el.Add((mm.Index, mm.Index + mm.Length, $"{name}[min({mm.Groups[2].Value}, {last}) - {name}b]", w == 0 ? decl : null));
+                        }
+                    }
+                }
+            }
+            if (edits.Count == 0) return msl;
+            foreach (var (li, el) in edits)
+            {
+                string ln = lines[li]; var pre = new List<string>();
+                el.Sort((x, y) => y.S.CompareTo(x.S));
+                foreach (var (s0, e0, rep, decl) in el) { ln = ln[..s0] + rep + ln[e0..]; if (decl != null) pre.Add(decl); }
+                string ind = lines[li][..(lines[li].Length - lines[li].TrimStart().Length)];
+                lines[li] = string.Concat(pre.ConvertAll(d => ind + d + "\n")) + ln;
+            }
+            return string.Join('\n', lines);
+        }
         /// <summary>Ryujinx 给追不到槽的句柄的回退数组（&lt;阶段&gt;_&lt;t|s&gt;_cb0_40000000，按句柄的纹理 / 采样器号下标，长度 = 整段编号，Program.cs）→ 指向宿主按元素类型建的池表
         /// （nvn_mtl.m pool_gpu）：struct spvPool_&lt;名&gt; { uint n; ulong seen; array&lt;元素, 1&gt; e; }，读成 (&amp;e[0])[min(下标, n)]，n = 宿主填到的最大编号。
         /// 贴图池的读还在 seen 处的位图里置这个编号的位（dm_pool_mark）：着色器读哪些编号只有 GPU 知道，宿主据此只建被读过的贴图，而不是池里全部（11-06 时之笛登记约 3.3 万、读约 300）。
@@ -791,6 +936,11 @@ namespace S2A.Dsh
         /// 贴图池的置位是写内存，Metal 会把这支片元改成着色后再测深度（失去隐藏面剔除，且与预深度遍差一个 ulp 时 EQUAL 沿轮廓失败，上游实测）：置位是宿主自己加的，
         /// 不该改测试时机，所以改成早测——除非着色器自己丢弃 / 写深度 / 写样本掩码或模板 / 写内存（那时早测会错，保持晚测，只多付着色）。
         /// 改写覆盖不到的用法（整个数组当参数传）抛 DshError</summary>
+        // 名字是不是这种回退数组：贴图 / 采样器以 _cb0_40000000 收尾；图像在句柄后面还拼着格式后缀（compat ResourceManager：<前缀>_cb<槽>_<句柄>_<格式>，
+        //   格式认不出时是空串，名字以「_」收尾，如 cp_ib_cb0_40000000_；格式本身可带下划线，如 rgb10_a2）。11-22 #2051 0100AD80208A8000：8 支计算着色器的图像缓冲池
+        //   cp_ib_cb0_40000000_ / _r32ui 原先只按 _cb0_40000000 收尾判，没改成池指针，反射成没有槽号的 img，宿主「has no resolved slot number」整支拒载
+        static readonly Regex s_poolImgName = new(@"^[a-z]+_i\w*?_cb0_40000000_[a-z0-9_]*$", RegexOptions.CultureInvariant);
+        internal static bool IsPoolName(string name) => name.EndsWith("_cb0_40000000", StringComparison.Ordinal) || s_poolImgName.IsMatch(name);
         internal static string PoolArrays(string src)
         {
             var body = Search(@"struct spvDescriptorSetBuffer0\s*\{(.*?)\};", src, RegexOptions.Singleline);
@@ -798,7 +948,7 @@ namespace S2A.Dsh
             var pools = new List<(string Name, string Elem)>();
             string members = s_poolArr.Replace(body.Groups[1].Value, m =>
             {
-                if (Int(m.Groups[3].Value) < POOL_MIN || !m.Groups[4].Value.EndsWith("_cb0_40000000", StringComparison.Ordinal)) return m.Value;
+                if (Int(m.Groups[3].Value) < POOL_MIN || !IsPoolName(m.Groups[4].Value)) return m.Value;
                 pools.Add((m.Groups[4].Value, m.Groups[2].Value));
                 return m.Groups[1].Value + "constant spvPool_" + m.Groups[4].Value + "* " + m.Groups[4].Value + " [[id(";
             });
@@ -844,6 +994,22 @@ namespace S2A.Dsh
         }
 
         internal static string Precise(string msl) => s_fast.Replace(msl, m => "precise::" + m.Groups[1].Value + "(");
+
+        // 宽乘法（OpUMulExtended / OpSMulExtended）：SPIRV-Cross 写成一个 [[clang::optnone]] 模板 spvMulExtended（它的注释：Metal 编译器内联 mulhi 可能出内部错误），
+        // 每个乘积都是一次不优化的函数调用，常数除法（Switch 2 着色器用乘积高字做 / 16 之类）折不掉。在模板后面补标量 uint / int 两个重载：总内联、取 64 位乘积的高低半，
+        // 不用 mulhi；重载决议优先选它们，标量调用全部离开 optnone、常数折掉（2 的幂变移位），向量调用仍走原模板。模板原文不是 SPIRV-Cross 那样就原样返回。
+        // 照 nxnative dmsh_rewrite.py mul_extended（MIT）；它的读数：时之笛 M4 Pro 森林路线 GPU 每帧 15.55 → 14.76 ms、54.0 → 59.1 帧
+        const string MULEXT = "template<typename T, typename U> static inline __attribute__((always_inline)) T spvMulExtended(uint l, uint r) { ulong p = ulong(l) * ulong(r); return T{U(p), U(p >> 32)}; }\n"
+                            + "template<typename T, typename U> static inline __attribute__((always_inline)) T spvMulExtended(int l, int r) { long p = long(l) * long(r); return T{U(p), U(p >> 32)}; }\n";
+        static readonly Regex s_mulExt = new(@"template<typename T, typename U, typename V>\s*\[\[clang::optnone\]\] T spvMulExtended\(V l, V r\)\s*\{\s*return T\{U\(l \* r\), U\(mulhi\(l, r\)\)\};\s*\}\n", RegexOptions.CultureInvariant);
+        internal static string MulExtended(string msl)
+        {
+            if (!msl.Contains("spvMulExtended", StringComparison.Ordinal) || msl.Contains("spvMulExtended(uint l, uint r)", StringComparison.Ordinal)) return msl;
+            var found = s_mulExt.Matches(msl);
+            if (found.Count != 1) return msl;
+            int at = found[0].Index + found[0].Length;
+            return msl[..at] + MULEXT + msl[at..];
+        }
 
         // 四偏移 gather（SPIR-V ConstOffsets，GL textureGatherOffsets）：SPIRV-Cross 的 spvGatherConstOffsets / spvGatherCompareConstOffsets 在循环里把 coffsets[i] 传给 gather()，
         // Metal 的 gather 偏移只认常量表达式，编译不报错，偏移成了运行时值（AIR 里 load <2 x i32> 再交 air.gather_texture_2d）。时之笛 NDSR 放大器 b106afba1a18faa9 的 9 处 gather 同形，
@@ -1235,6 +1401,49 @@ namespace S2A.Dsh
             return outp[..u2] + "\n" + FC_DECL + "\n" + outp[u2..];
         }
 
+        // ---- 片元输出类型由函数常量选（#427，11-19）：主入口 main0 再带两个可选常量，宿主建管线时按画布格式特化（nvn_mtl.m fs_atms_fn） ----
+        //   S2A_FU（uint，102）位 n = color(n) 的画布是无符号整数、S2A_FS（uint，103）位 n = 有符号整数；S2A_FS 位 8 = 画布 0 用第二源混合（宿主 PSO_FOUT_DUAL >> 8，同 FsTyped）。
+        //   原先这些靠另外的入口：整数位刚好等于 u_mask 的用 main0_u（FsUint，整份函数体复制一遍），别的掩码靠出包按种子表预编的 _ft，种子表里没有的在设备提交线程上
+        //   从源码现编（#427 空之轨迹 the 1st：G-buffer 三张整数目标、掩码 0xe，一局 7 次各 90–157 ms）。常量版：每个浮点颜色输出旁加同位置的 uint / int 成员（各由一个
+        //   派生常量开关，三者互斥），返回前按位原样取（as_type，同 FsRetyped：硬件往整数画布写的就是输出寄存器的位）；函数体不动、不复制。宿主不给常量 = 全浮点 = 原样。
+        //   声明接在 FC_DECL 那一行末尾（成批合编按整行提到批顶只出一次，Unity.cs UG）；FsAlphaMs 没加声明的（不是片元主入口、早测池读）原样返回，宿主照旧走旧路
+        internal const string FOUT_MARK = "constant uint S2A_FU [[function_constant(102)]];";
+        internal static readonly string FOUT_DECL = " " + FOUT_MARK + " constant uint S2A_FS [[function_constant(103)]]; "
+            + "constant uint S2A_FU_V = is_function_constant_defined(S2A_FU) ? S2A_FU : 0u; constant uint S2A_FS_V = is_function_constant_defined(S2A_FS) ? S2A_FS : 0u; "
+            + "constant bool S2A_DUAL = (S2A_FS_V & 0x100u) != 0u;"
+            + string.Concat(Enumerable.Range(0, 8).Select(n => { string d = n == 1 ? "!S2A_DUAL && " : ""; uint b = 1u << n;   // 双源时输出 1 改去 [[color(0), index(1)]]
+                return $" constant bool S2A_U{n} = {d}(S2A_FU_V & {b}u) != 0u; constant bool S2A_I{n} = {d}!S2A_U{n} && (S2A_FS_V & {b}u) != 0u; constant bool S2A_F{n} = {d}!S2A_U{n} && !S2A_I{n};"; }));
+        internal static string FsFout(string src)
+        {
+            int dl = src.IndexOf("constant int S2A_AT [[function_constant(100)]];", StringComparison.Ordinal);
+            if (dl < 0 || src.Contains(FOUT_MARK, StringComparison.Ordinal)) return src;
+            var sig = Search(@"^(?:\[\[[^\]]*\]\]\s*)*fragment main0_out main0\(.*\)\n\{\n", src, RegexOptions.Multiline);
+            var st = Search(@"\nstruct main0_out\n\{\n(.*?)\n\};", src, RegexOptions.Singleline);
+            if (!sig.Success || !st.Success) return src;
+            int open = sig.Index + sig.Length, close = -1, depth = 1;   // main0 的函数体（同 FsAlphaMs 按花括号配对）
+            for (int i = open; i < src.Length; i++) { if (src[i] == '{') depth++; else if (src[i] == '}' && --depth == 0) { close = i; break; } }
+            if (close < 0) return src;
+            var cols = All(@"^    (float\d?) (\w+) \[\[color\(([0-7])\)\]\];$", st.Groups[1].Value, RegexOptions.Multiline)
+                .Select(m => (Ty: m.Groups[1].Value, Nm: m.Groups[2].Value, N: int.Parse(m.Groups[3].Value, CultureInfo.InvariantCulture))).ToList();
+            var mem = new StringBuilder(); var conv = new StringBuilder();
+            foreach (var (ty, nm, n) in cols)
+            {
+                string uty = ty.Replace("float", "uint"), ity = ty.Replace("float", "int");
+                mem.Append($"\n    {uty} {nm}_s2u [[color({n}), function_constant(S2A_U{n})]];\n    {ity} {nm}_s2i [[color({n}), function_constant(S2A_I{n})]];");
+                conv.Append($"if (S2A_U{n}) out.{nm}_s2u = as_type<{uty}>(out.{nm}); if (S2A_I{n}) out.{nm}_s2i = as_type<{ity}>(out.{nm}); ");
+                if (n == 1) { mem.Append($"\n    {ty} {nm}_s2d [[color(0), index(1), function_constant(S2A_DUAL)]];"); conv.Append($"if (S2A_DUAL) out.{nm}_s2d = out.{nm}; "); }
+            }
+            var c0 = cols.FirstOrDefault(c => c.N == 0);
+            if (c0.Nm != null && !cols.Any(c => c.N == 1))   // 不写输出 1 的：第二源恒 0（同 FsTyped / Ryujinx 开双源时先把输出 1 置 0）
+            { mem.Append($"\n    {c0.Ty} s2a_src1 [[color(0), index(1), function_constant(S2A_DUAL)]];"); conv.Append($"if (S2A_DUAL) out.s2a_src1 = {c0.Ty}(0); "); }
+            var g = st.Groups[1]; int eol = src.IndexOf('\n', dl);
+            if (!(eol < g.Index && g.Index + g.Length < open)) return src;   // 声明行、结构体、main0 依次在前（SPIRV-Cross 的次序）；不是就不动
+            string members = R(@"^    (float\d?) (\w+) \[\[color\(([0-7])\)\]\];$", RegexOptions.Multiline)
+                .Replace(g.Value, m => $"    {m.Groups[1].Value} {m.Groups[2].Value} [[color({m.Groups[3].Value}), function_constant(S2A_F{m.Groups[3].Value})]];") + mem;
+            string body = src[open..close].Replace("return out;", conv + "return out;");
+            return src[..eol] + FOUT_DECL + src[eol..g.Index] + members + src[(g.Index + g.Length)..open] + body + src[close..];
+        }
+
         internal static string FsUvx(string src)
         {
             var body = Search(@"struct spvDescriptorSetBuffer0\s*\{(.*?)\};", src, RegexOptions.Singleline);
@@ -1482,6 +1691,8 @@ namespace S2A.Dsh
             }
         }
 
+        // 片元着色器读不读 gl_FragCoord.z：SPIRV-Cross 的 MSL 里片元坐标就叫 gl_FragCoord（入口参数和传进辅助函数的形参同名），按分量访问；带 z 的分量 / 混洗（.z、.zw、.xyz）算读
+        internal static bool FragZ(string src) => Search(@"\bgl_FragCoord\.[xyzw]*z", src).Success;
         internal static PyDict RasterFacts(string stage, string src)
         {
             if (stage == "ps")
@@ -1675,12 +1886,23 @@ namespace S2A.Dsh
             if ((slots >> 16) != 0 || !(3 <= tb && tb <= 16) || (h >> 28) != 0) return null;
             return (tb - 3, (h & 0x3fff) * 4);
         }
+        // 着色器按运行时下标取 c2 句柄表的数组（BindlessToArray）：返回贴图半边第 0 项的字节偏移（宿主 TEXA / SAMPA：第 k 项 = c2 字节 off + 8k 那一槽）。
+        //   组合句柄（类型 0）：贴图、采样器两个成员都按表取。分离句柄对（类型 ≠ 0，库号 PackSlots(2, 2) = cb196610 或 cb2）：一个字是运行时下标起点（贴图），
+        //   另一个是 c2 分离采样器表里的常量字（0x568 + 8r）：只贴图成员给 tex_c2a，采样器成员回落 DecodeTex 的单个 samp（宿主把数组每一项都填它）。
+        //   原先分离句柄对整组解不出槽（「fp_t2d_cb196610_… has no resolved slot number」，几款游戏各一支片元着色器整支不载）
         internal static long? C2Array(string name, string ty)
         {
-            var m = Full(@"[a-z]+_t\w*?_cb2_([0-9A-F]+)", name.EndsWith("Smplr", StringComparison.Ordinal) ? name[..^5] : name);
+            bool smp = name.EndsWith("Smplr", StringComparison.Ordinal);
+            var m = Full(@"[a-z]+_t\w*?_cb(\d+)_([0-9A-F]+)", smp ? name[..^5] : name);
             if (!m.Success || !ty.StartsWith("array<", StringComparison.Ordinal)) return null;
-            long h = Hex(m.Groups[1].Value);
-            return h >> 28 == 0 ? (h & 0x3fff) * 4 : null;
+            long slots = long.Parse(m.Groups[1].Value), h = Hex(m.Groups[2].Value);
+            long tb = slots & 0xffff, sb = (slots >> 16) != 0 ? (slots >> 16) - 1 : tb;
+            if (tb != 2 || sb != 2) return null;
+            if (h >> 28 == 0) return (h & 0x3fff) * 4;
+            if (smp || (h >> 28) is not (1 or 2)) return null;   // 类型 3（常量采样器）的采样器半边是 samp_id，宿主不给它填数组：照旧不接
+            long o0 = h & 0x3fff, o1 = (h >> 14) & 0x3fff;
+            static bool SampWord(long w) => w * 4 >= 0x568 && w * 4 < 0x568 + 8 * 128 && (w * 4 - 0x568) % 8 == 0;
+            return SampWord(o1) && !SampWord(o0) ? o0 * 4 : SampWord(o0) && !SampWord(o1) ? o1 * 4 : null;
         }
         static readonly Dictionary<string, long> HELPERS = new() { ["vertex_output"] = 0, ["geometry_vb_output"] = 1, ["geometry_ib_output"] = 2, ["vb_info"] = 3, ["trb_data"] = 4, ["vb_input"] = 1 };
 
@@ -1807,6 +2029,9 @@ namespace S2A.Dsh
                     continue;
                 }
                 if (stage == "cs" && off != null && 0x210 <= off && off < 0x310 && (off - 0x210) % 16 == 0) e.Set("kind", "ubo_ptr").Set("reg", (off - 0x210) / 16);
+                // 地址在 NVN2 推常量槽里（c[24 + k]：计算阶段推常量块 1 映射到 c[25]，图形阶段 i 自己的缓冲库 c[25 + i]）：宿主从推常量槽读地址（nvn_refl.h SBUFQ）。
+                //   原先落进下一支成 sbuf_ubo reg 21..28，宿主按 uniform 槽读不到 → 哑缓冲
+                else if (b != null && b.Count > 0 && (long)b["cb_slot"] >= 24 && (long)b["cb_slot"] < 32) e.Set("kind", "sbuf_push").Set("reg", (long)b["cb_slot"] - 24).Set("off", (long)b["cb_offset"] * 4);
                 else if (b != null && b.Count > 0 && (long)b["cb_slot"] >= 3) e.Set("kind", "sbuf_ubo").Set("reg", (long)b["cb_slot"] - 3).Set("off", (long)b["cb_offset"] * 4);
                 else e["reg"] = off != null && bs != null && 0 <= off - bs && off - bs < 0x100 && (off - bs) % 16 == 0 ? (off - bs) / 16 : null;
                 e["rw"] = b != null && b.Count > 0 && ((long)b["flags"] & 1) != 0;   // BufferUsageFlags.Write = bit 0（同 dmsh_build.py）
@@ -1842,7 +2067,9 @@ namespace S2A.Dsh
             foreach (var kv in dr)
             {
                 var d = (PyDict)kv.Value;
-                if ((bool)d["dynamic"]) bad.Add($"c{kv.Key} dynamic index");
+                // c2 按运行时下标读：宿主 DRV2 每次把整段的四张句柄表（贴图 / 图像 / 分离贴图 / 分离采样器）全部填好、其余字节 0（nvn_mtl.m encode_args），
+                //   与静态读哪几格无关，下标落在表里就读到绑定的句柄。原先一律判填不了、整支拒载（几款游戏的片元着色器按同一下标既取 c2 贴图数组、又把句柄字当数据读）
+                if ((bool)d["dynamic"] && kv.Key != "2") bad.Add($"c{kv.Key} dynamic index");
                 foreach (long o in ((List<object>)d["vec4_offsets"]).Cast<long>())
                     if (!DRV_FILL[int.Parse(kv.Key)].Concat(kv.Key == "0" ? own : Array.Empty<(long, long)>()).Any(r => o < r.Item2 && r.Item1 < o + 16)) bad.Add($"c{kv.Key}+0x{o:x}");
             }

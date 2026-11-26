@@ -35,6 +35,13 @@ class DirectTargetOptional(JobCase):
         with patch.object(target, "os_choices", return_value=[26]):
             self.assertEqual(ipa.resolve_target(self.c), dict(model="iPhone 4", productType="iPhone19,7", gpuArch="", os=27))
 
+    def test_target_feeds_pso_pairs(self):
+        """随包管线：目标设备的 GPU 架构 / 系统大版本交给出包（S2A_PSO_ARCHS / S2A_PSO_OS）；期望手写"""
+        self.assertEqual(ipa.pso_env(dict(gpuArch="applegpu_g17p", os=27)), {"S2A_PSO_ARCHS": "applegpu_g17p", "S2A_PSO_OS": "27"})
+        self.assertEqual(ipa.pso_env(dict(gpuArch="applegpu_g18p", os=0)), {"S2A_PSO_ARCHS": "applegpu_g18p"})
+        self.assertEqual(ipa.pso_env(dict(gpuArch="", os=27)), {})
+        self.assertEqual(ipa.pso_env(None), {})
+
 
 if __name__ == "__main__":
     unittest.main()

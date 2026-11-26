@@ -10,6 +10,7 @@
 //
 // 与离线链产物的差别，依据是直连运行时 graphics/nvn/gfx/nvn/nvn_mtl.m / nvn_refl.m / nvn_geometry.inc对缺省的处理：
 //   · _bv（影子输入库）不出、json 不带 vin：nvn_refl.m 读不到 vin → has_vin = 0，vin_fn 直接返回 nil，整数输入照旧 CPU 换算（nvn_mtl.m vin_fn / vconv_wanted）；
+//   · _bp（拉取式顶点输入，DshPull）不出、json 不带 pull：宿主读不到 pull 就只用按本笔顶点布局建的管线（同出包里认不出形状的顶点着色器）；
 //   · _bf（读帧缓冲版）不出、json 不带 fetch：nfc = nfo = 0，并通道合并判「不可证」不合并（nvn_mtl.m fz_p2_draw 的 !fs->rf.nfo 分支）；
 //   · _bg0.._bg4 / _bgv 照出：几何绘制 shader_get(<键>_bg<拓扑>) 或 _bgv 拿不到就整笔不画（nvn_geometry.inc），属运行时必需。
 // 入口吞掉全部异常，不跨 C 边界抛。

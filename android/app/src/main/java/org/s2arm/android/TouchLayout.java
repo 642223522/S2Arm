@@ -201,6 +201,26 @@ final class TouchLayout {
         return new TouchLayout(identifier, name, edited, sticks);
     }
 
+    /** Scale button geometry uniformly, preserving centres, aspect ratios and F01 limits. */
+    TouchLayout withButtonScale(double factor) {
+        require(Double.isFinite(factor) && factor > 0, "invalid button scale");
+        double lower = 0, upper = Double.POSITIVE_INFINITY;
+        for (Button b : buttons) {
+            lower = Math.max(lower, Math.max(0.04 / b.width, 0.04 / b.height));
+            upper = Math.min(upper, Math.min(0.4 / b.width, 0.4 / b.height));
+        }
+        factor = Math.max(lower, Math.min(upper, factor));
+        List<Button> resized = new ArrayList<>();
+        for (Button b : buttons) {
+            // Clamp multiplication roundoff at the existing schema boundaries.
+            double width = Math.max(0.04, Math.min(0.4, b.width * factor));
+            double height = Math.max(0.04, Math.min(0.4, b.height * factor));
+            double corner = Math.min(Math.min(width, height) / 2, b.cornerRadius * factor);
+            resized.add(new Button(b.id, b.x, b.y, width, height, corner));
+        }
+        return new TouchLayout(identifier, name, resized, sticks);
+    }
+
     TouchLayout withStick(String id, double x, double y, double width, double height, double radius) {
         List<Stick> edited = new ArrayList<>(sticks);
         edited.set(edited.indexOf(stick(id)), new Stick(id, x, y, width, height, radius));

@@ -3,34 +3,46 @@
 
     python3 launchers/macos/prepare_build.py [--venv <目录>] [--check]
 
-查（只读，不替你装系统级东西）：Apple 芯片 macOS；Xcode（同出包的 tools/toolchain.sh 解析：S2A_DEVELOPER_DIR / tools/machine.local → xcode-select）
+查（只读，不替你装系统级东西）：macOS（arm64 出全套；x86_64 只出包壳与出包工具，不在 Intel Mac 上跑游戏）；Xcode（同出包的 tools/toolchain.sh 解析：S2A_DEVELOPER_DIR / tools/machine.local → xcode-select）
   与 iOS SDK、Metal 编译器——编译器版本与 translator/dmsh_chain.lock 不同只出 note（出包时直连库按本机编译器重编，不报错）；
   .NET SDK——在 compat/tree 里跑 dotnet --version，由 dotnet 按 compat/tree/global.json（版本 + rollForward）判定，不另抄版本号；
-  Homebrew 公式（运行环境打包 bundle_runtime.py 收的工具 + C 改写器的 CMake + dav1d 的 meson / ninja；S2A_DAV1D=0 的本地构建不需要 meson / ninja）；Rust（pack/devpush）。
+  Homebrew 公式（运行环境打包 bundle_runtime.py 收的工具 + C 改写器的 CMake + dav1d 的 meson / ninja——本机探测有 AV1 硬件解码时 dav1d 整条不要，meson / ninja 不需要）；Rust（pack/devpush）。
 准备（可逆、只写在你给的目录或本树 build/ 下；--check 时跳过）：
-  构建用 Python 虚拟环境（缺省本树 build/venv，Homebrew python@3.12 建）装齐三份钉版清单：tools/rewriter-requirements.txt、
+  GNU Make 4（本机没装时从钉版源码编到 build/macos/gmake，出预编 iPhone 壳要）；
+  构建用 Python 虚拟环境（缺省本树 build/venv，基准解释器跟着 runtime_sources.py 的钉版独立 Python 走；brew 在则用 brew 的 python@3.12）装齐三份钉版清单：tools/rewriter-requirements.txt、
   pack/fonts/requirements.txt（字体生成器 fonttools / skia-pathops）、launchers/macos/requirements-runtime.txt；
   C 改写器钉版源码（runtime/rewriter/prepare_deps.py → 本树 build/rewriter-deps；已有完整的一份就不下载）。
 全部就绪退出 0，并打印下一步命令；有缺项退出 1。不读、不写开发机专用路径。"""
 from __future__ import annotations
 import argparse
+import hashlib
 import os
 from pathlib import Path
 import platform
 import shutil
 import subprocess
 import sys
+import tempfile
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(Path(__file__).resolve().parent))   # 按文件加载本脚本时（单测 importlib）同目录也找得到
+import runtime_sources   # noqa: E402  同目录：构建 venv 的基准解释器跟着随包 Python 的钉版走
 REQS = ["tools/rewriter-requirements.txt", "pack/fonts/requirements.txt", "launchers/macos/requirements-runtime.txt"]
-# 公式 → 谁要：bundle_runtime.py 的 prefixes 全部 + C 改写器（runtime/rewriter，CMake 3.18+）+ services/dav1d/build.sh（meson + ninja）
-# S2A_DAV1D=0：不链 dav1d 软件兜底（仅适合所有目标机都有 AV1 硬件解码的本地构建），meson / ninja 不再是必需项
+# 公式 → 谁要：bundle_runtime.py 的 prefixes 全部 + C 改写器（runtime/rewriter，CMake 3.18+）+ dav1d 软解兜底（AV1；S2A_DAV1D 缺省 auto 探测本机，
+#   有 AV1 硬解时整条不进构建，见 dav1d_wanted；只有它要 meson / ninja）
 FORMULAS = {"python@3.12": "构建 venv",
             "bash": "运行环境（bash 5）", "cmake": "C 改写器"}
-if os.environ.get("S2A_DAV1D", "1") != "0":
-    FORMULAS.update({"meson": "dav1d 静态库", "ninja": "dav1d 静态库"})
+DAV1D_FORMULAS = {"meson": "dav1d 静态库（AV1 软解兜底）", "ninja": "dav1d 静态库（AV1 软解兜底）"}
 IMPORTS = "import capstone, lz4, numpy, PIL, fontTools, pathops"
+GMAKE_VERSION = "4.4.1"
+GMAKE_URL = f"https://ftp.gnu.org/gnu/make/make-{GMAKE_VERSION}.tar.gz"
+GMAKE_SHA256 = "dd16fb1d67bfab79a72f5e8390735c49e3e8e70b4945a15ab1f81ddb78658fb3"
 rows = []
+
+
+def can_build_on(system, machine):
+    """Apple Silicon 出全套；Intel Mac 只做出包启动器（游戏宿主仍是 AArch64 原生执行）。"""
+    return system == "Darwin" and machine in ("arm64", "x86_64")
 
 
 def row(name, ok, detail, fix=""):
@@ -42,6 +54,44 @@ def run(args, **kw):
         return subprocess.run([str(a) for a in args], capture_output=True, text=True, **kw)
     except OSError as e:
         return subprocess.CompletedProcess(args, 127, "", str(e))
+
+
+def dav1d_wanted(dev):
+    """dav1d 软解兜底（AV1）要不要进本机构建——meson / ninja 只为它：S2A_DAV1D=1 / 0 直说，缺省 1；显式 auto = 探测本机
+    （tools/av1hw.sh --want：VideoToolbox 建得出 AV1 解码会话 = 有硬解，AV1 走 VideoToolbox，软解整条不要）。
+    回 (要不要, 说明)；探测没答上来时保守按要算（= 原默认行为）。"""
+    v = os.environ.get("S2A_DAV1D", "1")   # 缺省链（见 Makefile S2A_DAV1D）；auto 只显式设
+    if v in ("0", "1"):
+        return v == "1", "S2A_DAV1D=%s" % v
+    env = dict(os.environ)
+    if dev:
+        env["DEVELOPER_DIR"] = dev
+    p = run(["bash", ROOT / "tools/av1hw.sh", "--want"], env=env)
+    lines = p.stdout.split()
+    if lines and lines[-1] == "0":
+        return False, "本机有 AV1 硬件解码（tools/av1hw.sh 探测：VideoToolbox 建得出 AV1 会话），AV1 走 VideoToolbox，dav1d 软解兜底与 meson / ninja 都不需要；要给无硬解的机器兜底就 export S2A_DAV1D=1 再跑"
+    if lines and lines[-1] == "1":
+        return True, "本机没有 AV1 硬件解码（tools/av1hw.sh 探测），dav1d 软解兜底要编（meson / ninja 要装）"
+    return True, "本机 AV1 硬解探测没答上来（tools/av1hw.sh），按要 dav1d 算（= 原默认行为）"
+
+
+def vpx_wanted(dev):
+    """真 libvpx（VP8 / VP9 软解）要不要进本机构建：S2A_VPX=1 / 0 直说，缺省 1；显式 auto = 探测本机可走
+    系统 VP9（tools/vp9hw.sh --want：注册 supplemental 后建得出 VP9 会话 = VP9 走 VideoToolbox）。
+    回 (要不要, 说明)；探测没答上来时保守按要算（= 原默认行为）。"""
+    v = os.environ.get("S2A_VPX", "1")   # 同上
+    if v in ("0", "1"):
+        return v == "1", "S2A_VPX=%s" % v
+    env = dict(os.environ)
+    if dev:
+        env["DEVELOPER_DIR"] = dev
+    p = run(["bash", ROOT / "tools/vp9hw.sh", "--want"], env=env)
+    lines = p.stdout.split()
+    if lines and lines[-1] == "0":
+        return False, "本机可走系统 VP9（tools/vp9hw.sh 探测：注册 supplemental 后建得出 VP9 会话），VP9 走 VideoToolbox、libvpx 整条不进构建（VP8 无任何系统替代，这些机器上如实报红）；要兜 VP8 / 不可走系统的机器就 export S2A_VPX=1 再跑"
+    if lines and lines[-1] == "1":
+        return True, "本机不可走系统 VP9（tools/vp9hw.sh 探测），VP8 / VP9 软解照编 libvpx"
+    return True, "本机系统 VP9 探测没答上来（tools/vp9hw.sh），按要 libvpx 算（= 原默认行为）"
 
 
 def check_xcode():
@@ -90,17 +140,71 @@ def check_dotnet():
     row(".NET SDK", True, f"{p.stdout.strip()}（{d}，按 compat/tree/global.json 选中）")
 
 
-def check_brew():
+def check_brew(dav1d):
+    """有 brew 就按公式核（dav1d 要时加 meson / ninja）；没有 brew 时逐项核 PATH 上等价工具，Intel Mac 不强装 Homebrew。"""
     brew = shutil.which("brew")
-    if not brew:
-        row("Homebrew", False, "没有 brew", "按 https://brew.sh 安装 Homebrew")
+    formulas = dict(FORMULAS)
+    if dav1d:
+        formulas.update(DAV1D_FORMULAS)
+    if brew:
+        missing = [f for f in formulas if run([brew, "list", "--versions", f]).returncode != 0]
+        if missing:
+            row("Homebrew 公式", False, "缺 " + "、".join(f"{f}（{formulas[f]}）" for f in missing), "brew install " + " ".join(missing))
+        else:
+            row("Homebrew 公式", True, " ".join(formulas))
+        return brew
+    needs = ["python3", "cmake", "cargo"] + (["meson", "ninja"] if dav1d else [])
+    missing = [n for n in needs if not shutil.which(n)]
+    bash = shutil.which("bash")
+    major = int(run([bash, "-c", "echo ${BASH_VERSINFO[0]}"]).stdout.strip() or 0) if bash else 0
+    if major < 5:
+        missing.append("bash 5")
+    row("本机构建工具", not missing,
+        f"没有 Homebrew；用 PATH 上的等价工具（bash {major}，{', '.join(n for n in needs if n not in missing)}）" if not missing
+        else "没有 Homebrew，PATH 上还缺 " + "、".join(missing),
+        "" if not missing else "装上缺的项（或安装 Homebrew 后 brew install " + " ".join(formulas) + "）")
+    return None
+
+
+def gmake_path():
+    return ROOT / "build/macos/gmake/bin/make"
+
+
+def prepare_gmake(check_only):
+    """出 iPhone 壳要 GNU Make ≥ 4（系统 3.81 的 -j 会卡死）；本机没装就从钉版源码编到 build/。"""
+    target = gmake_path()
+    if target.is_file() and "GNU Make 4" in run([target, "--version"]).stdout:
+        row("GNU Make 4", True, str(target))
+        return str(target)
+    if check_only:
+        row("GNU Make 4", False, "本机没有 gmake 4，也没有构建好的 " + str(target), f"python3 {Path(__file__).relative_to(ROOT)}")
         return None
-    missing = [f for f in FORMULAS if run([brew, "list", "--versions", f]).returncode != 0]
-    if missing:
-        row("Homebrew 公式", False, "缺 " + "、".join(f"{f}（{FORMULAS[f]}）" for f in missing), "brew install " + " ".join(missing))
-    else:
-        row("Homebrew 公式", True, " ".join(FORMULAS))
-    return brew
+    cache = ROOT / "build/macos/runtime-sources/downloads" / f"make-{GMAKE_VERSION}.tar.gz"
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    if not cache.is_file() or hashlib.sha256(cache.read_bytes()).hexdigest() != GMAKE_SHA256:
+        cache.unlink(missing_ok=True)
+        p = run(["curl", "-fsSL", "--retry", "5", "--retry-all-errors", "-o", cache, GMAKE_URL])
+        if p.returncode != 0 or not cache.is_file() or hashlib.sha256(cache.read_bytes()).hexdigest() != GMAKE_SHA256:
+            row("GNU Make 4", False, f"钉版源码下载 / 校验失败：{(p.stderr or p.stdout).strip()[-200:]}")
+            return None
+    staging = Path(tempfile.mkdtemp(prefix="gmake-", dir=ROOT / "build/macos"))
+    try:
+        import tarfile
+        with tarfile.open(cache) as archive:
+            archive.extractall(staging, filter="data")
+        source = staging / f"make-{GMAKE_VERSION}"
+        prefix = target.parent.parent
+        for args in (["bash", "./configure", f"--prefix={prefix}"], ["make", "-s"], ["make", "-s", "install"]):
+            p = run(args, cwd=source)
+            if p.returncode != 0:
+                raise RuntimeError((p.stderr or p.stdout).strip()[-300:])
+        row("GNU Make 4", target.is_file(), str(target) if target.is_file() else "编完没找到产物")
+        return str(target) if target.is_file() else None
+    except (OSError, RuntimeError, tarfile.TarError) as e:
+        row("GNU Make 4", False, f"从钉版源码编 GNU Make 失败：{e}")
+        return None
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
 
 
 def check_cargo():
@@ -110,13 +214,13 @@ def check_cargo():
 
 def prepare_venv(venv, brew, check_only):
     py = venv / "bin/python3"
-    base = Path(run([brew, "--prefix", "python@3.12"]).stdout.strip() or "/nonexistent") / "bin/python3.12" if brew else None
+    base = (Path(run([brew, "--prefix", "python@3.12"]).stdout.strip() or "/nonexistent") / "bin/python3.12") if brew else (runtime_sources.python() / "bin/python3.12")
     if not py.is_file():
         if check_only:
             row("构建 venv", False, f"{venv} 还没建", f"python3 {Path(__file__).relative_to(ROOT)} --venv {venv}")
             return None
         if not base or not base.is_file():
-            row("构建 venv", False, "没有 Homebrew python@3.12，建不了构建 venv", "brew install python@3.12")
+            row("构建 venv", False, f"没有可用的 Python 3.12+（{base}），建不了构建 venv", "装 Python 3.12+ 并让它出现在 PATH")
             return None
         p = run([base, "-m", "venv", venv])
         if p.returncode != 0:
@@ -165,13 +269,20 @@ def main():
     ap.add_argument("--venv", type=Path, default=ROOT / "build/venv", help="构建用 Python 虚拟环境目录（缺省本树 build/venv）")
     ap.add_argument("--check", action="store_true", help="只检查，不建 venv、不下载")
     a = ap.parse_args()
-    if platform.system() != "Darwin" or platform.machine() != "arm64":
-        print("🔴 从源码构建 Mac 启动器要 Apple 芯片的 macOS（运行环境只收 arm64）；Intel Mac 只能用 pack/oneclick/oneclick.sh 命令行出 iPhone 包")
+    if not can_build_on(platform.system(), platform.machine()):
+        print(f"🔴 Mac 启动器出包壳只支持 arm64 / x86_64 的 macOS，本机是 {platform.system()} {platform.machine()}")
         return 1
-    check_xcode()
+    if platform.machine() == "x86_64":
+        print("ℹ️ Intel Mac：构建只出包壳与出包工具；s2arm-host 是 AArch64 原生执行体，不在本机起游戏。")
+    dev = check_xcode()
+    dav1d, why = dav1d_wanted(dev)
+    row("AV1 解码路线", True, why)
+    vpx, whyv = vpx_wanted(dev)
+    row("VP9 解码路线", True, whyv)
     check_dotnet()
-    brew = check_brew()
+    brew = check_brew(dav1d)
     check_cargo()
+    prepare_gmake(a.check)
     venv = a.venv.expanduser().resolve()
     py = prepare_venv(venv, brew, a.check)
     prepare_rewriter_deps(a.check)
@@ -187,6 +298,8 @@ def main():
     print("\n✓ 构建依赖齐了。下一步：")
     print(f"  {py} launchers/macos/build_app.py        # 产物 build/macos/S2Arm.app（字体生成器与运行环境打包都用这个解释器）")
     print(f"  命令行出包 / 跑测试前：export S2A_PY={py}   （或写进 tools/machine.local：S2A_PY={py}）")
+    if not (shutil.which("gmake") or os.environ.get("S2A_GMAKE")):
+        print(f"  本机没有 gmake 时：export S2A_GMAKE={gmake_path()}   （出预编 iPhone 壳要 GNU Make 4）")
     return 0
 
 

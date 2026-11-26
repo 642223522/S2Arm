@@ -36,6 +36,10 @@ class ScanTests(unittest.TestCase):
         self.git('init', '-q')
         self.git('config', 'user.name', 'Fixture')
         self.git('config', 'user.email', 'fixture@example.invalid')
+        # 私有规则一律指到临时路径：单测结论不随维护方机器上有没有私有词表变
+        self.private = Path(self.tmp.name) / 'private_rules.json'
+        env = patch.dict(os.environ, {'S2A_PRIVATE_SCAN_RULES': str(self.private)})
+        env.start(); self.addCleanup(env.stop)
         self.mod = module()
 
     def git(self, *args):
@@ -56,6 +60,42 @@ class ScanTests(unittest.TestCase):
         p = subprocess.run([sys.executable, str(TOOL), '--repo', str(self.root),
                             '--path', '.', *args], capture_output=True, text=True)
         return p, json.loads(p.stdout) if p.stdout else None
+
+    def private_rules(self, regex='示例内部名'):
+        self.private.write_text(json.dumps({'version': 1, 'content_rules': [
+            {'id': 'fixture_internal', 'category': 'internal_name', 'regex': regex}]}), encoding='utf-8')
+
+    def test_private_rules_only_added_lines(self):
+        """私有规则：新增行写了词表里的词 → 增量命中、退 1；没动的旧行有同一个词 → 不计（存量也不计）"""
+        base = self.commit({'docs/a.md': '旧行 示例内部名\n'})
+        self.private_rules()
+        self.commit({'docs/a.md': '旧行 示例内部名\n新行 示例内部名\n'})
+        p, report = self.scan('--base', base)
+        self.assertEqual(p.returncode, 1, p.stderr)
+        hits = [f for f in report['findings'] if f.get('category') == 'internal_name']
+        self.assertEqual([(f['status'], f['line']) for f in hits], [('changed', 2)])
+        self.assertNotIn('示例内部名', p.stdout + p.stderr)   # 命中的词本身不外泄
+
+    def test_private_rules_neutral_word_and_missing_file(self):
+        """新增行写中性称呼不命中；私有词表不在 → 跳过、退 0；词表坏了 → 报错，不静默漏扫"""
+        base = self.commit({'docs/a.md': 'x\n'})
+        self.private_rules()
+        self.commit({'docs/a.md': 'x\n维护者\n'})
+        self.assertEqual(self.scan('--base', base)[0].returncode, 0)
+        self.commit({'docs/a.md': 'x\n维护者\n示例内部名\n'})
+        self.private.unlink()
+        self.assertEqual(self.scan('--base', base)[0].returncode, 0)
+        self.private.write_text('{', encoding='utf-8')
+        self.assertNotEqual(self.scan('--base', base)[0].returncode, 0)
+
+    def test_private_rules_commit_messages(self):
+        """提交信息也按私有词表判"""
+        base = self.commit({'a.txt': 'x\n'})
+        self.private_rules()
+        (self.root / 'a.txt').write_text('y\n'); self.git('add', '.'); self.git('commit', '-qm', '修好 示例内部名 提的问题')
+        p = subprocess.run([sys.executable, str(TOOL), '--repo', str(self.root), '--path', '.', '--messages', base],
+                           capture_output=True, text=True)
+        self.assertEqual(p.returncode, 1, p.stdout + p.stderr)
 
     def test_full_scan_unknown_only_is_red_and_deletion_clears(self):
         self.commit({'unknown.xyz': b'original unknown-type fixture'})
@@ -342,16 +382,28 @@ class ScanTests(unittest.TestCase):
             with self.assertRaisesRegex(self.mod.ScanError, 'git_blob_read_failed'):
                 self.mod.scan(self.root, 'HEAD', ['.'])
 
-    def test_gate_summary_counts_unreviewed_types_without_blocking(self):
+    def test_gate_new_unreviewed_types_block_with_hint(self):
+        # 11-22：增量门禁里新加的未审类型文件与全量同一口径（原先只记黄放行，#1749 的 .golden 进了 main、整仓扫描才红）
         base = self.commit({'safe.md': 'safe\n'})
         self.commit({'binary': b'\0synthetic', 'unknown.xyz': b'synthetic'})
         proc = subprocess.run([sys.executable, str(TOOL), '--repo', str(self.root),
                                '--path', '.', '--base', base, '--format', 'gate'],
                               capture_output=True, text=True)
-        self.assertEqual(proc.returncode, 0)
-        self.assertIn('增量未审类型 2', proc.stdout)
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn('新加未读阻挡 2', proc.stdout)
         self.assertIn('"binary":uncovered: unreviewed_type', proc.stdout)
         self.assertIn('"unknown.xyz":uncovered: unreviewed_type', proc.stdout)
+        self.assertIn('reviewed_text_globs（先例 e06413126）后重入', proc.stdout)
+        self.assertIn('.xyz', proc.stdout)
+
+    def test_existing_unreviewed_changed_stays_warning(self):
+        # 只拦新加文件：基线里已有的未审类型文件改了内容，照旧只记黄、不追溯
+        base = self.commit({'safe.md': 'safe\n', 'unknown.xyz': b'synthetic'})
+        self.commit({'unknown.xyz': b'synthetic changed'})
+        p, r = self.scan('--base', base)
+        self.assertEqual(p.returncode, 0)
+        self.assertEqual(r['uncovered_blocking'], [])
+        self.assertEqual([f['path'] for f in r['warnings_changed']], ['unknown.xyz'])
 
     def test_all_categories_no_values(self):
         values = ['fixtureperson', '11223344-5566778899AABBCC', 'F1X2T3U4R5', 'human@private.test']
@@ -367,8 +419,8 @@ class ScanTests(unittest.TestCase):
             self.assertNotIn(value, p.stdout + p.stderr)
 
     def test_internal_names_block_and_device_models_do_not(self):
-        for line in ['作者 jhz 定', 'jhz: fix', '总指挥 定的分发', '天眼（Windows 出包机）车道',
-                     '测试机2 归质量线', 'GATE_HOST=mini', '--host mini', '派 mini 上跑', 'mac-mini',
+        # 内部线名 / 设备代号这组词已挪进仓外私有词表（公开仓不明文写），它们的反向用例在维护方私有单测里
+        for line in ['作者 jhz 定', 'jhz: fix', 'GATE_HOST=mini', '--host mini', '派 mini 上跑', 'mac-mini',
                      'mac_mini.tsv', 'mini_sync.sh', 'mini_main.sh', '（mini / Air）', 'GATE_HOST=Air',
                      'Air 8 核只开 1 个槽', 'mac-air', 'mac_air']:
             with self.subTest(line=line):
@@ -585,13 +637,23 @@ class ScanTests(unittest.TestCase):
         self.assertNotIn(prefix, result.stdout + result.stderr)
         self.assertNotIn('device_id', self.mod.categories(prefix))  # filename mask only
 
+    def test_internal_doc_blocks_new_files_only(self):
+        # 11-23：坑记录这类内部过程文档不进公开仓。期望手写：新增 docs/坑记录.md、任意目录下名字含「坑记录」的文件 → internal_doc 拦；
+        #   基底里已有的同名文件只改不新增 → 不拦（存量不挡车）；名字不含「坑记录」的文档不拦
+        base = self.commit({'docs/base.md': 'clean\n', 'old/坑记录.md': 'clean\n'})
+        self.commit({'docs/坑记录.md': 'clean\n', 'graphics/坑记录_续.md': 'clean\n', 'old/坑记录.md': 'clean\nmore\n', 'docs/常见问题.md': 'clean\n'})
+        p, r = self.scan('--base', base)
+        hit = {f['path'] for f in r['findings'] if f['category'] == 'internal_doc' and f.get('status') == 'changed'}
+        self.assertEqual(hit, {'docs/坑记录.md', 'graphics/坑记录_续.md'})
+        self.assertEqual(p.returncode, 1)
+
     def test_windows_illegal_path_blocks_new_files_only(self):
         # 11-05 天眼：误提交的 'R:\\s2a\\work\\lane/me.need' 让 Windows 端整仓检出报 invalid path。
         # 期望（按 Windows 命名规则手写）：每段含 < > : " | ? * \\ 或控制字符、是设备保留名（不论扩展名）、以空格或点结尾即非法
         bad = ['R:\\s2a\\work\\lane/me.need', 'docs/a?b.md', 'docs/a*b.md', 'docs/a<b.md', 'docs/a>b.md',
                'docs/a|b.md', 'docs/a"b.md', 'docs/a:b.md', 'docs/a\x01b.md', 'aux/x.md', 'docs/CON',
                'docs/nul.txt', 'docs/Com1.md', 'docs/lpt9.md', 'docs/dot.', 'docs/sp ', 'trail. /x.md']
-        good = ['docs/坑记录.md', 'docs/console.md', 'docs/com0.md', 'docs/conx.md', 'docs/.hidden.md',
+        good = ['docs/常见问题.md', 'docs/console.md', 'docs/com0.md', 'docs/conx.md', 'docs/.hidden.md',
                 'docs/a b.md', 'docs/a.b.c.md']
         base = self.commit({'docs/base.md': 'clean\n'})
         self.commit({n: 'clean\n' for n in bad + good})
@@ -617,8 +679,11 @@ class ScanTests(unittest.TestCase):
         self.commit({'docs/clean.md': 'still clean\n'})
         p, r = self.scan('--base', base)
         self.assertEqual(p.returncode, 0)
-        self.assertEqual(len(r['findings']), 1)
-        self.assertEqual(r['findings'][0]['status'], 'existing')
+        # 增量模式（11-16 起）：没改的 docs/old.md 不读——存量命中不阻挡、也不再列出；覆盖统计记 unchanged_not_read
+        self.assertEqual(r['findings'], [])
+        self.assertGreater(r['coverage'].get('unchanged_not_read', 0), 0)
+        p, r = self.scan()
+        self.assertEqual([f['status'] for f in r['findings']], ['existing'], '不给 --base 的全量清单照旧列出存量')
         self.commit({'docs/old.md': '/Users/fixtureperson/old\nunrelated edit\n'})
         p, r = self.scan('--base', base)
         self.assertEqual(p.returncode, 0)
@@ -671,14 +736,33 @@ class ScanTests(unittest.TestCase):
         self.assertEqual(r['blocking_count'], len(names))
         self.assertEqual(r['uncovered'], [])
 
-    def test_unread_payload_and_unknown_are_warning_only(self):
+    def test_reviewed_extract_failure_log_is_scanned_and_other_logs_stay_unread(self):
+        name = 'pack/jobs/tests/fixtures/extract_hash_mismatch_1411.log'
+        other = 'pack/jobs/tests/fixtures/extract_hash_mismatch_unreviewed.log'
+        self.commit({name: (ROOT / name).read_bytes(), other: b'original unread fixture'})
+        report = self.mod.scan(self.root, 'HEAD', [name])
+        self.assertEqual(report['coverage'].get('text'), 1)
+        self.assertEqual(report['findings'], [])
+        self.assertEqual(report['uncovered'], [])
+
+        self.commit({name: '/home/fixtureperson/source\n'})
+        report = self.mod.scan(self.root, 'HEAD', [name])
+        self.assertEqual(report['blocking_count'], 1, 'reviewed text must still scan its contents')
+        self.assertEqual([f['category'] for f in report['findings']], ['home_path'])
+        with patch.object(self.mod.Blobs, 'read', side_effect=AssertionError('unreviewed log read')):
+            unread = self.mod.scan(self.root, 'HEAD', [other])
+        self.assertEqual(unread['coverage'].get('excluded_payload'), 1)
+        self.assertEqual([row['path'] for row in unread['uncovered_blocking']], [other])
+
+    def test_new_unread_payload_and_unknown_block(self):
         base = self.commit({'safe.md': 'safe\n'})
         self.commit({'game.nsp': b'synthetic', 'unknown.xyz': b'synthetic',
                      'binary.txt': b'\0synthetic'})
         p, r = self.scan('--base', base)
-        self.assertEqual(p.returncode, 0)
+        self.assertEqual(p.returncode, 1)
         self.assertEqual(r['incomplete_changed'], [])
-        self.assertEqual(len(r['warnings_changed']), 3)
+        self.assertEqual(sorted(f['path'] for f in r['uncovered_blocking']), ['binary.txt', 'game.nsp', 'unknown.xyz'])
+        self.assertEqual(r['warnings_changed'], [])
 
     def test_metadata_new_and_renamed_only(self):
         base = self.commit({'old.png': b'synthetic', 'old.mme': b'synthetic'})
@@ -879,7 +963,7 @@ class ScanTests(unittest.TestCase):
         self.assertNotIn('fixtureperson', red.stdout + red.stderr)
         report = json.loads((self.root / 'build/public_repo_scan.json').read_text())
         self.assertGreater(report['blocking_count'], 0)
-        self.assertTrue(any(f['status'] == 'existing' for f in report['findings']))
+        self.assertGreater(report['coverage'].get('unchanged_not_read', 0), 0)   # 存量文件没改：增量模式不读（11-16 起）
 
     def test_contrib_doc_executes_scan_and_red_takes_priority(self):
         base = self.install_gate_fixture()

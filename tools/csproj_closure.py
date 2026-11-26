@@ -39,20 +39,24 @@ def refs_regex(proj):
     for k, v in re.findall(r'<(\w+)(?:\s+Condition="[^"]*")?>([^<]*)</\1>', txt): var.setdefault(k, v)
     out = []
     for inc in re.findall(r'<ProjectReference\s+Include="([^"]+)"', txt):
-        p = inc
-        for _ in range(5): p = re.sub(r'\$\((\w+)\)', lambda m: var.get(m.group(1), m.group(0)), p)
-        if '$(' in p: die(f'{proj}：认不出的 MSBuild 变量 {inc}')
-        p = os.path.normpath(os.path.join(here, p.replace('\\', '/')))
-        if not os.path.isfile(p): die(f'{proj}：引用的工程不存在 {p}')
-        out.append(p)
+        for part in inc.split(';'):   # 一个 Include 可列多个工程（分号隔开），逐个解析；带 Condition 的也照算（粗键只会多算目录，不会漏）
+            p = part.strip()
+            if not p: continue
+            for _ in range(5):
+                p = re.sub(r'\$\((\w+)\)', lambda m: var.get(m.group(1), m.group(0)), p)
+                p = re.sub(r"\$\(\[System\.IO\.Path\]::GetFullPath\('([^'$]*)'\)\)", r'\1', p)   # 常见写法 RepoRoot = $([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)../..'))
+            if '$(' in p: die(f'{proj}：认不出的 MSBuild 变量 {inc}')
+            p = os.path.normpath(os.path.join(here, p.replace('\\', '/')))
+            if not os.path.isfile(p): die(f'{proj}：引用的工程不存在 {p}')
+            out.append(p)
     return out
 
 
 def up_cfg(d):
-    out = set()
+    out, want = set(), {f.lower() for f in UPCFG}
     while True:
-        for f in UPCFG:
-            if os.path.isfile(os.path.join(d, f)) and rel(os.path.join(d, f)): out.add(rel(os.path.join(d, f)))
+        for f in sorted(os.listdir(d)):   # 按目录里的真实文件名取（NuGet 认配置名不分大小写；Mac 盘也不分，按 UPCFG 拼写去拼会得到 HEAD 里没有的 nuget.config）
+            if f.lower() in want and os.path.isfile(os.path.join(d, f)) and rel(os.path.join(d, f)): out.add(rel(os.path.join(d, f)))
         if os.path.samefile(d, ROOT) or d == '/': break
         d = os.path.dirname(d)
     return out

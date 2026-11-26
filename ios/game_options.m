@@ -130,6 +130,11 @@ char *s2a_shell_game_options_json(const char *game_id) {
             for (NSString *l in [caps componentsSeparatedByString:@"\n"]) if ([l hasPrefix:@"fps60\t0"]) fps[@"note"] = S2AL(@"settings.fps.knownIssue");
         }
         BOOL fs = NO; int blocked = s2a_ios_fullscreen_state(gid, &fs);
+        // S4「SDR 转 HDR」（#625 第二阶段 PR-B，评审终稿：只放这一处——App 设置页不出行；#1252「开局前选好进游戏直接生效」
+        //   先例口径，布尔行类型照 fps60 行同款接入）：没拨过 = 关（缺省关，字节级回现状）；title / note 都在这边给
+        //   （已按当前语言，note = 维护者终稿整句——技术细节在 docs/画面设置.md），Swift 壳只画不译
+        NSMutableDictionary *hdrSdrMap = [@{@"on": @(s2a_ios_hdr_sdr_map_on_for(gid)), @"enabled": @YES,
+                                             @"title": S2AL(@"gfx.hdrSdrMap"), @"note": S2AL(@"game.hdrSdrMap.note")} mutableCopy];
         NSMutableDictionary *full = [@{@"on": @(fs), @"enabled": @(!blocked), @"note": blocked ? S2AL(@"settings.widen.blocked") : S2AL(@"game.fullscreen.note")} mutableCopy];   // 下面补丁结果可能追加
         NSArray<S2ACPatchGroup *> *groups = patch_groups(gid);
         // 补丁优先（11-13 维护者，同整页设置 app_settings.m）：带帧率补丁的款「60 帧」改名「帧率」、写补丁目标，原生 60 帧也不再锁死（补丁可以到 120）；
@@ -138,12 +143,12 @@ char *s2a_shell_game_options_json(const char *game_id) {
             NSInteger target = 0; BOOL fpsP = NO, wsP = NO;
             for (S2ACPatchGroup *g in groups) for (S2ACPatchItem *it in g.items) { if (it.followsFps60) { fpsP = YES; target = MAX(target, it.targetFps); } if ([g.kind isEqual:@"widescreen"] || it.followsFullscreen) wsP = YES; }
             // 只用社区补丁（11-13 维护者撤掉我方 60 帧与通用满屏，tools/caps_policy.py patch_only）：没有对应补丁的款不出这一行，玩家拿到的就是原生游戏
+            //   满屏例外（11-15 维护者「没补丁的游戏手动打开满屏就走咱们通用方案」，#2205）：没有宽屏补丁也出这一行，缺省关、玩家明确开 = 我方通用满屏
             if (!fpsP) fps[@"hidden"] = @YES;
-            if (!wsP) full[@"hidden"] = @YES;
             if (fpsP) {
                 fps[@"title"] = S2AL(@"settings.fps.patchTitle"); fps[@"enabled"] = @YES; fps[@"on"] = @(s2a_ios_fps60_on_for(gid));
                 fps[@"note"] = target > 0 ? [NSString stringWithFormat:S2AL(@"settings.fps.patchNote"), (long)target] : S2AL(@"settings.patchNote");
-                // 帧率档位（11-13 维护者：60 / 120 帧补丁都带进去，玩家自己选；同 app_settings.m 帧率档位行）：两档以上才给，值 0 = 自动（不超过屏幕刷新率的最高一档）
+                // 帧率档位（11-13 维护者：60 / 120 帧补丁都带进去，玩家自己选；同 app_settings.m 帧率档位行）：两档以上才给，值 0 = 自动（不超过 60 帧的最高一档）
                 NSMutableOrderedSet *lv = [NSMutableOrderedSet orderedSet];
                 for (S2ACPatchGroup *g in groups) for (S2ACPatchItem *it in g.items) if (it.followsFps60) [lv addObject:@(it.targetFps > 0 ? it.targetFps : 60)];
                 NSArray *sorted = [lv.array sortedArrayUsingSelector:@selector(compare:)];
@@ -173,17 +178,37 @@ char *s2a_shell_game_options_json(const char *game_id) {
             [cheats addObject:@{@"key": e[@"key"], @"name": e[@"name"], @"on": @([con containsObject:e[@"key"]]), @"note": [e[@"fixed"] boolValue] ? S2AL(@"cheats.fixedAddress") : @""}];
         // 游戏音量（#1186，同齿轮菜单「声音」）：0–100，没设过 = 100
         id vo = [d objectForKey:@"S2AGameVolume"]; NSInteger volume = vo ? MAX(0, MIN(100, [vo integerValue])) : 100;
-        return dup_json(@{@"fps": fps, @"fullscreen": full, @"patches": patches, @"cheats": cheats, @"volume": @(volume), @"language": game_language_json(gid, d)});
+        // 输出设备类型 + 两个虚拟环绕开关（#189 后续，5.1 虚拟环绕第二片；定义表 game_settings.v1.json 的 audioDevice / vsSpeakers /
+        //   vsHeadphones）：按游戏存（per_game_keys），没选过 = auto（按设备真实声道判，5.1 直通缺省不变）；两个开关各存各的，
+        //   只在对应显式类型下生效（驱动侧判），没拨过按关报
+        id ad = [d objectForKey:@"S2AAudioDevice"];
+        NSString *device = [ad isKindOfClass:NSString.class] && [@[@"builtin", @"headphones", @"external"] containsObject:ad] ? ad : @"auto";
+        id vsS = [d objectForKey:@"S2AAudioVsSpeakers"], vsH = [d objectForKey:@"S2AAudioVsHeadphones"];
+        return dup_json(@{@"fps": fps, @"fullscreen": full, @"patches": patches, @"cheats": cheats, @"volume": @(volume), @"language": game_language_json(gid, d),
+                          @"audio": @{@"device": device, @"vsSpeakers": @([vsS boolValue]), @"vsHeadphones": @([vsH boolValue])},
+                          @"hdrSdrMap": hdrSdrMap});
     }
 }
 
-// kind = fps / fpspick / fullscreen / patch / cheat / volume / language；key = 补丁编号 / 「文件名/条目名」（fps、fullscreen 不看）。返回 1 存成 / 0 没存成
+// kind = fps / fpspick / fullscreen / patch / cheat / volume / language / audiodevice / audiovs / hdrsdrmap；key = 补丁编号 / 「文件名/条目名」（fps、fullscreen、hdrsdrmap 不看）。返回 1 存成 / 0 没存成
 int s2a_shell_game_option_set(const char *game_id, const char *kind, const char *key, int on) {
     @autoreleasepool {
         if (!gid_ok(game_id) || !kind) return 0;
         NSString *gid = @(game_id), *k = @(kind), *item = key ? @(key) : @"";
         if ([k isEqual:@"fps"]) { s2a_ios_set_fps60_for(gid, on != 0); return 1; }
+        if ([k isEqual:@"hdrsdrmap"]) { s2a_ios_set_hdr_sdr_map_for(gid, on != 0); return 1; }   // S4「SDR 转 HDR」（#625 第二阶段 PR-B，评审终稿：只放每款设置页）：按款布尔行，同 fps 行形态；下次起局 settings.m 只落 S2A_HDR_SDR_MAP（不联动 S2A_HDR）
         if ([k isEqual:@"volume"]) { [s2a_ios_settings_defaults_for(gid) setInteger:MAX(0, MIN(100, item.integerValue)) forKey:@"S2AGameVolume"]; return 1; }   // 游戏音量：key = 百分比，on 不看（#1186）
+        if ([k isEqual:@"audiodevice"]) {   // 输出设备类型：key = builtin / headphones / external，"auto" = 未选择（删掉这款的值），on 不看（#189 后续，5.1 虚拟环绕第二片）
+            if (![item isEqual:@"auto"] && ![item isEqual:@"builtin"] && ![item isEqual:@"headphones"] && ![item isEqual:@"external"]) return 0;
+            NSUserDefaults *gd = s2a_ios_settings_defaults_for(gid);
+            if ([item isEqual:@"auto"]) [gd removeObjectForKey:@"S2AAudioDevice"]; else [gd setObject:item forKey:@"S2AAudioDevice"];
+            return 1;
+        }
+        if ([k isEqual:@"audiovs"]) {   // 两个虚拟环绕开关：key = speakers / headphones，on = 开关值；各存各的（切换设备类型各自恢复），on 不看类型（驱动侧判）
+            if (![item isEqual:@"speakers"] && ![item isEqual:@"headphones"]) return 0;
+            [s2a_ios_settings_defaults_for(gid) setBool:(on != 0) forKey:[item isEqual:@"speakers"] ? @"S2AAudioVsSpeakers" : @"S2AAudioVsHeadphones"];
+            return 1;
+        }
         if ([k isEqual:@"language"]) {   // 游戏语言：key = 宿主枚举名，"system" = 跟随系统（删掉这款的值），on 不看（#1252）
             if (![s2a_ios_game_languages() containsObject:item]) return 0;
             NSUserDefaults *gd = s2a_ios_settings_defaults_for(gid);
@@ -214,14 +239,15 @@ NSArray<NSDictionary *> *s2a_ios_crash_suspects_for(NSString *gid) {
     for (NSDictionary *e in s2a_ios_cheat_entries(dir)) if ([con containsObject:e[@"key"]]) [out addObject:@{@"kind": @"cheat", @"key": e[@"key"], @"name": e[@"name"]}];
     // 社区补丁：开着的都算（11-13 起没选过 = 默认开，不再只算玩家自己开的）；帧率补丁跟 60 帧开关，开着就把「60 帧」算进去（关掉 = 关 60 帧）
     NSUserDefaults *d = s2a_ios_settings_defaults_for(gid);
-    NSArray<S2ACPatchGroup *> *groups = patch_groups(gid); NSSet *pon = S2ACPatchEnabled(groups, d); BOOL fps = NO, fpsVerified = NO, fam = NO, famVerified = NO;
+    NSArray<S2ACPatchGroup *> *groups = patch_groups(gid); NSSet *pon = S2ACPatchEnabled(groups, d); BOOL fps = NO, fpsVerified = NO, famVerified = NO;
     for (S2ACPatchGroup *g in groups) for (S2ACPatchItem *it in g.items) {
         if (it.followsFps60) { fps = YES; fpsVerified |= it.defaultOn; }
-        else if (it.followsFullscreen) { fam = YES; famVerified |= it.defaultOn; }   // 自适应满屏一族跟满屏开关：并成一条「满屏」，关 = 关开关（原先逐份从列表里删，开关仍显示开）
+        else if (it.followsFullscreen) famVerified |= it.defaultOn;   // 自适应满屏一族跟满屏开关：并成一条「满屏」，关 = 关开关（原先逐份从列表里删，开关仍显示开）
         else if ([pon containsObject:it.ident]) [out addObject:@{@"kind": @"patch", @"key": it.ident, @"name": it.title, @"verified": @(it.defaultOn)}];
     }
     if (fps && s2a_ios_fps60_on_for(gid)) [out addObject:@{@"kind": @"fps", @"key": @"fps60", @"name": S2AL(@"cpatch.group.fps"), @"verified": @(fpsVerified)}];
-    BOOL fsOn = NO; if (fam && !s2a_ios_fullscreen_state(gid, &fsOn) && fsOn)
+    // 满屏开着就算一条：自适应满屏一族跟开关，或没有补丁、玩家明确开的我方通用满屏（11-15；同 Mac pack/jobs/cheats.py），崩了下一局关满屏
+    BOOL fsOn = NO; if (!s2a_ios_fullscreen_state(gid, &fsOn) && fsOn)
         [out addObject:@{@"kind": @"fs", @"key": @"fullscreen", @"name": S2AL(@"cpatch.group.widescreen"), @"verified": @(famVerified)}];
     return out;
 }
@@ -259,7 +285,8 @@ NSArray<NSDictionary *> *s2a_ios_crash_decide_for(NSString *gid) {
     [d setObject:@{@"ver": app_version(), @"items": rec} forKey:@"S2ACrashAutoOff"];
     return items;
 }
-void s2a_dprompt_notice(NSString *title, NSString *body, double delay, double seconds);   // dprompt.m
+// 弱链接[lab]：s2a_dprompt_notice（dprompt.m 提供的提示条；输入工作台不编 dprompt.m，取不到就不提示）
+void s2a_dprompt_notice(NSString *title, NSString *body, double delay, double seconds) __attribute__((weak_import));
 void s2a_ios_crash_session_begin(NSString *gid, BOOL prev_clean) {
     if (!gid.length) return;
     NSUserDefaults *d = s2a_ios_settings_defaults_for(gid);
@@ -280,7 +307,7 @@ void s2a_ios_crash_session_begin(NSString *gid, BOOL prev_clean) {
         [d removeObjectForKey:@"S2ACrashAutoOff"];
         NSString *joined = [names componentsJoinedByString:S2AL(@"common.listSeparator")];
         LOG("崩溃恢复：App 换了版本（%s → %s），重开上次崩溃时自动关掉的 %s", [ao[@"ver"] UTF8String], app_version().UTF8String, joined.UTF8String);
-        if (names.count) s2a_dprompt_notice(S2AL(@"crash.restored.title"), [NSString stringWithFormat:S2AL(@"crash.restored.body"), joined], 3, 8);
+        if (names.count && s2a_dprompt_notice) s2a_dprompt_notice(S2AL(@"crash.restored.title"), [NSString stringWithFormat:S2AL(@"crash.restored.body"), joined], 3, 8);
     }
     NSArray *last = [d arrayForKey:@"S2ACrashSessionOn"];
     if (prev_clean && last) [d setObject:last forKey:@"S2ACrashGoodOn"];

@@ -34,15 +34,20 @@ class FakeAdb:
         self.calls = []
         self.wrong_hash, self.refused, self.stale_start = wrong_hash, refused, stale_start
         self.slow_import = slow_import   # 导入一直没做完：logcat 里没有成功行
+        self.import_progress = None   # 非空：导入期间每次读 logcat 依次出这些进度（MiB），出完后进度停住；import_done_after 次后出成功行
+        self.import_done_after = None; self.import_polls = 0
         self.receive_reply = receive_reply   # 非空：接收端回这一行（如 ERR …）而不是 OK
         self.drop_first = drop_first         # 前几次连接一接上就断（设备端还没监听时 adb forward 的样子）
         self.started = False
         self.receipt = None   # (contentRoot, artifactSha256)：App 导入成功时在 logcat 打的回执（正式包读不了 current.json）
+        self.delta_receipt = False
         self.received, self.name, self.connects = {}, None, 0
         self.digest = None    # 机上没装：真 adb 的 installed_hash 此时抛 RuntimeError（pm path 为空）
         self.remote = {}      # 设备共享存储上已有文件的 SHA-256（路径 → 摘要），sha256sum 照它答
         self.in_place = None  # App 收到的原地登记请求路径
         self.in_place_refused = False
+        self.save_received = None
+        self.save_reply = None
 
     def _serve(self, server):
         while True:
@@ -61,6 +66,18 @@ class FakeAdb:
                     self.in_place = head[2]
                     conn.sendall(b'OK in-place\n')
                     continue
+                if head[0] == 'S2A-SAVE':
+                    title, size_text = head[2].split(' ')
+                    size = int(size_text)
+                    received = f.read(size)
+                    if head[1] != '1' or title != TITLE or size <= 0 or len(received) != size or f.readline() != b'END\n':
+                        conn.sendall(b'ERR save_header\n')
+                        continue
+                    self.save_received = received, self.started
+                    backup = f'save-transfer/{title}/save-backups/{title}/test/before-restore.s2asave'
+                    receipt = dict(titleId=title, files=2, bytes=16, previousBackup=backup)
+                    conn.sendall(((self.save_reply or 'OK ' + json.dumps(receipt)) + '\n').encode())
+                    continue
                 self.name = head[2]
                 while True:
                     line = f.readline().decode().rstrip('\n')
@@ -68,7 +85,8 @@ class FakeAdb:
                         break
                     _, size, path = line.split(' ', 2)
                     self.received[path] = f.read(int(size))
-                conn.sendall(((self.receive_reply or f'OK {len(self.received)} 0') + '\n').encode())
+                received_bytes = sum(map(len, self.received.values()))
+                conn.sendall(((self.receive_reply or f'OK {len(self.received)} {received_bytes}') + '\n').encode())
 
     def call(self, *args, timeout=600):
         self.calls.append(args)
@@ -114,11 +132,18 @@ class FakeAdb:
             accepted = f'Game startup accepted: {TITLE} session 1'
             if self.refused:
                 return f'Game import of import/{self.name} refused: missing resource'
-            if self.slow_import:
+            if self.import_progress is not None:
+                self.import_polls += 1
+                if self.import_done_after is None or self.import_polls <= self.import_done_after:
+                    seen = self.import_progress[:self.import_polls]
+                    return '\n'.join(f'Game import progress: {d} / 20000 MiB' for d in seen)
+            elif self.slow_import:
                 return ''
             imported = f'Game build artifact updated (same files): test [{TITLE}] from import/{self.name}'
             if self.receipt:
-                imported += f'\nGame import receipt: {TITLE} contentRoot={self.receipt[0]} artifactSha256={self.receipt[1]} from import/{self.name}'
+                proof = ' resourceDelta=1' if self.delta_receipt else ''
+                imported += (f'\nGame import receipt: {TITLE} contentRoot={self.receipt[0]}'
+                             f' artifactSha256={self.receipt[1]}{proof} from import/{self.name}')
             return '\n'.join((accepted, imported) if self.stale_start else ((imported, accepted) if self.started else (imported,)))
         return ''
 
@@ -177,6 +202,27 @@ class DeployTest(unittest.TestCase):
     def deploy(self, adb, **kw):
         return deploy_game.deploy(self.pack, self.apk, adb, self.root / 'out', **kw)
 
+    def test_save_transfer_commit_precedes_launch(self):
+        archive = self.root / 'test.s2asave'
+        archive.write_bytes(b'synthetic wire payload')
+        adb = FakeAdb()
+        out = self.deploy(adb, save_archive=archive)
+        self.assertEqual(adb.save_received, (archive.read_bytes(), False))
+        self.assertTrue(adb.started)
+        result = json.loads((out / 'deployment.json').read_text())['saveImport']
+        self.assertEqual((result['titleId'], result['files'], result['bytes']), (TITLE, 2, 16))
+        self.assertTrue(result['previousBackup'].endswith('/before-restore.s2asave'))
+        self.assertNotIn('run-as', ' '.join(str(call) for call in adb.calls))
+
+    def test_save_refusal_does_not_launch_game(self):
+        archive = self.root / 'test.s2asave'
+        archive.write_bytes(b'synthetic wire payload')
+        adb = FakeAdb()
+        adb.save_reply = 'ERR save_wrong_game'
+        with self.assertRaisesRegex(RuntimeError, 'save_wrong_game'):
+            self.deploy(adb, save_archive=archive)
+        self.assertFalse(adb.started)
+
     def test_debug_application_id_is_bound_without_changing_game_identity(self):
         self.identity_mock.return_value = ('org.s2arm.game.t0100000000abcdef.w2', 2, True)
         out = self.deploy(FakeAdb())
@@ -225,6 +271,141 @@ class DeployTest(unittest.TestCase):
             self.assertEqual((full / name).read_bytes(), (refresh / name).read_bytes())
         self.assertTrue((full / 'romfs/data').exists())
         self.assertFalse((refresh / 'romfs').exists())
+
+    def test_refresh_sends_only_metadata_even_with_full_resources(self):
+        resources = self.root / 'resources'
+        game_apk.resources(self.pack, self.apk, resources)
+        adb = FakeAdb()
+        deploy_game.deploy_resources(self.apk, resources, adb, self.root, start=False,
+                                     refresh_existing=True, require_current=False)
+        self.assertEqual(set(adb.received), {'manifest.json', 'index.tsv',
+                         'game-build-artifact.json', 'ctl/control.nacp'})
+
+    def test_strict_upgrade_uses_old_receipt_and_checks_new_receipt(self):
+        resources = self.root / 'resources'
+        game_apk.resources(self.pack, self.apk, resources)
+        artifact, new_binding = deploy_game.validate(self.apk, resources)
+        resident = dict(packageName=artifact['apk']['packageName'], apkSha256='1' * 64,
+                        contentRoot=artifact['contentRoot'], artifactSha256='2' * 64)
+        adb = FakeAdb()
+        adb.digest = resident['apkSha256']
+        adb.receipt = (resident['contentRoot'], new_binding)
+        paths = ('manifest.json', 'index.tsv', 'game-build-artifact.json', 'ctl/control.nacp')
+        size = sum((resources / name).stat().st_size for name in paths)
+        receipt = deploy_game.deploy_resources(self.apk, resources, adb, self.root, start=False,
+                                               allow_full_import=False, resident_receipt=resident,
+                                               max_resource_bytes=size)
+        self.assertEqual(adb.received, {name: (resources / name).read_bytes() for name in paths})
+        self.assertEqual((receipt['transferMode'], receipt['previousContentRoot'],
+                          receipt['sentFiles'], receipt['sentBytes']),
+                         ('refresh', resident['contentRoot'], 4, size))
+        self.assertGreaterEqual(receipt['transferMs'], 0)
+        self.assertEqual(receipt['artifactSha256'], new_binding)
+        self.assertEqual([call for call in adb.calls if call[0] == 'install'], [('install', '-r', self.apk)])
+
+    def test_strict_upgrade_refuses_stale_missing_mismatched_or_over_budget_plan_before_install(self):
+        resources = self.root / 'resources'
+        game_apk.resources(self.pack, self.apk, resources)
+        artifact, _ = deploy_game.validate(self.apk, resources)
+        resident = dict(packageName=artifact['apk']['packageName'], apkSha256='1' * 64,
+                        contentRoot=artifact['contentRoot'], artifactSha256='2' * 64)
+        for proof, budget, expected in (
+            (None, None, '全量导入已禁止'),
+            (dict(resident, contentRoot='sha256-' + '3' * 64), None, '全量导入已禁止'),
+            (dict(resident, apkSha256='4' * 64), None, '驻留导入回执与当前 APK 不匹配'),
+            (resident, 1, '资源直传超过预算'),
+        ):
+            with self.subTest(expected=expected):
+                adb = FakeAdb()
+                adb.digest = resident['apkSha256']
+                with self.assertRaisesRegex(RuntimeError, expected):
+                    deploy_game.deploy_resources(self.apk, resources, adb, self.root, start=False,
+                                                 allow_full_import=False, resident_receipt=proof,
+                                                 max_resource_bytes=budget)
+                self.assertEqual(adb.calls, [])
+
+    def test_strict_upgrade_never_falls_back_when_receiver_refuses(self):
+        resources = self.root / 'resources'
+        game_apk.resources(self.pack, self.apk, resources)
+        artifact, _ = deploy_game.validate(self.apk, resources)
+        resident = dict(packageName=artifact['apk']['packageName'], apkSha256='1' * 64,
+                        contentRoot=artifact['contentRoot'], artifactSha256='2' * 64)
+        adb = FakeAdb(refused=True)
+        adb.digest = resident['apkSha256']
+        with self.assertRaisesRegex(RuntimeError, '^资源导入被拒绝$'):
+            deploy_game.deploy_resources(self.apk, resources, adb, self.root, start=False,
+                                         allow_full_import=False, resident_receipt=resident)
+        self.assertEqual(len(adb.received), 4)
+        self.assertFalse((self.root / 'deployment.json').exists())
+
+    def delta_fixture(self):
+        old, new = self.root / 'old', self.root / 'new'
+        game_apk.resources(self.pack, self.apk, old)
+        artifact, binding = deploy_game.validate(self.apk, old)
+        resident = dict(packageName=artifact['apk']['packageName'], apkSha256=artifact['apk']['sha256'],
+                        contentRoot=artifact['contentRoot'], artifactSha256=binding)
+        payload = b'changed resource'
+        (self.pack / 'romfs/data').write_bytes(payload)
+        index = self.pack / 'index.tsv'
+        rows = index.read_text().splitlines()
+        rows = [f'romfs/data\t{len(payload)}\t{hashlib.sha256(payload).hexdigest()}'
+                if row.startswith('romfs/data\t') else row for row in rows]
+        content = ('\n'.join(rows) + '\n').encode()
+        index.write_bytes(content)
+        (self.pack / 'manifest.json').write_text(json.dumps(
+            dict(version=2, index_sha256=hashlib.sha256(content).hexdigest())))
+        with zipfile.ZipFile(self.apk, 'a') as apk:
+            apk.writestr('assets/diagnostic.txt', b'upgraded')
+        game_apk.resources(self.pack, self.apk, new)
+        target, new_binding = deploy_game.validate(self.apk, new)
+        return old, new, resident, (target['contentRoot'], new_binding)
+
+    def test_cross_root_delta_sends_changed_files_and_requires_receiver_confirmation(self):
+        old, new, resident, target = self.delta_fixture()
+        marker = (f's2a-resource-delta-v1\t{resident["contentRoot"]}\t{resident["artifactSha256"]}'
+                  f'\t{target[0]}\n').encode()
+        uploaded = {path: (new / path).read_bytes() for path in (*game_apk.REFRESH_PAYLOAD, 'romfs/data')}
+        uploaded['game-resource-delta.tsv'] = marker
+        size = sum(map(len, uploaded.values()))
+        adb = FakeAdb()
+        adb.digest, adb.receipt = resident['apkSha256'], target
+        options = dict(start=False, allow_full_import=False, resident_receipt=resident,
+                       delta_from=old, max_resource_bytes=size)
+        with self.assertRaisesRegex(RuntimeError, '设备未确认资源差分导入'):
+            deploy_game.deploy_resources(self.apk, new, adb, self.root, **options)
+        self.assertEqual(adb.received, uploaded)
+        adb.delta_receipt = True  # Same APK is already installed; verify an explicit retry.
+        receipt = deploy_game.deploy_resources(self.apk, new, adb, self.root, **options)
+        self.assertEqual(adb.received, uploaded)
+        self.assertEqual((receipt['transferMode'], receipt['previousContentRoot'], receipt['sentFiles'],
+                          receipt['sentBytes'], receipt['contentRoot'], receipt['artifactSha256']),
+                         ('delta', resident['contentRoot'], 6, size, *target))
+        self.assertEqual([call for call in adb.calls if call[0] == 'install'], [('install', '-r', self.apk)])
+
+    def test_cross_root_delta_rejects_invalid_plan_before_install(self):
+        old, new, resident, target = self.delta_fixture()
+        adb = FakeAdb()
+        adb.digest, adb.receipt = resident['apkSha256'], target
+        with self.assertRaisesRegex(RuntimeError, '资源直传超过预算'):
+            deploy_game.deploy_resources(self.apk, new, adb, self.root, start=False, resident_receipt=resident,
+                                         delta_from=old, max_resource_bytes=1)
+        with self.assertRaisesRegex(ValueError, '旧资源与驻留回执不符'):
+            deploy_game.deploy_resources(self.apk, new, adb, self.root, start=False, delta_from=old,
+                                         resident_receipt=dict(resident, artifactSha256='0' * 64))
+        data = new / 'romfs/data'
+        outside = self.root / 'outside-data'
+        outside.write_bytes(data.read_bytes())
+        data.unlink()
+        data.symlink_to(outside)   # 字节对、但是指向资源目录外的链接：照样拒
+        with self.assertRaisesRegex(ValueError, '差分文件与目标索引不符：romfs/data'):
+            deploy_game.deploy_resources(self.apk, new, adb, self.root, start=False,
+                                         resident_receipt=resident, delta_from=old)
+        data.unlink()
+        data.write_bytes(b'x' * len(b'changed resource'))
+        with self.assertRaisesRegex(ValueError, '差分文件与目标索引不符：romfs/data'):
+            deploy_game.deploy_resources(self.apk, new, adb, self.root, start=False,
+                                         resident_receipt=resident, delta_from=old)
+        self.assertEqual(adb.calls, [])
 
     def test_deploy_freezes_apk_and_records_matching_identity(self):
         adb = FakeAdb()
@@ -338,6 +519,12 @@ class DeployTest(unittest.TestCase):
         self.assertEqual(adb.connects, 3)
         self.assertEqual(len(adb.received), sum(1 for p in (out / 'resources').rglob('*') if p.is_file()))
 
+    def test_false_wire_byte_count_is_rejected(self):
+        adb = FakeAdb(receive_reply='OK 6 0')
+        with self.assertRaisesRegex(RuntimeError, 'App 收包文件数或字节数不符'):
+            self.deploy(adb)
+        self.assertFalse(adb.started)
+
     def test_app_refusal_is_red_and_never_starts(self):
         adb = FakeAdb(receive_reply='ERR bad path: ../x')
         with self.assertRaisesRegex(RuntimeError, 'App 拒收资源：ERR bad path'):
@@ -351,6 +538,7 @@ class DeployTest(unittest.TestCase):
             seen = []
             def fake_send(adb, package, resources, name, timeout, log):
                 adb.name = name; seen.append(timeout)
+                return {}
             with self.subTest(size=size), patch.object(deploy_game, 'tree_bytes', return_value=size), \
                     patch.object(deploy_game, 'send_tree', fake_send):
                 self.deploy(FakeAdb())
@@ -358,6 +546,7 @@ class DeployTest(unittest.TestCase):
         seen = []
         def fake_send50(adb, package, resources, name, timeout, log):
             adb.name = name; seen.append(timeout)
+            return {}
         with patch.object(deploy_game, 'tree_bytes', return_value=21_000_000_000), \
                 patch.object(deploy_game, 'send_tree', fake_send50):
             self.deploy(FakeAdb(), push_timeout=50)
@@ -380,6 +569,31 @@ class DeployTest(unittest.TestCase):
                 self.deploy(adb)
         started = max(i for i, x in enumerate(adb.calls) if x[:3] == ('am', 'start', '-W') and 'IMPORT_RECEIVE' in ' '.join(map(str, x)))
         self.assertFalse(any(x[:2] == ('am', 'force-stop') for x in adb.calls[started + 1:]))
+
+    def fake_clock(self):
+        # 每次 sleep 时钟前进 100 秒；monotonic 读当前值（期望按这个步长手算）
+        now = [0.0]
+        def sleep(s): now[0] += 100
+        return patch.object(deploy_game.time, 'monotonic', side_effect=lambda: now[0]), patch.object(deploy_game.time, 'sleep', side_effect=sleep)
+
+    def test_import_progress_extends_wait_past_size_estimate(self):
+        # 按大小估的等待只有 1 秒；进度每轮都涨（512 → 2560 MiB，5 轮 = 400 秒），第 6 轮出成功行：要等到成功，不能在 1 秒处判超时
+        adb = FakeAdb()
+        adb.import_progress, adb.import_done_after = [512, 1024, 1536, 2048, 2560], 5
+        mono, slp = self.fake_clock()
+        with patch.object(deploy_game, 'import_wait_for', return_value=1), mono, slp:   # 走真的直传（替身 adb 记下导入目录名，成功行才对得上）
+            self.deploy(adb)   # 不抛 = 等到了成功行；旧逻辑第 2 轮（100 秒）就过了 1 秒的截止、报超时
+        self.assertGreaterEqual(adb.import_polls, 6)   # 第 6 次读日志才出成功行（之后启动阶段还会再读）
+
+    def test_import_progress_stalled_times_out(self):
+        # 进度涨到 512 MiB 后停住：截止 = 首次看到进度的时刻 0 + 600 秒；时钟每轮 +100，第 7 轮在 600 秒处出循环，报「进度停在 512 MiB」
+        adb = FakeAdb()
+        adb.import_progress = [512]
+        mono, slp = self.fake_clock()
+        with patch.object(deploy_game, 'import_wait_for', return_value=1), patch.object(deploy_game, 'send_tree'), mono, slp:
+            with self.assertRaisesRegex(RuntimeError, '进度停在 512 MiB 已 600 秒没涨'):
+                self.deploy(adb)
+        self.assertEqual(adb.import_polls, 6)
 
     def test_resources_current_identity_and_result(self):
         resources = self.root / 'resources'
@@ -443,6 +657,7 @@ class DeployTest(unittest.TestCase):
         adb0 = FakeAdb(stale_start=True); adb0.name = None
         def fake_send(adb, package, resources, name, timeout, log):
             adb.name = name
+            return {}
         with patch.object(deploy_game, 'send_tree', fake_send), \
                 patch.object(deploy_game.time, 'monotonic', side_effect=[0] * 3 + [5] * 10), \
                 patch.object(deploy_game.time, 'sleep'):

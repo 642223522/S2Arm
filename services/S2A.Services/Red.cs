@@ -36,7 +36,8 @@ namespace S2A.Services
 
             if ((n & (n - 1)) == 0)
             {
-                Log($"【红】{what}（第 {n} 次）{(detail != null ? "：" + detail : "")}");
+                string waived = WaivedNote;
+                Log($"【红】{what}（第 {n} 次）{(detail != null ? "：" + detail : "")}{(waived.Length > 0 ? $"（之前这些校验没过、照常继续了：{waived}）" : "")}");
             }
 
             if (allowFailFast && Strict && n == 1)
@@ -45,6 +46,16 @@ namespace S2A.Services
                 Environment.FailFast($"S2A_STRICT：{what}");
             }
         }
+
+        // 校验没过、照常继续（11-17 维护者）：打一行【黄】并记下；之后报红时带上「之前这些校验没过」，定因时一眼看到是带着哪项没过的校验跑的
+        private static readonly List<string> _waived = new();
+        public static void Waive(string what, string detail = null)
+        {
+            string one = detail != null ? $"{what}（{detail}）" : what;
+            lock (_lock) { if (_waived.Count < 16) _waived.Add(one); }
+            Log($"【黄】校验没过，照常继续：{one}");
+        }
+        public static string WaivedNote { get { lock (_lock) { return string.Join("；", _waived); } } }
 
         private static readonly HashSet<string> _notes = new();
         private const int NoteCap = 256;
@@ -127,6 +138,7 @@ namespace S2A.Services
                 _counts.Clear();
                 _notes.Clear();
                 _stubs.Clear();
+                _waived.Clear();
             }
         }
     }

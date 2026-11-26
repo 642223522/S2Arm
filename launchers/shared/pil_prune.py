@@ -2,13 +2,15 @@
 # Copyright 2026 S2Arm contributors
 """随包 Python 的 Pillow 瘦身（11-16 安装包瘦身，Mac / Windows 共用）。
 出包流程只用 Pillow 读写缩放常见位图（pack/app_bundle.py 图标、pack/banner_fetch.py 横幅：PNG / JPEG / WEBP 等），
-不用 AVIF（_avif + libavif，Mac 3 MB、Windows 压缩后 4.3 MB）、不画字（_imagingft + freetype / harfbuzz）、不用 Tk。
-删这三个扩展模块，再删 .dylibs 里没人引用的库（Mac 轮子把依赖放在 PIL/.dylibs；Windows 轮子静态链在 .pyd 里，没有这一步）。
+不用 AVIF（_avif + libavif，Mac 3 MB、Windows 压缩后 4.3 MB）、不用 Tk。
+画字（_imagingft + freetype / harfbuzz）要留：下游方案的做包工具用随包 Python 跑，会用 ImageFont 画界面素材
+（#1570：d2r-mobile 的 gen_assets.py 报「cannot import name '_imagingft'」，iPhone 包出不来）。
+删这两个扩展模块，再删 .dylibs 里没人引用的库（Mac 轮子把依赖放在 PIL/.dylibs；Windows 轮子静态链在 .pyd 里，没有这一步）。
 Pillow 对缺的扩展是「这项功能不可用」（features.check 为 False），不影响其余格式。"""
 from pathlib import Path
 import re
 
-DROP = ("_avif", "_imagingft", "_imagingtk")
+DROP = ("_avif", "_imagingtk")
 
 
 def prune(site, deps=None):

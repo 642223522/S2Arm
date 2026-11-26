@@ -64,7 +64,7 @@ public sealed partial class EnvironmentWindow
         intro.Children.Add(Spacer(34));
         intro.Children.Add(BigTitle(T("welcome.win.title")));
         intro.Children.Add(Spacer(20));
-        intro.Children.Add(Lead(T("welcome.win.lead")));
+        intro.Children.Add(Lead(T("welcome.win.lead.export")));
         intro.Children.Add(Spacer(14));
         intro.Children.Add(new TextBlock { Text = T("welcome.soon"), FontSize = 14, FontWeight = FontWeight.SemiBold,
             Foreground = Accent, Opacity = 0.75, TextWrapping = TextWrapping.Wrap });
@@ -86,7 +86,7 @@ public sealed partial class EnvironmentWindow
         {
             var oneclick = new Button
             {
-                Content = T("welcome.oneclick"), Background = Accent, Foreground = Canvas,
+                Content = T("welcome.export"), Background = Accent, Foreground = Canvas,
                 Padding = new Thickness(28, 12), CornerRadius = new CornerRadius(24), Margin = new Thickness(44, 28, 0, 0),
                 FontSize = 16, FontWeight = FontWeight.SemiBold, HorizontalAlignment = HorizontalAlignment.Left
             };
@@ -216,10 +216,18 @@ public sealed partial class EnvironmentWindow
     }
 
     // 默认库：%USERPROFILE%\S2Arm（LibraryPaths.DefaultLibrary；玩家选过就用选的），如果还没连接就先 setup。
+    //   第一次建库且有不止一块盘时先问放哪块盘（NeedsLibraryDrive）。
     private void EnsureLibrary(Action next)
     {
         if (connectedFolder is not null && libraryId is not null) { next(); Render(); return; }
         var defaultLib = SavedLibrary();
+        // 第一次建库、这台电脑不止一块能放库的盘：先让玩家选盘（LibraryDrivePicker 选盘模式），不再不问就放进系统盘的用户目录
+        if (NeedsLibraryDrive(defaultLib))
+        {
+            libraryFailCode = LibraryChooseDrive; libraryFailMoveFrom = null; libraryFailFolder = defaultLib; libraryFolder = defaultLib;
+            Render();
+            return;
+        }
         // 玩家没选过位置：缺省位置被别的文件占着（多半是把 S2Arm 解压到了 %USERPROFILE%\S2Arm）时由作业层 setup 换到旁边（freeDefault，规则在
         //   pack/jobs/library.py setup，剃刀 W19），连上后记住实际位置。原先 setup 拒收后整个添加游戏卡死（v0.2.8 热修，「一直提示还有任务在进行」）
         freeDefault = !File.Exists(LibraryPreference);
@@ -238,7 +246,8 @@ public sealed partial class EnvironmentWindow
         var front = BeginJob(JobKind.Library); librarySummary = "library.working"; Render();
         try
         {
-            connectedFolder = null; libraryId = null; catalog = null; selectedGame = null; ClearCovers();
+            ClearSelectedGame("setup");   // 欢迎页建库 / 选库：整段清空，先记一行（#1392）
+            connectedFolder = null; libraryId = null; catalog = null; ClearCovers();
             PrivateJobRequest.EnsurePrivateRoot(privateRoot);
             var free = freeDefault; freeDefault = false;   // 文件夹由 setup 建（先过库路径规则，不在启动器目录里留空文件夹）
             var accept = new HashSet<string>();
@@ -268,17 +277,18 @@ public sealed partial class EnvironmentWindow
         catch (LibraryProtocolException error)
         { librarySummary = "library.invalid_result"; libraryDiagnostics += "\n" + error.Message; importError = libraryFailure = LibraryFailed(folder, error.Message); }
         catch (OperationCanceledException) { librarySummary = "library.interrupted"; }
+        catch (UnauthorizedAccessException error)   // 写不进去：不甩英文原文，说清是哪个文件夹、怎么办（原文进诊断）
+        { librarySummary = "library.failed"; libraryDiagnostics += "\n" + error.Message; importError = libraryFailure = LibraryFailed(folder, NoWrite(error, folder)); }
         catch (Exception error)   // 玩家输入驱动的连接 / 创建：任何异常都报出来、不逃出去（玩家反馈：点「连接或创建游戏库」闪退）
         { librarySummary = "library.failed"; libraryDiagnostics += "\n" + error.Message; importError = libraryFailure = LibraryFailed(folder, error.Message); }
         finally { EndJob(front); Render(); }
     }
 
-    // 欢迎页「一键出包」：进入出包页（由 ExportPages.cs 渲染），留空壳等另一个任务填。
+    // 欢迎页三步做完后的下一步：打开这款的导出确认页（0.6.4 改版；原先「一键出包」进出包页的平台卡，新手不知道接着点什么）
     public void StartOneClick(LibraryGame game)
     {
         welcomeGameId = null;
-        selectedGame = game.Id;
-        Navigate("build");
+        OpenExport(game);
     }
 
     // 两栏的下限：右栏 580 + 左栏放得下「大标题一行至少一个完整词」约 380 + 左右边距
@@ -362,13 +372,18 @@ public sealed partial class EnvironmentWindow
         }
         panel.Children.Add(Muted(T("welcome.win.step.pc.what")));
         // 随包项先列；Metal 编译器要玩家自己装，放最后（OrderBy 稳定，其余顺序不变）
-        foreach (var item in report.Checks.Where(c => c.Blocking).OrderBy(c => c.Id == "metal" ? 1 : 0))
+        // 只列还差的（标题写「只差下面几样」；走查：原先把「Windows 64位 就绪」「Impactor 2.7.3 + plumesign」也列进来）
+        foreach (var item in report.Checks.Where(c => c.Blocking && c.Status != "ok").OrderBy(c => c.Id == "metal" ? 1 : 0))
         {
             var row = new StackPanel { Spacing = 4, Margin = new Thickness(0, 8, 0, 0) };
             row.Children.Add(new TextBlock { Text = item.Name, FontSize = 14.5, FontWeight = FontWeight.SemiBold,
                 Foreground = Ink, TextWrapping = TextWrapping.Wrap });
-            row.Children.Add(new TextBlock { Text = item.Id == "metal" && item.Status == "missing" ? T("welcome.win.metal.detail") : item.Message,
-                FontSize = 13, Foreground = Brush.Parse("#A8A6A1"), TextWrapping = TextWrapping.Wrap });
+            // 有玩家句的检查项（welcome.win.check.<id>）写玩家句，作业层原文（查过哪些端口 / 服务）放悬停里、「故障报修」照带（走查：Apple 驱动那行直接露出 usbmux 端口号）
+            var plain = item.Id == "metal" && item.Status == "missing" ? T("welcome.win.metal.detail")
+                : text.Has("welcome.win.check." + item.Id) ? T("welcome.win.check." + item.Id) : item.Message;
+            var detail = new TextBlock { Text = plain, FontSize = 13, Foreground = Brush.Parse("#A8A6A1"), TextWrapping = TextWrapping.Wrap };
+            if (plain != item.Message) ToolTip.SetTip(detail, item.Message);
+            row.Children.Add(detail);
             var btns = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
             if (item.OfficialUrl is { } url)
             {
@@ -387,6 +402,16 @@ public sealed partial class EnvironmentWindow
         panel.Children.Add(pcButtons);
         panel.Children.Add(ReportHintText());
         return panel;
+    }
+
+    /// <summary>「写不进去」的平实说明：异常原文里带被拒的路径就点名它所在的文件夹，取不到用给定的位置（11-16：原先直接显示
+    /// 「Access to the path '…request-….json' is denied.」）</summary>
+    private string NoWrite(UnauthorizedAccessException error, string fallback)
+    {
+        var m = System.Text.RegularExpressions.Regex.Match(error.Message, "'([^']+)'");
+        var where = m.Success ? m.Groups[1].Value : fallback;
+        if (Path.HasExtension(where)) where = Path.GetDirectoryName(where) ?? where;
+        return T("library.no_write").Replace("{0}", where);
     }
 
     private string LibraryFailed(string folder, string reason) =>

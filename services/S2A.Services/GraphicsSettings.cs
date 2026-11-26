@@ -36,13 +36,15 @@ namespace S2A.Services
                 "Nearest" => ScalingFilter.Nearest,
                 // MetalFX：直连上屏层自己读这个值做 MetalFX 空间放大（graphics/nvn nvn_present_fx.inc）；这里是 Ryujinx 渲染器的设置，通用模式没有 MetalFX，按双线性
                 "MetalFX" => ScalingFilter.Bilinear,
-                _ => throw new ArgumentOutOfRangeException("S2A_SCALING_FILTER", filter, "可选 Bilinear、Nearest、MetalFX"),
+                // Fsr（AMD FSR 1）：直连上屏层自己做（graphics/nvn nvn_present_fsr.inc）；通用模式的 FSR 没实现（graphics/metal gal_present.m 对它报「按双线性」），这里直接按双线性
+                "Fsr" => ScalingFilter.Bilinear,
+                _ => throw new ArgumentOutOfRangeException("S2A_SCALING_FILTER", filter, "可选 Bilinear、Nearest、MetalFX、Fsr"),
             };
 
             GraphicsConfig.ResScale = resolutionScale;
             renderer.Window.SetAntiAliasing(antiAliasing);
             renderer.Window.SetScalingFilter(scalingFilter);
-            Console.Error.WriteLine($"[S2A 画面] 渲染倍率 {scale}x，抗锯齿 {antiAliasing}，缩放滤镜 {scalingFilter}{(filter == "MetalFX" ? "（设的是 MetalFX：直连上屏用 MetalFX，通用模式按双线性）" : "")}");
+            Console.Error.WriteLine($"[S2A 画面] 渲染倍率 {scale}x，抗锯齿 {antiAliasing}，缩放滤镜 {scalingFilter}{(filter == "MetalFX" ? "（设的是 MetalFX：直连上屏用 MetalFX，通用模式按双线性）" : filter == "Fsr" ? "（设的是 Fsr：直连上屏用 FSR 1，通用模式按双线性）" : "")}");
         }
     }
 }

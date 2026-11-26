@@ -35,7 +35,7 @@ static void gen_blocks(uint32_t f, uint32_t w, uint32_t h, uint8_t *out) {
     if ((f == 0x41 || f == 0x42 || f == 0x45 || f == 0x46) && n >= 2) {
         memset(out, 0, 8);                      // c0=0 < c1=0xffff：透明模式
         out[2] = 0xff; out[3] = 0xff;           // c1 端点全 1
-        out[4] = out[5] = out[6] = out[7] = 0xff; // 全 index3 → alpha=0
+        out[4] = out[5] = out[6] = out[7] = 0xff; // 全 index3：RGB 不透明，RGBA 透明
     }
     if ((f >= 0x49 && f <= 0x4c) && n >= 2) {
         out[0] = 0x20; out[1] = 0x60;                 // e0 <= e1 走特殊区间（含 -1/+1 端）
@@ -126,6 +126,9 @@ static int run_case(uint32_t f, uint32_t w, uint32_t h, int corrupt) {
     uint8_t *blocks = malloc(src_sz), *want = malloc(dst_sz), *got = malloc(dst_sz);
     gen_blocks(f, w, h, blocks);
     nvn_bc_decode(f, blocks, (size_t)bw * bb, w, h, want, (size_t)w * bpp);
+    // CPU 参考的 BC1 入口统一按 RGBA 解码；RGB 格式的 alpha 按格式定义补 255。
+    if (f == 0x41 || f == 0x45)
+        for (size_t i = 3; i < dst_sz; i += 4) want[i] = 255;
     // 反证：CPU 吃干净块、GPU 吃坏块——比对必须报出差异，否则比对是哑的。
     if (corrupt) blocks[0] ^= 0x40;
     if (gpu_decode_to_buf(f, w, h, blocks, got) != 0) { g_bad++; free(blocks); free(want); free(got); return -1; }
@@ -148,11 +151,49 @@ static int run_case(uint32_t f, uint32_t w, uint32_t h, int corrupt) {
     return diff;
 }
 
+static void bc1_rgb_alpha(void) {
+    // 每行索引 3,1,3,1（0x77）。565 端点：黑=0，白=0xffff。
+    // 三色模式索引 3 为黑，RGB alpha=255 / RGBA alpha=0；索引 1 为端点 1。
+    // 四色模式白→黑的索引 3 为 (白+2*黑)/3 = 85，所有格式 alpha=255。
+    static const struct { uint8_t endpoints[4], index3, index1; int three_color; } blocks[] = {
+        {{0, 0, 255, 255}, 0, 255, 1},
+        {{0, 0, 0, 0}, 0, 0, 1},
+        {{255, 255, 0, 0}, 85, 0, 0},
+    };
+    static const uint32_t formats[] = {0x41, 0x42, 0x45, 0x46};
+    unsigned cases = 0, failures = 0;
+    for (unsigned b = 0; b < sizeof blocks / sizeof blocks[0]; b++) {
+        uint8_t src[8] = {0, 0, 0, 0, 0x77, 0x77, 0x77, 0x77};
+        memcpy(src, blocks[b].endpoints, 4);
+        for (unsigned f = 0; f < sizeof formats / sizeof formats[0]; f++) {
+            uint8_t got[64] = {0};
+            const int rgb = formats[f] == 0x41 || formats[f] == 0x45;
+            const uint8_t alpha3 = blocks[b].three_color && !rgb ? 0 : 255;
+            int diff = 0;
+            if (gpu_decode_to_buf(formats[f], 4, 4, src, got) != 0) diff++;
+            else for (unsigned i = 0; i < 16; i++) {
+                const uint8_t value = i % 2 ? blocks[b].index1 : blocks[b].index3;
+                const uint8_t alpha = i % 2 ? 255 : alpha3;
+                for (unsigned c = 0; c < 4; c++)
+                    diff += got[i * 4 + c] != (c == 3 ? alpha : value);
+            }
+            printf("bc1-alpha format=0x%02x block=%u index3=%u,%u,%u,%u expected=%u,%u,%u,%u index1=%u,%u,%u,%u diff=%d %s\n",
+                   formats[f], b, got[0], got[1], got[2], got[3], blocks[b].index3, blocks[b].index3,
+                   blocks[b].index3, alpha3, got[4], got[5], got[6], got[7], diff, diff ? "FAIL" : "PASS");
+            failures += diff != 0;
+            cases++;
+        }
+    }
+    g_bad += failures;
+    printf("bc1-alpha cases=%u failures=%u\n", cases, failures);
+}
+
 int main(void) {
     char why[256] = {0};
     if (s2a_vk_device_create(&g_dev, why, sizeof why) != 0) { printf("建 Vulkan 设备失败：%s\n", why); return 2; }
     printf("device: %s (%s)\n", g_dev.properties.deviceName, g_dev.driver_name);
     if (nvn_vk_bcdec_create(&g_dev, &g_bc, why, sizeof why) != 0) { printf("建 bcdec 失败：%s\n", why); return 2; }
+    bc1_rgb_alpha();
     static const struct { uint32_t f; const char *n; } FMTS[16] = {
         {0x41,"BC1_RGB"},{0x42,"BC1_RGBA"},{0x43,"BC2"},{0x44,"BC3"},
         {0x45,"BC1_RGB_SRGB"},{0x46,"BC1_RGBA_SRGB"},{0x47,"BC2_SRGB"},{0x48,"BC3_SRGB"},

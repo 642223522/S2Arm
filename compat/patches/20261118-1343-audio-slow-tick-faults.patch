@@ -1,0 +1,88 @@
+diff --git a/src/Ryujinx.Audio/Renderer/Server/AudioRendererManager.cs b/src/Ryujinx.Audio/Renderer/Server/AudioRendererManager.cs
+index 16641073a297e272b232a66ea9cce33b22717382..165adf6d0a2846f0db0885ddde7178ddf83d2837 100644
+--- a/src/Ryujinx.Audio/Renderer/Server/AudioRendererManager.cs
++++ b/src/Ryujinx.Audio/Renderer/Server/AudioRendererManager.cs
+@@ -268,8 +268,11 @@ namespace Ryujinx.Audio.Renderer.Server
+                 }
+ 
+                 long s2aT2 = System.Diagnostics.Stopwatch.GetTimestamp();
++                S2ATaskFaults.Read(out long s2aF0, out long s2aP0);
+                 Processor.Signal();
+-                S2ALogSlowPeriod(s2aT0, s2aCmd, System.Diagnostics.Stopwatch.GetTimestamp() - s2aT2);
++                long s2aDsp = System.Diagnostics.Stopwatch.GetTimestamp() - s2aT2;
++                S2ATaskFaults.Read(out long s2aF1, out long s2aP1);
++                S2ALogSlowPeriod(s2aT0, s2aCmd, s2aDsp, s2aF1 - s2aF0, s2aP1 - s2aP0);
+                 Processor.Wait();
+             }
+         }
+@@ -279,7 +282,9 @@ namespace Ryujinx.Audio.Renderer.Server
+         //   period), the DSP itself. At most 40 lines a run
+         private static int s_s2aSlowLines;
+ 
+-        private static void S2ALogSlowPeriod(long sessionWait, long cmd, long dsp)
++        //   faults / pageins: whole-process fault and page-in counts during the DSP pass (#1240: a DSP pass of 0.3–2 s with no lock wait and no
++        //   command time on an 8 GB Mac, where guest memory is file-backed; page-ins here say the pass waited for pages)
++        private static void S2ALogSlowPeriod(long sessionWait, long cmd, long dsp, long faults, long pageins)
+         {
+             long f = System.Diagnostics.Stopwatch.Frequency;
+             long total = sessionWait + cmd + dsp;
+@@ -297,7 +302,7 @@ namespace Ryujinx.Audio.Renderer.Server
+             }
+ 
+             Console.Error.WriteLine($"[声] 渲染一拍用了 {total * 1000.0 / f:F1} ms：等会话锁 {sessionWait * 1000.0 / f:F1} ms、生成命令 {cmd * 1000.0 / f:F1} ms" +
+-                                    $"（其中等游戏 Update 占着的锁 {AudioRenderSystem.S2ARenderLockWaitTicks * 1000.0 / f:F1} ms；这一拍里游戏 Update 最长持锁 {hold * 1000.0 / f:F1} ms）、DSP {dsp * 1000.0 / f:F1} ms");
++                                    $"（其中等游戏 Update 占着的锁 {AudioRenderSystem.S2ARenderLockWaitTicks * 1000.0 / f:F1} ms；这一拍里游戏 Update 最长持锁 {hold * 1000.0 / f:F1} ms）、DSP {dsp * 1000.0 / f:F1} ms（这段里全进程缺页 {faults} 次、读盘换入 {pageins} 次）");
+         }
+ 
+         /// <summary>
+diff --git a/src/Ryujinx.Audio/Renderer/Server/S2ATaskFaults.cs b/src/Ryujinx.Audio/Renderer/Server/S2ATaskFaults.cs
+new file mode 100644
+index 0000000000000000000000000000000000000000..647d551a09437f9b9c4e8238730b3123cb0fa9ff
+--- /dev/null
++++ b/src/Ryujinx.Audio/Renderer/Server/S2ATaskFaults.cs
+@@ -0,0 +1,45 @@
++using System;
++using System.Runtime.InteropServices;
++
++namespace Ryujinx.Audio.Renderer.Server
++{
++    // S2Arm（#1240）：全进程累计的缺页 / 读盘换入次数（Apple 平台；别处 0）。声音渲染循环在每次 DSP 前后各读一次，慢拍那行就能看出这一拍
++    //   是不是在等页：8 GB Mac 上客体内存走文件后备，脏文件页过内核阈值后每次写缺页都要等写回（#306）。
++    //   放在音频程序集里，不放 Ryujinx.Common（那里的源码算进着色器翻译器的源码指纹，改它要重编预编译翻译器）
++    internal static class S2ATaskFaults
++    {
++        // task_events_info（mach/task_info.h，TASK_EVENTS_INFO = 2）
++        [StructLayout(LayoutKind.Sequential)]
++        private struct TaskEventsInfo
++        {
++            public int Faults, Pageins, CowFaults, MessagesSent, MessagesReceived, SyscallsMach, SyscallsUnix, Csw;
++        }
++
++        [DllImport("libc")]
++        private static extern uint task_self_trap();
++
++        [DllImport("libc")]
++        private static extern int task_info(uint task, int flavor, ref TaskEventsInfo info, ref uint count);
++
++        private static readonly bool s_apple = OperatingSystem.IsMacOS() || OperatingSystem.IsIOS() || OperatingSystem.IsTvOS();   // 平台例外：tvOS 与 iOS 走同一分支
++
++        public static void Read(out long faults, out long pageins)
++        {
++            faults = pageins = 0;
++
++            if (!s_apple)
++            {
++                return;
++            }
++
++            TaskEventsInfo info = default;
++            uint count = 8;
++
++            if (task_info(task_self_trap(), 2, ref info, ref count) == 0)
++            {
++                faults = (uint)info.Faults;
++                pageins = (uint)info.Pageins;
++            }
++        }
++    }
++}

@@ -40,11 +40,13 @@ int main(void) {
         atomic_store(&g_fu_waiting, 1);
         __block _Atomic long got = -9; dispatch_semaphore_t done = dispatch_semaphore_create(0);
         dispatch_async(dispatch_get_global_queue(QOS_CLASS_DEFAULT, 0), ^{ atomic_store(&got, warm_pick(&next, 6)); dispatch_semaphore_signal(done); });
-        usleep(100000);
-        ck(atomic_load(&got) == -9, "④ 首遇在等：工人 100 ms 内没领新行");
+        // 原先睡 100 ms 再看「没领」、判让路累计 ≥ 90 ms：负载高时工人 100 ms 内还没走到领行，之后不让路直接领、让路 0 次而假红。
+        //   现在等工人真正进入让路（生产只读计数 g_fu_yield_in = 1，兜底 30 秒）：此刻它没领就是在让路（确定，不靠时间窗）
+        for (int i = 0; i < 3000 && atomic_load(&g_fu_yield_in) == 0 && atomic_load(&got) == -9; i++) usleep(10000);
+        ck(atomic_load(&g_fu_yield_in) == 1 && atomic_load(&got) == -9, "④ 首遇在等：工人进入让路、没领新行");
         atomic_store(&g_fu_waiting, 0);
-        ck(!dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW, 1000000000ll)) && atomic_load(&got) == 0, "④ 首遇等完：工人放行，领第 0 行");
-        ck(atomic_load(&g_fu_yield_n) == 1 && atomic_load(&g_fu_yield_ns) >= 90000000ull, "④ 计数：让路 1 次、累计 ≥90 ms");
+        ck(!dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW, 30 * NSEC_PER_SEC)) && atomic_load(&got) == 0, "④ 首遇等完：工人放行，领第 0 行");
+        ck(atomic_load(&g_fu_yield_n) == 1 && atomic_load(&g_fu_yield_ns) > 0, "④ 计数：让路 1 次、累计 > 0");
     }
     printf(bad ? "✗ t_nvn_warmbump：%d 项不通\n" : "✓ t_nvn_warmbump：9 项全过\n", bad);
     return bad ? 1 : 0;

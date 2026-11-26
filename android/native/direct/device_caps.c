@@ -9,7 +9,7 @@
 
 #define PUT(...) do { \
     int n = snprintf(out + used, used < cap ? cap - used : 0, __VA_ARGS__); \
-    if (n < 0) return -1; used += (size_t)n; if (used >= cap) return -1; } while (0)
+    if (n < 0) { return -1; } used += (size_t)n; if (used >= cap) { return -1; } } while (0)
 
 // driver/device 名进 JSON：只保留可打印 ASCII，引号/反斜杠转义；非 ASCII 写成 '?'，
 // 让 managed 的严格解析永远拿到合法 JSON（不因某个驱动的名字带引号而整份失败）。
@@ -172,6 +172,7 @@ int s2a_vk_device_caps_json(const struct s2a_vk_device *d, char *out, size_t cap
         "\"maxPerStageDescriptorStorageImages\":%u,"
         "\"minUniformBufferOffsetAlignment\":%llu,\"minStorageBufferOffsetAlignment\":%llu,"
         "\"minTexelBufferOffsetAlignment\":%llu,\"subgroupSize\":%u,\"maxComputeWorkGroupInvocations\":%u,"
+        "\"maxVertexOutputComponents\":%u,\"maxFragmentInputComponents\":%u,"
         "\"maxSamplerAnisotropy\":%.6f},",
         l->maxImageDimension2D, l->maxImageDimensionCube, l->maxImageArrayLayers,
         l->maxUniformBufferRange, l->maxStorageBufferRange, l->maxComputeSharedMemorySize,
@@ -180,6 +181,7 @@ int s2a_vk_device_caps_json(const struct s2a_vk_device *d, char *out, size_t cap
         l->maxPerStageDescriptorStorageImages,
         (unsigned long long)l->minUniformBufferOffsetAlignment, (unsigned long long)l->minStorageBufferOffsetAlignment,
         (unsigned long long)l->minTexelBufferOffsetAlignment, sg.subgroupSize, l->maxComputeWorkGroupInvocations,
+        l->maxVertexOutputComponents, l->maxFragmentInputComponents,
         (double)l->maxSamplerAnisotropy);
 
     // geometryShaderOcclusionQuery 即通用侧 SupportsGeometryShaderOcclusionQuery 同一位：
@@ -203,6 +205,20 @@ int s2a_vk_device_caps_json(const struct s2a_vk_device *d, char *out, size_t cap
         js_bool(f->samplerAnisotropy), js_bool(f->shaderImageGatherExtended),
         js_bool(f->shaderStorageImageReadWithoutFormat));
 
+    // A 片（#1348）记录的描述符索引事实。enabled = 按 1.1 条件真的启用了；其余六位是设备支持位。
+    // 编译器 profile 只在 enabled 且四位都为真时打开非一致索引（生成器会同时声明采样 + 存储两种能力）。
+    // 扩展不存在时也写全 false，schema 稳定，消费者不用做「字段可能缺」的分支。
+    PUT("\"descriptorIndexing\":{\"enabled\":%s,\"runtimeArray\":%s,\"partiallyBound\":%s,"
+        "\"sampledImageArrayNonUniformIndexing\":%s,\"storageImageArrayNonUniformIndexing\":%s,"
+        "\"variableDescriptorCount\":%s,\"sampledImageUpdateAfterBind\":%s},",
+        js_bool(d->descriptor_indexing_enabled),
+        js_bool(d->descriptor_indexing_runtime),
+        js_bool(d->descriptor_indexing_partial),
+        js_bool(d->descriptor_indexing_sampled_nonuniform),
+        js_bool(d->descriptor_indexing_storage_nonuniform),
+        js_bool(d->descriptor_indexing_variable_count),
+        js_bool(d->descriptor_indexing_sampled_update_after_bind));
+
     PUT("\"formats\":{\"bc123\":%s,\"bc45\":%s,\"bc67\":%s,\"etc2\":%s,\"astc\":%s,"
         "\"fiveBit\":%s,\"r4g4b4a4\":%s,\"scaledVertex\":%s},",
         js_bool(optimal_all(d, k_bc123, sizeof k_bc123 / sizeof k_bc123[0])),
@@ -211,7 +227,8 @@ int s2a_vk_device_caps_json(const struct s2a_vk_device *d, char *out, size_t cap
         js_bool(optimal_all(d, k_etc2, sizeof k_etc2 / sizeof k_etc2[0])),
         js_bool(optimal_all(d, k_astc, sizeof k_astc / sizeof k_astc[0])),
         js_bool(optimal_all(d, k_five_bit, sizeof k_five_bit / sizeof k_five_bit[0])),
-        js_bool(optimal_all(d, k_r4g4b4a4, sizeof k_r4g4b4a4 / sizeof k_r4g4b4a4[0])),
+        // A4B4G4R4 是 1.3 核心 / VK_EXT_4444_formats：直连实例只申请 1.1，只有扩展启用了（formats_4444_enabled）才能合法查这个格式
+        js_bool(d->formats_4444_enabled && optimal_all(d, k_r4g4b4a4, sizeof k_r4g4b4a4 / sizeof k_r4g4b4a4[0])),
         js_bool(scaled_vertex_ok(d)));
 
     PUT("\"memory\":{\"deviceLocalBytes\":%llu,\"heapCount\":%u,\"memoryTypeCount\":%u,"
@@ -228,6 +245,11 @@ int s2a_vk_device_caps_json(const struct s2a_vk_device *d, char *out, size_t cap
     if (d->swapchain_maintenance1_enabled) {
         if (!first) PUT(",");
         if (put_text(out, cap, &used, "VK_EXT_swapchain_maintenance1")) return -1;
+        first = 0;
+    }
+    if (d->descriptor_indexing_enabled) {
+        if (!first) PUT(",");
+        if (put_text(out, cap, &used, VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME)) return -1;
     }
     PUT("],\"subgroupSize\":%u}", sg.subgroupSize);
     if (len) *len = used;

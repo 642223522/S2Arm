@@ -19,7 +19,10 @@
 #       dmsh_chain.py --check-tools   verify that the actual tools match the lock file; on mismatch print [RED] lines and exit 1
 #       dmsh_chain.py --xfp           print the translation fingerprint xlate_fp() computed from this tree's sources
 #       dmsh_chain.py --check-stamp D verify that library D's stamp names this tree's translator (tree_xfp) and tool lock; on mismatch print [RED] and exit 1
-#       dmsh_chain.py --update-lock   rewrite the lock file from the actual tools (run after changing Ryujinx / spirv-cross / Xcode; committed to the repo)
+#       dmsh_chain.py --update-lock   rewrite the translator lines of the lock file (translator dlls + source fingerprint) from this tree's build; the tool lines are kept
+#                                     (run after rebuilding dmsh_xlate; committed to the repo)
+#       dmsh_chain.py --update-tools  rewrite the tool lines (spirv-cross, metal_macosx, metal_iphoneos) from this Mac's tools; refuses a tool it cannot identify
+#                                     (run on the gate machine after changing spirv-cross / Xcode; committed to the repo)
 # Environment: XLATE_DEBUG / XLATE_REDUCED (same meaning as in dmsh_build.py, default gs,cs / 1 since 11-07 (DebugMode on for geometry and compute only; debug was 1 before); non-default options yield a different V, which the host will not load)
 import shutil, os, re, sys, json, hashlib, subprocess
 DM_ROOT = os.environ.get('DM_ROOT') or os.path.expanduser('~/dm-work')   # Workspace root (game files, build outputs and run artifacts are all under it)
@@ -29,7 +32,7 @@ DSH_PROJ = os.path.join(ROOT, 'graphics/tools/direct/dsh/S2A.Dsh.csproj')
 # 翻译器指纹输入只有一份：S2A.Dsh.csproj 的 DshXfpInput（11-02 维护者 / 出包线）。生产的翻译缓存键（dsh_batch ToolFingerprint 里的 DshChain.Xfp）由它在编译期算；
 #   这里用 dotnet msbuild -getItem 取 MSBuild 自己展开的同一份清单、按同一算法（「仓库相对路径 \t sha256 \n」按路径排序拼起来再 sha256 取前 16 位）算，两边相等
 #   （tests/xfp_single_source_test.sh）。改清单外的文件（dsh/batch/Build.cs 等编排、本文件、libnxgal / spirv-cross 源码）不改这个指纹：
-#   库的内容另由 ToolFingerprint 的 LibFp（--dsx / --spvc 动态库各节内容）进键。11-02 前这里是一份手写的 FILES，收了 batch/*.cs 等，却不进任何生产键，
+#   库的内容另由 ToolFingerprint 的 ToolLib.Fp（--dsx / --spvc 动态库各节内容）进键。11-02 前这里是一份手写的 FILES，收了 batch/*.cs 等，却不进任何生产键，
 #   冷改动核查据它报「翻译指纹变」是虚报（docs/坑记录.md）
 _XFP_FILES = None
 def xfp_files():   # → 翻译器指纹输入的仓库相对路径（排好序）
@@ -45,6 +48,7 @@ def xfp_files():   # → 翻译器指纹输入的仓库相对路径（排好序�
         _XFP_FILES = sorted(os.path.relpath(f, ROOT).replace(os.sep, '/') for f in full)
     return _XFP_FILES
 INPUT_TABLES = ['shader_facts.tsv', 'shader_map.tsv', 'shader_map.tsv.conflicts.tsv', 'shader_pairs.tsv', 'bf_want.tsv', 'fout_want.tsv', 'se_want.tsv']   # in the game profile folder
+TOOL_KEYS = ('spirv-cross', 'metal_macosx', 'metal_iphoneos')   # 锁里的工具行（环境事实，--update-tools 才改）
 LOCK = os.path.join(HERE, 'dmsh_chain.lock'); HEADER = os.path.join(GFX, 'nvn/dmsh_chain.h')
 STAMP = 'inputs.tsv'   # in the library directory b-<V>/
 # the translator defaults to the in-repo build that matches the lock file (a rebuilt dll has different fingerprints)
@@ -160,9 +164,16 @@ def tools_now():
     win = os.environ.get('S2A_METAL_BIN') or r'C:\Program Files\Metal Developer Tools\bin' if os.name == 'nt' else None
     for sdk in ('macosx', 'iphoneos'):
         cmd = [os.path.join(win, 'metal.exe'), '--version'] if win else ['xcrun', '-sdk', sdk, 'metal', '--version']
-        try: out = subprocess.run(cmd, capture_output=True, text=True).stdout.splitlines()[0:1]
-        except OSError: out = []
-        t['metal_' + sdk] = (out or ['missing'])[0]
+        # 读不到版本时分清是哪种（D-TYCN，Windows 0.6.3：编着色器库报「actual missing」，分不清没装 / 被拦 / 起来就失败）：都以 missing 开头（own_compilers 照停），
+        #   文件不在 → missing；起进程被拒（安全软件 / 应用控制）→ missing (start blocked: …)；起来了没打版本（缺运行库等）→ missing (no version output: …)
+        why = None
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True); out = r.stdout.splitlines()[0:1]
+            if not out: why = f'no version output: exit code {r.returncode:#x}' + (f'; stderr {r.stderr.strip()[-160:]}' if (r.stderr or '').strip() else '')
+        except OSError as e:
+            out = []
+            if not (isinstance(e, FileNotFoundError) or (win and not os.path.isfile(cmd[0]))): why = f'start blocked: {e}'
+        t['metal_' + sdk] = (out or ['missing' + (f' ({why})' if why else '')])[0]
     return t
 
 XLATE_SOURCES = ('Program.cs', 'dmsh_xlate.csproj', '../../graphics/widen/SpirvCbufUseText.cs')   # = the csproj's src0..src2
@@ -200,7 +211,7 @@ def check_tools():
 def own_compilers(bad):
     """check_tools 的不符项 → (放行的, 照停的)：只有 Metal 编译器（macOS / iOS）版本与锁不同才放行（Metal 编译缓存按编译器身份分键，换 Xcode 只是重编，
     不会复用别的编译器编的库，见 t_unity.py ⑦）；编译器缺失、翻译器 / spirv-cross / 翻译器源码不符照停"""
-    own = [b for b in bad if re.match(r'(metal_macosx|metal_iphoneos): lock .* / actual (?!missing$)', b)]
+    own = [b for b in bad if re.match(r'(metal_macosx|metal_iphoneos): lock .* / actual (?!missing\b)', b)]   # missing 及 missing (原因) 都照停
     return own, [b for b in bad if b not in own]
 
 def header_text(v):
@@ -210,11 +221,23 @@ def header_text(v):
 
 if __name__ == '__main__':
     a = sys.argv[1:]
-    if a == ['--update-lock']:
+    if a in (['--update-lock'], ['--update-tools']):
+        # 工具版本是环境事实、不是源码（11-23 维护者定）：--update-lock 只改翻译器那几行（dll 指纹、源码指纹），工具三行照锁里原样留；工具三行只有 --update-tools 改，
+        #   认不出的工具（unknown: …）一律拒写。#2134 外部贡献者在自己机器上 --update-lock，spirv-cross 记成「unknown: /usr/local/bin/spirv-cross」、metal 记成他的
+        #   Xcode，门禁机 --build-env 核工具对不上就拒，main 直连钩子连红
         t = tools_now()
         if t['xlate_source'] != xlate_source_sha(): sys.exit(f'[RED] the translator was not built from the in-repo source (embedded {t["xlate_source"]} / in repo {xlate_source_sha()}): rebuild dmsh_xlate first')
-        open(LOCK, 'w').write('# Translation chain tool fingerprints (written by dmsh_chain.py --update-lock; regenerate after changing tools and commit it)\n' + ''.join(f'{k}\t{v}\n' for k, v in t.items()))
-        print('wrote', LOCK)
+        old_lock = dict(l.rstrip('\n').split('\t', 1) for l in open(LOCK) if '\t' in l and not l.startswith('#')) if os.path.exists(LOCK) else {}
+        tools = a == ['--update-tools']
+        if tools:
+            bad = [f'{k}: {t[k]}' for k in TOOL_KEYS if t.get(k, '').startswith('unknown') or t.get(k, '').startswith('missing')]
+            if bad: sys.exit('[RED] refusing to write tool lines this Mac cannot identify: ' + '; '.join(bad))
+        else:
+            miss = [k for k in TOOL_KEYS if k not in old_lock]
+            if miss: sys.exit('[RED] the lock has no tool lines for ' + ', '.join(miss) + ': run dmsh_chain.py --update-tools on the gate machine first')
+            for k in TOOL_KEYS: t[k] = old_lock[k]
+        open(LOCK, 'w').write('# Translation chain tool fingerprints (translator lines: dmsh_chain.py --update-lock; tool lines: --update-tools on the gate machine; commit it)\n' + ''.join(f'{k}\t{v}\n' for k, v in t.items()))
+        print('wrote', LOCK, '(tool lines rewritten)' if tools else '(translator lines; tool lines kept)')
     elif a == ['--check-tools']:
         bad = check_tools()
         for b in bad: print('[RED] translation chain tools do not match the lock file: ' + b)
@@ -234,7 +257,7 @@ if __name__ == '__main__':
         g = load_game()
         if not g.table('shader_facts.tsv').exists(): sys.exit(f'[RED] no answer table {g.table("shader_facts.tsv")} (it comes with the game profile; an empty table = every query answered with defaults)')
         open(a[1], 'wb').write(profile_rows(g)); print(f'{v}\t{g.id}\t{inputs(g)}')
-    elif len(a) == 2 and a[0] == '--check-stamp':   # 出库后核库印章（Build.cs WriteStamp 记的 xfp / lock）与本树的翻译器指纹 / 锁文件摘要相同：不同或没记报红退 1（direct_lib.sh 出库后调）
+    elif len(a) == 2 and a[0] == '--check-stamp':   # 出库后核库印章（Build.cs WriteStamp 记的 xfp / lock）与本树的翻译器指纹 / 锁文件摘要相同：不同或没记报红退 1（direct_lib.py 出库后调）
         bad = stamp_mismatch(a[1])
         if bad: sys.exit('[RED] ' + bad)
     elif a == ['--xfp']: print(xlate_fp())   # 按本树源码现算的翻译器指纹（发版 bundle_engine.py 写内置件 .xfp 用）

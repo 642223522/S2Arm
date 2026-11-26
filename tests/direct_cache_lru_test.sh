@@ -20,4 +20,29 @@ mk; o=$(L --budget-gb 0.00439453125); ck "② 超 1.5 MiB → 删最旧 A1 A2（
 mk; o=$(L --budget-gb 0.00146484375 --in-use A); ck "③ A 在用 → A 不动、删 B1 B2、仍超打【黄】（剩 $(left)）" '[ "$(left)" = "A1.e A2.e build.log lib.metallib " ] && grep -q "【黄】" <<< "$o"'
 mk; o=$(L --budget-gb 0); ck "④ 预算 0 → 只删仓条目，库目录 / 日志在（剩 $(left)）" '[ "$(left)" = "build.log lib.metallib " ]'
 mk; o=$(L --budget-gb 0 --dry); ck "⑤ --dry → 只打会删、一个不动（${o}）" '[ "$(left)" = "A1.e A2.e B1.e B2.e build.log lib.metallib " ] && grep -q "会删 4 条" <<< "$o"'
+# ⑥ 扫描口径（11-16 改成逐层 scandir）：与原先 os.walk + os.lstat 的写法逐项对拍——同一棵树（真目录、文件、指向目录 / 文件的链接、坏链接、store 下的 .e）
+#    合计字节与仓条目清单完全相同；期望由原写法在同一棵树上现算（原写法照抄在下面，不跑被测实现得出）
+mk; mkdir -p "$T/c/A/store/x"; printf 12345 > "$T/c/A/store/x/k.e"; ln -s "$T/c/B" "$T/c/A/store/dirlink"; ln -s "$T/c/A/store/x/k.e" "$T/c/A/store/fl.e"; ln -s "$T/nope" "$T/c/A/store/broken.e"
+o=$(python3 - "$H/tools" "$T/c" <<'PY'
+import os, sys
+sys.path.insert(0, sys.argv[1]); import direct_cache_lru as L
+def old(root):
+    total, ents = 0, []
+    for tid in sorted(os.listdir(root)):
+        d = os.path.join(root, tid)
+        if not os.path.isdir(d) or os.path.islink(d): continue
+        for dp, dns, fns in os.walk(d):
+            dns[:] = [n for n in dns if not os.path.islink(os.path.join(dp, n))]
+            for fn in fns:
+                p = os.path.join(dp, fn)
+                try: st = os.lstat(p)
+                except OSError: continue
+                total += st.st_size
+                if fn.endswith('.e') and os.sep + 'store' + os.sep in p[len(d):] + os.sep: ents.append((st.st_mtime, st.st_size, p, tid))
+    return total, ents
+a, b = old(sys.argv[2]), L.scan(sys.argv[2])
+print('同' if (a[0], sorted(a[1])) == (b[0], sorted(b[1])) else f'异 {a[0]} {b[0]} {len(a[1])} {len(b[1])}', len(a[1]))
+PY
+)
+ck "⑥ scandir 扫描与原 os.walk + lstat 口径一致（${o}）" '[ "${o% *}" = 同 ] && [ "${o#* }" = 7 ]'
 [ $bad = 0 ] && echo "direct_cache_lru 单测全过" || { echo "direct_cache_lru 单测有不通"; exit 1; }

@@ -261,7 +261,7 @@ def main():
         ([FIX / "desktop.comp", out / "unsupported-comp"], "计算阶段", 1),
         ([FIX / "desktop.frag", out / "unsupported-resources"], "GL 库表口径 1", 1),
     ):
-        # v0.3.1 拿不准不停：一支都没译成也退 0、只出表头（运行时首遇现编），失败原因照打、汇总行留失败数（direct_lib.sh 记降级）；原先退非 0、不出表
+        # v0.3.1 拿不准不停：一支都没译成也退 0、只出表头（运行时首遇现编），失败原因照打、汇总行留失败数（direct_lib.py 记降级）；原先退非 0、不出表
         bad = run([sys.executable, CLI, *arguments], success=False)
         assert bad.returncode == 0 and re.search(error, bad.stderr) and "【黄】GLSL 离线一支没译成" in bad.stderr, bad.stderr
         assert f"成功 0、失败 {count}、跳过 0" in bad.stdout
@@ -291,6 +291,12 @@ def main():
     mixed = run([sys.executable, CLI, header, FIX / "es.vert", out / "header-mixed"])
     assert "GLSL 汇总：成功 1、失败 0、跳过 1" in mixed.stdout, mixed.stdout + mixed.stderr
     assert (out / "header-mixed/gl/gl_shaders.metallib").stat().st_size > 0
+    # 引擎模板（#852：顶点 / 片元同一文件、「#line ....」占位）：记跳过、不计失败；和完整着色器同在时照常出库
+    tpl = out / "blur_horiz.glsl"
+    tpl.write_text("//\n//##Vertex//\n//\n#version 120\n#line ....\nuniform mat4 mvp;\nattribute vec4 p;\nvoid main(){gl_Position=mvp*p;}\n"
+                   "//##Fragment//\n#version 120\n#line ....\nvoid main(){gl_FragColor=vec4(1.0);}\n")
+    tmix = run([sys.executable, CLI, tpl, FIX / "es.vert", out / "tpl-mixed"])
+    assert "GLSL 汇总：成功 1、失败 0、跳过 1" in tmix.stdout, tmix.stdout + tmix.stderr
     # 新主线必须保留输入附件和固定 / 特化工作组两种计算行为。
     extra_cases = {
         "subpass.frag": "#version 450\nlayout(input_attachment_index=0,set=0,binding=7) uniform subpassInput attachment;\nlayout(location=0) out vec4 color;\nvoid main(){color=subpassLoad(attachment);}\n",

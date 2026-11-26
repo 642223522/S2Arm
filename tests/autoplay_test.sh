@@ -19,6 +19,7 @@ SCN=lowdraw run low     FAKE_MAP=$MAP_OK S2A_AP_MAX_STEPS=6 &
 SCN=lowdraw run lowesc  FAKE_MAP='TITLE=A;MENU=A;GAME=LS_RIGHT:play55' FAKE_ESC_PLAY=1 S2A_AP_MAX_STEPS=8 &
 SCN=lowdraw run lowno   FAKE_MAP='TITLE=A;MENU=A;GAME=LS_RIGHT:play55' S2A_AP_MAX_STEPS=6 &
 SCN=stuck   run stuck   FAKE_MAP='TITLE=A/B/X/Y' S2A_AP_MAX_STEPS=4 &
+SCN=noshot  run noshot  FAKE_MAP=$MAP_OK S2A_SNAP_RESTORE=/nonexistent S2A_AP_NOSHOT_S=2 &   # 即时存档恢复局：出帧在涨、截图一直拿不到
 SCN=titlex  run tx      FAKE_MAP='TITLE=A/X;MENU=A;GAME=LS_RIGHT:play' S2A_AP_LEARN_DIR=$T/learn_x S2A_AP_PROGRAM_ID=0100000000ab0002 &
 SCN=ok      run learn1  FAKE_MAP=$MAP_OK S2A_AP_LEARN_DIR=$T/learn S2A_AP_PROGRAM_ID=0100000000ab0001 &
 SCN=pingpong run pp    FAKE_MAP='TITLE=A;MENU=B/X;GAME=LS_RIGHT:play' &
@@ -128,6 +129,7 @@ ck "④ 局内段截图请求 0 次、导航期 > 0（实为 总 / 局内段 = $
 # ⑤
 ck "⑤ 低帧（一帧 100 ms）：仍按 A A 进局打 MARK、翻页 2（实为 $(J slow presses_changed)）" 'L slow | grep -q "S2A 标记 MARK" && [ "$(J slow presses_changed)" = 2 ]'
 # ⑥
+ck "⑥b 恢复局出帧在涨、截图一直拿不到：2 秒报红收局，结论「出图在涨、截图拿不到」（旧：首帧兜底 900 秒，比局时长，整局不报）" 'L noshot | grep -q "【红】自动玩家：出图帧数在涨" && L noshot | grep -q "^自动玩家结论：没到 MARK；出图在涨、截图拿不到（2 秒）"'
 ck "⑥ 步数上限 4：结论「导航卡住（步数上限 4 步）」、ap_stuck.png、marked=False" 'L stuck | grep -q "^自动玩家结论：没到 MARK；导航卡住（步数上限 4 步）" && [ -s $T/stuck/ap_stuck.png ] && [ "$(J stuck marked)" = False ]'
 # ⑦
 lf=$T/learn/0100000000ab0001.tsv
@@ -337,8 +339,21 @@ vw='0 判不出 （原生 60：关段已 ≥ 55 帧，开关不改帧率）
 5 红 （按帧推进，开 60 帧游戏变快）
 6 绿 （逻辑按真实时间推进）
 7 红 （按帧推进，开 60 帧游戏变快）
-8 红 （按帧推进，开 60 帧游戏变快）'
+8 红 （按帧推进，开 60 帧游戏变快）
+9 红 （按帧推进，开 60 帧游戏变快）
+10 判不出 （快过帧率倍数：ρ 超过 q × 1.5，开关两段量的不是同一种运动）
+11 判不出 （快过帧率倍数：ρ 超过 q × 1.5，开关两段量的不是同一种运动）'
 ck "㊳ 判据纯函数：原生 60 / 帧率没涨 / 量不出 / 场景不一致判不出，帧率涨了按 min(1.25, √q) 分绿红（不符行：$(diff <(echo "$vw") $T/verdict.txt | grep '^>' | head -2 | tr '\n' ' ')）" '[ "$(cat $T/verdict.txt)" = "$vw" ]'
+# ㊳b 同局 A/B 合并（sp_ab_decide），喂 11-23 两款真实读数，期望按规则手算：
+#   款 0（01007EF00011E000）：开②转镜头出图 33 < 60 × 0.8 → 该段作废，转镜头只用开①：ρ = 121.4 / 80.9 = 1.50、q = 60 / 30 = 2.00 > min(1.25, √2) → 红；
+#     走：ρ = (112.8 + 116.1) / 2 / 52.5 = 2.18 ≤ 2 × 1.5 → 红；合起来红、定于走（项 1）
+#   款 1（0100F2C0115B6000）：走 ρ = (84.3 + 64.1) / 2 / 17.8 = 4.17 > 2 × 1.5 → 判不出（快过帧率倍数）；转镜头 ρ = 111.35 / 124.9 = 0.89 ≥ 0.8、≤ 1.25 → 绿；
+#     一项绿一项判不出 → 合起来判不出（不是红）
+#   反证：去掉 SP_RHO_MAX 那行 → 款 1 判红；去掉段作废 → 款 0 转镜头 q 1.55、ρ 1.29
+$T/t_autoplay $T abdecide > $T/abdecide.txt 2>&1
+ad='0 红 定于项1｜走 红 ρ 2.18 q 2.00｜转 红 ρ 1.50 q 2.00
+1 判不出 定于项1｜走 判不出 ρ 4.17 q 2.00｜转 绿 ρ 0.89 q 2.00'
+ck "㊳b 同局 A/B 合并：真实读数两款（实得：$(tr '\n' ' ' < $T/abdecide.txt)）" '[ "$(cat $T/abdecide.txt)" = "$ad" ]'
 # ㊴ 第一轮量不出就重测（abkick：MARK 后局内完全静止直到第一轮 A/B 测完，之后每 2 帧移 1 像素按帧推进）。期望手算：第一轮开段 60 帧、关段 30 帧（q≈2 ≥ 1.15）、
 #   画面 0 像素/秒 → 判不出「量不出」并要求重测；局内段 20 秒后重测：同 ㉞ abfix 每 2 帧 1 像素 → 开 30 / 关 15 假宿主像素/秒，ρ≈2 > min(1.25, √2) → 红；最后一行是红
 ck "㊴ 第一轮量不出（$(L ab_k | grep -E -o '逻辑速度同局 A/B：(绿|红|判不出)：[^（]*' | head -1)）→ 局内跑 20 秒重测（$(L ab_k | grep -E -o '逻辑速度同局 A/B：(绿|红|判不出)：[^（]*' | tail -1)）" \

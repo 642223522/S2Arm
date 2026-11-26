@@ -250,6 +250,26 @@ def check_device_capabilities(data):
             raise AssertionError('interlock instruction outside fixed case device contract')
         offset+=size
 
+def glsl_minmax_ops(data):
+    """GLSL.std.450 instruction numbers used for float min / max / clamp: F forms 37 / 40 / 43, NaN-aware N forms 79 / 80 / 81."""
+    words=struct.unpack('<'+'I'*(len(data)//4),data)
+    glsl=set(); used=set(); offset=5
+    while offset<len(words):
+        size,op=words[offset]>>16,words[offset]&0xffff
+        if not size or offset+size>len(words): raise ValueError('invalid SPIR-V instruction size')
+        if op==11 and data[(offset+2)*4:(offset+size)*4].split(b'\0',1)[0]==b'GLSL.std.450': glsl.add(words[offset+1])   # OpExtInstImport
+        if op==12 and size>=5 and words[offset+3] in glsl and words[offset+4] in (37,40,43,79,80,81): used.add(words[offset+4])   # OpExtInst
+        offset+=size
+    return used
+
+def check_nan_minmax(case_id,data):
+    # Maxwell FMNMX returns the operand that is a number when the other is NaN and saturate turns NaN into 0 (IEEE minNum / maxNum):
+    # the translator must emit NMin / NMax / NClamp. FMin / FMax / FClamp leave NaN undefined (Adreno passes it on). lavapipe happens to
+    # give minNum either way, so the executed result cannot tell the two apart: the emitted instruction is the check.
+    used=glsl_minmax_ops(data)
+    if used & {37,40,43}: raise AssertionError(f'{case_id}: float min/max/clamp emitted as GLSL FMin/FMax/FClamp {sorted(used & {37,40,43})}, want NMin/NMax/NClamp')
+    if case_id=='float/fma_fmnmx' and not {79,80} <= used: raise AssertionError(f'{case_id}: FMNMX case emits no NMin+NMax ({sorted(used)})')
+
 def binary(case):
     allowed={'varying0'} if case['stage']=='fragment' else {'storage0'}
     if set(case.get('inputs',{}))-allowed: raise ValueError('unsupported input field')
@@ -481,6 +501,7 @@ def main():
     command([os.getenv('CC','cc'),'-std=c11','-O1',*includes,HERE/'vulkan_runner.c',ROOT/'android/native/direct/vk_device.c',ROOT/'android/native/direct/gs_path.c','-Wl,-l:libvulkan.so.1','-lm','-o',runner])
     def execute(c,m):
         check_device_capabilities(Path(m['spirv']).read_bytes())
+        check_nan_minmax(c['id'],Path(m['spirv']).read_bytes())
         command([val,'--target-env','vulkan1.1',m['spirv']])
         out=temp/'readback.bin'
         if c['stage']=='compute':

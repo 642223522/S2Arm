@@ -1,0 +1,16 @@
+diff --git a/src/Ryujinx.HLE/HOS/Services/Nv/NvDrvServices/NvMap/Types/NvMapIdDictionary.cs b/src/Ryujinx.HLE/HOS/Services/Nv/NvDrvServices/NvMap/Types/NvMapIdDictionary.cs
+index 1b4d8dd4262fddfb9331df2b2880e228f1e499c7..46c70a3705156e4b0823608828f1b7a9e2003a5e 100644
+--- a/src/Ryujinx.HLE/HOS/Services/Nv/NvDrvServices/NvMap/Types/NvMapIdDictionary.cs
++++ b/src/Ryujinx.HLE/HOS/Services/Nv/NvDrvServices/NvMap/Types/NvMapIdDictionary.cs
+@@ -55,6 +55,11 @@ namespace Ryujinx.HLE.HOS.Services.Nv.NvDrvServices.NvMap
+ 
+             _nvmapHandles.Clear();
+ 
++            // S2Arm: Clear is the session reset (NvMapDeviceFile.S2AReset) of an in-process restart. Numbering restarts too, as in a new
++            // process: an instant snapshot replays the logged nvmap Create calls and later requests name the handles by the numbers they had
++            // when logged (left running on, the replayed handles got other numbers and the video channel's maps all failed: video frozen)
++            Interlocked.Exchange(ref _id, 0);
++
+             return values;
+         }
+     }

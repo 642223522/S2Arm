@@ -117,6 +117,12 @@ namespace S2A.Services.Tests
                 Reply osr = D(Msg.Cmif(0, Bytes(2u, 2, 48000, SmxFrames, 0, 0u)), streamObj);
                 Check("audsmx IExternalStreamSession 0 OpenStream（PcmInt16 / 2 声道 / 48 kHz / 960 帧）", "结果 0x0", $"结果 0x{osr.Result:X}");
 
+                // 外部流 4 SetGain（同 OutputStreamImpl::SetGain：f32 增益 @0、s64 渐变 ns @8）：D-KY7F 生化危机 4 起局即调，回错就 Abort
+                Reply sgr = D(Msg.Cmif(4, Bytes(BitConverter.SingleToUInt32Bits(0.5f), 0u, 0L)), streamObj);
+                Check("audsmx IExternalStreamSession 4 SetGain（0.5、立即）", "结果 0x0", $"结果 0x{sgr.Result:X}");
+                Reply sgf = D(Msg.Cmif(4, Bytes(BitConverter.SingleToUInt32Bits(1f), 0u, 100_000_000L)), streamObj);
+                Check("audsmx IExternalStreamSession 4 SetGain（1.0、渐变 100 ms）", "结果 0x0", $"结果 0x{sgf.Result:X}");
+
                 // 外部流 7 AcquireStreamDataEvent（方式 2、阈值 = 缓冲 − 1 ms）
                 Reply aer = D(Msg.Cmif(7, Bytes(2u, SmxFrames - 48)), streamObj);
                 uint dataEvent = aer.Copy.Count == 1 ? aer.Copy[0] : 0;
@@ -130,6 +136,12 @@ namespace S2A.Services.Tests
                 int devLen = Encoding.ASCII.GetBytes("DeviceOut", new Span<byte>(buf, 0x100));
                 Msg fs = Msg.Cmif(300, Bytes(2u, 2, 48000, 1u)); fs.A.Add(((ulong)buf, (ulong)devLen));
                 Check("auddmg 300 IsVirtualDeviceStreamFormatSupported（PcmInt16 / 2 / 48000）", "结果 0x0", $"结果 0x{Call(dev, fs).Result:X}");
+                // #b36edb：游戏问格式 5（PcmFloat）立体声，宿主经兼容层转 PCM16 播 → 支持；Int8 / Int32 / 5.1 同理
+                foreach ((uint f, int ch) in new[] { (5u, 2), (1u, 2), (4u, 2), (5u, 6) })
+                {
+                    Msg m = Msg.Cmif(300, Bytes(f, ch, 48000, 1u)); m.A.Add(((ulong)buf, (ulong)devLen));
+                    Check($"auddmg 300 IsVirtualDeviceStreamFormatSupported（格式 {f} / {ch} / 48000）", "结果 0x0", $"结果 0x{Call(dev, m).Result:X}");
+                }
 
                 byte* profile = buf + 0x400;
                 new Span<byte>(profile, 0x228).Fill(0xCC);
@@ -170,6 +182,31 @@ namespace S2A.Services.Tests
                 uint gone = Call(dev, at2).Result;
                 Check("销毁外部流对象后 700 再挂同一流号", $"结果 0x{Red.ResultUnknownCommand:X}、报红 +1", $"结果 0x{gone:X}、报红 +{Red.Total - redBefore}");
 
+                // #b36edb：PcmFloat 立体声开流成功（环帧长 8 字节：0x1040 + 961 × 8 = 0x2E48 ≤ 0x3000），关流也成功
+                byte* work3 = SmxWorkBuffer();
+                Msg cs3 = Msg.Cmif(1, Bytes(1u, 0x24u, 0x1234UL, (ulong)work3, (ulong)SmxWorkSize)); cs3.SendPid = true; cs3.A.Add(((ulong)buf, (ulong)nameLen));
+                int stream3 = *(int*)(D(cs3, userSession).Data + 4);
+                uint os3 = D(Msg.Cmif(0, Bytes(5u, 2, 48000, SmxFrames, 0, 0u)), stream3).Result;
+                uint cl3 = D(Msg.Cmif(1), stream3).Result;
+                Check("audsmx OpenStream PcmFloat / 2 声道 / 48 kHz / 960 帧；CloseStream", "结果 0x0；0x0", $"结果 0x{os3:X}；0x{cl3:X}");
+                Msg del3 = Msg.Cmif(0); del3.DomainRequestType = 2; D(del3, stream3);
+
+                // 外部流 11 PurgeStream（in s32 帧数 @0，0 = 全清；out s32 清掉的帧数 @0）：D-BPWY 生化危机 4 GOLD 调它，原先未实现回错就 Abort。
+                //   期望按环手算（容量 961）：写 300 清全部 → 300、读指针 300；再写 500（写指针 800）清 200 → 200、读指针 500；清全部 → 300、读指针 800；空了清 50 → 0
+                byte* work4 = SmxWorkBuffer();
+                Msg cs4 = Msg.Cmif(1, Bytes(1u, 0x24u, 0x1234UL, (ulong)work4, (ulong)SmxWorkSize)); cs4.SendPid = true; cs4.A.Add(((ulong)buf, (ulong)nameLen));
+                int stream4 = *(int*)(D(cs4, userSession).Data + 4);
+                uint os4 = D(Msg.Cmif(0, Bytes(2u, 2, 48000, SmxFrames, 0, 0u)), stream4).Result;
+                string Purge(int frames) { Reply r = D(Msg.Cmif(11, Bytes(frames)), stream4); return $"0x{r.Result:X}/{(r.Result == 0 ? *(int*)r.Data : -1)}/{*(uint*)(work4 + 0x44)}"; }
+                SmxClientWrite(work4, 0, 300, Pattern);
+                string p1 = Purge(0);
+                SmxClientWrite(work4, 300, 500, Pattern);
+                string p2 = Purge(200), p3 = Purge(0), p4 = Purge(50);
+                uint cl4 = D(Msg.Cmif(1), stream4).Result;
+                Check("audsmx IExternalStreamSession 11 PurgeStream（结果/清掉帧数/读指针）：写 300 清全部；再写 500 清 200；清全部；空了清 50",
+                    $"开 0x0；0x0/300/300；0x0/200/500；0x0/300/800；0x0/0/800；关 0x0", $"开 0x{os4:X}；{p1}；{p2}；{p3}；{p4}；关 0x{cl4:X}");
+                Msg del4 = Msg.Cmif(0); del4.DomainRequestType = 2; D(del4, stream4);
+
                 // 负例：SDK 输出路径从不发的取值、开局路径不走的命令，一律报红、回未知命令
                 byte* work2 = SmxWorkBuffer();
                 Msg cs2 = Msg.Cmif(1, Bytes(1u, 0x24u, 0x1234UL, (ulong)work2, (ulong)SmxWorkSize)); cs2.SendPid = true; cs2.A.Add(((ulong)buf, (ulong)nameLen));
@@ -181,11 +218,11 @@ namespace S2A.Services.Tests
                     ("CreateStream 标志 0x64（0x40 语义不明）", () => { Msg m = Msg.Cmif(1, Bytes(1u, 0x64u, 0x1234UL, (ulong)work2, (ulong)SmxWorkSize)); m.SendPid = true; m.A.Add(((ulong)buf, (ulong)nameLen)); return D(m, userSession).Result; }),
                     ("IUserSession 3 EngageStreams（未实现）", () => { Msg m = Msg.Cmif(3); m.A.Add(((ulong)buf, 4)); return D(m, userSession).Result; }),
                     ("OpenStream 标志 1（带时间戳表）", () => D(Msg.Cmif(0, Bytes(2u, 2, 48000, SmxFrames, 0, 1u)), stream2).Result),
-                    ("OpenStream PcmFloat", () => D(Msg.Cmif(0, Bytes(5u, 2, 48000, SmxFrames, 0, 0u)), stream2).Result),
+                    ("OpenStream PcmInt24（sysmix 按 4 字节存，24 位放哪不知道）", () => D(Msg.Cmif(0, Bytes(3u, 2, 48000, SmxFrames, 0, 0u)), stream2).Result),
                     ("AcquireStreamDataEvent 方式 1（流未开）", () => D(Msg.Cmif(7, Bytes(1u, 100)), stream2).Result),
                     ("外部流 11 PurgeStream（未实现）", () => D(Msg.Cmif(11, Bytes(0)), stream2).Result),
-                    ("auddmg 300 PcmFloat", () => { Msg m = Msg.Cmif(300, Bytes(5u, 2, 48000, 1u)); m.A.Add(((ulong)buf, (ulong)devLen)); return Call(dev, m).Result; }),
-                    ("auddmg 401 功能 2（输入）", () => { Msg m = Msg.Cmif(401, Bytes(2u)); m.B.Add(((ulong)profile, 0x228)); m.A.Add(((ulong)buf, (ulong)devLen)); return Call(dev, m).Result; }),
+                    ("auddmg 300 PcmInt24", () => { Msg m = Msg.Cmif(300, Bytes(3u, 2, 48000, 1u)); m.A.Add(((ulong)buf, (ulong)devLen)); return Call(dev, m).Result; }),
+                    ("auddmg 401 功能 2 配输出设备名（输入设备只有 TrueRawAudioIn）", () => { Msg m = Msg.Cmif(401, Bytes(2u)); m.B.Add(((ulong)profile, 0x228)); m.A.Add(((ulong)buf, (ulong)devLen)); return Call(dev, m).Result; }),
                     ("auddmg 700 流未打开", () => { Msg m = Msg.Cmif(700, Bytes(*(uint*)cs2r.Data, 1u)); m.A.Add(((ulong)buf, (ulong)devLen)); return Call(dev, m).Result; }),
                 ];
 
@@ -254,6 +291,17 @@ namespace S2A.Services.Tests
             Check("audsmx 外部流样本交到宿主输出：收到帧数 / 逐帧相同 / 读指针", $"{Total}、{Total}、{Total % SmxCapacity}",
                 $"{cap.Frames}、{same}、{*(uint*)(work + 0x44)}");
 
+            // SetGain 落到宿主输出音量：立即 0.5 → 0.5；100 ms 渐变到 1.0：约 50 ms 时在 (0.5, 1) 之间，150 ms 后 = 1.0
+            stream.SetGain(0.5f, 0);
+            float g0 = cap.Volume;
+            stream.SetGain(1f, 100_000_000L);
+            Thread.Sleep(50); stream.Pump();
+            float gMid = cap.Volume;
+            Thread.Sleep(100); stream.Pump();
+            float gEnd = cap.Volume;
+            Check("audsmx SetGain 落到宿主输出音量：立即 / 渐变一半 / 渐变结束", "0.5、0.5–1 之间、1",
+                $"{g0}、{(gMid > 0.5f && gMid < 1f ? "0.5–1 之间" : gMid.ToString())}、{gEnd}");
+
             stream.Detach();
             stream.Close();
         }
@@ -297,8 +345,8 @@ namespace S2A.Services.Tests
                 }
 
                 public override bool WasBufferFullyConsumed(Ryujinx.Audio.Common.AudioBuffer buffer) => true;
-                public override void SetVolume(float volume) { }
-                public override float GetVolume() => 1f;
+                public override void SetVolume(float volume) => _drv.Volume = volume;
+                public override float GetVolume() => _drv.Volume;
                 public override ulong GetPlayedSampleCount() => _played;
                 public override void Start() { }
                 public override void Stop() { }

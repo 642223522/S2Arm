@@ -13,6 +13,7 @@ static _Atomic uint64_t g_frames;
 static _Atomic int g_stall_stop;
 static pthread_t g_stall_thread;
 static int g_stall_started;
+static _Atomic int g_short_stop; static pthread_t g_short_thread; static int g_short_started;   // 短停顿现场线程（见 short_watch）
 static int g_stall_rescue_only;   // 看门线程只做停帧救场（玩家包：开发设施关）——见 s2a_ap_stall_mode
 static _Atomic int g_nominal_fps, g_nominal_n;   // 标称帧率（见 s2a_nominal_fps_set）；上屏时给帧间隔工作组定截止
 void s2a_wg_frame(int fps);   // thread.c 帧间隔工作组（缺省关，S2A_WORKGROUP=1/render/all 可开）；fps = 标称帧率定本帧截止
@@ -35,7 +36,7 @@ void s2a_hud_frame(void) {
 }
 // S2A_THREAD_DUMP_FRAME=<帧号>（诊断，缺省关）：上屏到这一帧时打一次全线程表——正常局也在停住局出事的同一帧附近留一张表，两边比第一处不同
 static uint64_t dump_frame(void) { static long long v = -1; if (v < 0) { const char *e = getenv("S2A_THREAD_DUMP_FRAME"); v = e && *e ? atoll(e) : 0; } return (uint64_t)v; }
-static int stall_s(void); static void *stall_watch(void *a);   // 出图停住看门，定义在文件后部
+static int stall_s(void); static void *stall_watch(void *a); static int short_ms(void); static void *short_watch(void *a);   // 出图停住看门，定义在文件后部
 // 看门线程起不起、做什么（审计 P1-191）：停帧救场（帧率补丁把画面停住时当场关补丁、记下次也关、横幅告诉玩家，cpatch.c）是给玩家的，原先整条线程只在开发设施开着时起，
 //   玩家包（Info.plist S2ADevFacilities=0）救场走不到，补丁停住画面就一直停着。现在：开发设施开 + S2A_STALL_DUMP_S > 0 → 2 = 全套（救场 + 提示 + 打现场 + 退出）；
 //   开发设施关 → 1 = 只救场（判完一次线程就退）；开发设施开但现场关（S2A_STALL_DUMP_S=0）→ 1 = 只救场。纯函数，t_ap_host ⑧c 测
@@ -72,9 +73,11 @@ void s2a_playtime_frame(uint64_t now, int focused); int s2a_host_focused(void); 
 void s2a_load_first_frame(uint64_t now);   // loadprog.c：首帧上屏 → 加载页收起、全部编完的记下已完整预热   // dguard.c：直连安全网（首帧后前台满 60 秒清零连续失败）；没 arm 时一次原子读
 void s2a_frame_presented(void) { s2a_wg_frame(atomic_load_explicit(&g_nominal_fps, memory_order_relaxed)); uint64_t now = now_ns(); s2a_dguard_frame(now); s2a_playtime_frame(now, s2a_host_focused()); if (s2a_hud_on() || atomic_load_explicit(&g_hud_brief, memory_order_relaxed)) s2a_hud_frame(); uint64_t f = atomic_fetch_add_explicit(&g_frames, 1, memory_order_relaxed);
     resume_frame(f);
-    if (!f) { BOOT_MARK("nnMain → 首帧上屏（游戏自身加载 + 渲染器首帧）"); s2a_load_first_frame(now_ns()); }
-    if (!f && !g_stall_started) { int m = s2a_ap_stall_mode(s2a_dev_on(), stall_s());
+    if (!f) { BOOT_MARK("nnMain → 首帧上屏（游戏自身加载 + 渲染器首帧）"); s2a_load_first_frame(now_ns());
+              void (*cap_ok)(void) = (void (*)(void))dlsym(RTLD_DEFAULT, "s2a_window_cap_ok"); if (cap_ok) cap_ok(); }   // 按已知跨度收窄窗口后跑到首帧：删收窄标记（vawin.c；只链 ap_host 的单测没有）
+    if (!f && !g_stall_started) { int m = s2a_ap_stall_mode(1, stall_s());   // 11-17 拆开：停住现场只在真停住时打、只进日志（一局至多 3 次），归「诊断读数」玩家包也开；S2A_STALL_DUMP_S=0 关
         if (m) { g_stall_rescue_only = m == 1; atomic_store(&g_stall_stop, 0); if (!pthread_create(&g_stall_thread, NULL, stall_watch, NULL)) g_stall_started = 1; } }
+    if (!f && !g_short_started && short_ms() > 0) { atomic_store(&g_short_stop, 0); if (!pthread_create(&g_short_thread, NULL, short_watch, NULL)) g_short_started = 1; }
     if (dump_frame() && f + 1 == dump_frame()) { void (*td)(void) = (void (*)(void))dlsym(RTLD_DEFAULT, "s2a_thread_dump");   // 线程表在 thread.c；只链 ap_host 的单测里取不到就不打
         if (td) { LOG("线程表 [S2A_THREAD_DUMP_FRAME=%llu]：", (unsigned long long)(f + 1)); td(); } } }
 uint64_t s2a_ap_frames(void) { return atomic_load_explicit(&g_frames, memory_order_relaxed); }
@@ -139,6 +142,18 @@ void s2a_ap_set_notice_hook(void (*fn)(const char *)) { g_notice_hook = fn; }
 //   也不在 10 秒就动手：有的游戏加载时正常停帧十几秒，过早会把好好的帧率补丁误关。正常游戏 30 秒低于 0.5 帧本来就是坏了
 int s2a_ap_crawl_due(uint64_t frames_in_30s);
 int s2a_ap_crawl_due(uint64_t frames_in_30s) { return frames_in_30s <= 15; }
+// 停帧救场的 30 秒窗口在「外因」下清空重来（#1857：Mac 王国之泪切到后台 67 / 114 秒，宿主焦点=0、后台 30 秒上屏 0 帧，被当成帧率补丁停住画面，
+//   关掉帧率补丁还记成下次也关，回前台一直 30 帧）。外因：客机冻结=1、宿主焦点=0（窗口在后台，本来就不出帧）、宿主睡眠=1。
+//   取不到符号（-1）不算外因，同现场那行的口径。纯函数，t_ap_host ⑥d 测
+//   系统小程序开着（applet > 0，os.c s2a_applet_open，接口 v2.18）也是外因：键盘 / 错误弹窗 / 手柄设置占着画面，游戏本来就不出新帧
+//   （D-Z96G：iPad 上输名字 53 秒，被判停住、屏上弹「卡住」、记【红】直连异常）
+int s2a_ap_stall_external(int frozen, int focused, int sleeping, int applet);
+int s2a_ap_stall_external(int frozen, int focused, int sleeping, int applet) { return frozen == 1 || focused == 0 || sleeping == 1 || applet > 0; }
+// 看门线程走过的格数（每格 250 ms 一圈，圈首加一）：单测按「动作之后又走了几格」等，不按墙钟睡（11-19：负载高时线程分不到 CPU，
+//   固定睡 1.6 秒后格数不够、现场份数对不上，测的是机器负载不是看门逻辑）。只读计数，产品行为不变
+static _Atomic uint64_t g_stall_ticks;
+uint64_t s2a_ap_stall_ticks(void);
+uint64_t s2a_ap_stall_ticks(void) { return atomic_load(&g_stall_ticks); }
 static void *stall_watch(void *a) { s2a_thread_name("s2a-ap-stall");
     (void)a; int (*frozen)(void) = (int (*)(void))dlsym(RTLD_DEFAULT, "s2a_guest_frozen");   // 两者都在 thread.c；只链 ap_host 的单测由桩提供
     // 停帧「外因」四态：宿主焦点 / 失焦暂停（游戏 SetOutOfFocusSuspendingEnabled 要的值）/ 宿主睡眠 / 客机冻结。11-11 诊断包（Mac 局 9 次停帧
@@ -146,6 +161,7 @@ static void *stall_watch(void *a) { s2a_thread_name("s2a-ap-stall");
     int (*focused)(void) = (int (*)(void))dlsym(RTLD_DEFAULT, "s2a_host_focused");       // runtime/src/os.c
     int (*suspend)(void) = (int (*)(void))dlsym(RTLD_DEFAULT, "s2a_focus_suspend");      // runtime/src/os.c
     int (*sleeping)(void) = (int (*)(void))dlsym(RTLD_DEFAULT, "s2a_host_sleeping");     // runtime/src/os.c
+    int (*applet)(void) = (int (*)(void))dlsym(RTLD_DEFAULT, "s2a_applet_open");        // runtime/src/os.c：系统小程序开着的个数（接口 v2.18）
     void (*td)(void) = (void (*)(void))dlsym(RTLD_DEFAULT, "s2a_thread_dump");
     int (*hd)(const char *) = (int (*)(const char *))dlsym(RTLD_DEFAULT, "s2a_dump_threads");   // tdump.c：宿主线程调用栈（10-24 xc3 停住靠它定出实化互等）
     void (*msg)(const char *) = (void (*)(const char *))dlsym(RTLD_DEFAULT, "s2a_ios_show_message");   // 第 2 档：屏幕上给玩家一句话（见 s2a_ap_stall_notice_after）
@@ -156,10 +172,11 @@ static void *stall_watch(void *a) { s2a_thread_name("s2a-ap-stall");
     uint64_t last = s2a_ap_frames(); int idle = 0, armed = 1, n = 0, noticed = 0, lim = 4 * stall_s();
     uint64_t ring[30]; int rn = 0, rt = 0, crawled = 0;   // 停帧救场的 30 秒窗口：每秒记一次上屏帧数（客机冻结时清空重来）
     while (!atomic_load(&g_stall_stop)) {
+        atomic_fetch_add(&g_stall_ticks, 1);   // 圈首计：读到 t 之后再涨 k+1，就有 k 整圈是在读 t 之后开始的
         usleep(250000); uint64_t f = s2a_ap_frames();
         if (atomic_load(&g_stall_stop)) break;
         if (++rt % 4 == 0) {
-            if (frozen && frozen()) rn = 0;
+            if (s2a_ap_stall_external(frozen ? frozen() : -1, focused ? focused() : -1, sleeping ? sleeping() : -1, applet ? applet() : -1)) rn = 0;
             else {
                 if (!crawled && rn >= 30 && s2a_ap_crawl_due(f - ring[rn % 30])) {
                     crawled = 1;   // 每局只判一次：救场本身也只救一次
@@ -179,7 +196,8 @@ static void *stall_watch(void *a) { s2a_thread_name("s2a-ap-stall");
             if (n) s2a_dguard_evidence(NULL, 1);   // 直连安全网：停住的证据撤回（自己活过来了）
             last = f; idle = 0; armed = 1; noticed = 0; continue;
         }
-        if (frozen && frozen()) { idle = 0; continue; }
+        // 冻结 / 系统小程序开着期间不计停住：计时清零，关掉后从零重新计（小程序开着时游戏本来不出新帧，D-Z96G）
+        if ((frozen && frozen()) || (applet && applet() > 0)) { idle = 0; continue; }
         ++idle;
         // 第 2 档先于第 3 档：退出前让用户知道「是卡住了要重开」，而不是看到闪退去猜是不是 bug。
         //   不阻塞（dispatch_async 回主线程），所以卡住的是游戏线程也不影响它显示
@@ -199,6 +217,7 @@ static void *stall_watch(void *a) { s2a_thread_name("s2a-ap-stall");
                 "停帧就有外因，判引擎卡死前先看这一行）",
                 focused ? focused() : -1, suspend ? suspend() : -1, sleeping ? sleeping() : -1, frozen ? frozen() : -1);
             if (td) td();
+            { void (*wd)(void) = (void (*)(void))dlsym(RTLD_DEFAULT, "s2a_direct_wait_dump"); if (wd) wd(); }   // 直连：图形层各等待点（已提交 / 已完成栅栏、队列在等的别家事件；direct_host.c）——停帧多半是队列在等一个不来的事件；只链本文件的单测取不到就不打
             if (hd) { char w[96]; snprintf(w, sizeof w, "出图停住看门：停在第 %llu 帧已 %d 秒", (unsigned long long)f, stall_s()); hd(w); }
             continue;
         }
@@ -212,11 +231,37 @@ static void *stall_watch(void *a) { s2a_thread_name("s2a-ap-stall");
     }
     return NULL;
 }
+// 短停顿现场（11-25 #1842：旷野之息 iPad / iPhone 局内 0.3–0.9 秒的停顿，宿主提交 / GPU 都闲、游戏线程自己卡；常规停住看门 ≥ 1 秒、
+//   玩家包不打现场，抓不到）：DM_STALL_SHORT_MS=<毫秒>（诊断码 pack/jobs/diagcode.py 给，只收 DM_ 开头；缺省不起）时首帧后起一条线程，每 50 ms 读一次上屏帧数，
+//   停满阈值、且游戏没被冻结 / 没在后台时，趁还停着打一份游戏线程表 + 宿主线程栈；帧走了重新武装。一局至多 DM_STALL_SHORT_N（缺省 5）份。
+//   只读计数、只打日志，不改游戏行为，与开发设施开关无关（诊断码本身是玩家显式给的）
+static int short_ms(void) { const char *e = getenv("DM_STALL_SHORT_MS"); int v = e && *e ? atoi(e) : 0; return v < 0 || v > 60000 ? 0 : v; }   // 只在首帧与线程起时读，不缓存
+static int short_max(void) { const char *e = getenv("DM_STALL_SHORT_N"); int v = e && *e ? atoi(e) : 5; return v < 1 ? 1 : v > 50 ? 50 : v; }
+static void *short_watch(void *a) {
+    (void)a; s2a_thread_name("s2a-stall-short");
+    int (*frozen)(void) = (int (*)(void))dlsym(RTLD_DEFAULT, "s2a_guest_frozen");
+    int (*focused)(void) = (int (*)(void))dlsym(RTLD_DEFAULT, "s2a_host_focused");
+    void (*td)(void) = (void (*)(void))dlsym(RTLD_DEFAULT, "s2a_thread_dump");
+    int (*hd)(const char *) = (int (*)(const char *))dlsym(RTLD_DEFAULT, "s2a_dump_threads");
+    const int thr = short_ms(), cap = short_max(); int n = 0, armed = 1; uint64_t last = s2a_ap_frames(), t_last = now_ns();
+    LOG("短停顿现场：已开（上屏帧数停满 %d ms 打一份游戏线程表 + 宿主线程栈，一局至多 %d 份；DM_STALL_SHORT_MS）", thr, cap);
+    while (!atomic_load(&g_short_stop) && n < cap) {
+        usleep(50000); uint64_t f = s2a_ap_frames(), t = now_ns();
+        if (f != last || (frozen && frozen() > 0) || (focused && focused() == 0)) { last = f; t_last = t; armed = 1; continue; }
+        if (!armed || (t - t_last) / 1000000 < (uint64_t)thr) continue;
+        armed = 0; n++;
+        LOG("短停顿现场：上屏帧数停在 %llu 已 %llu ms（第 %d / %d 份），游戏线程表 + 宿主线程栈：", (unsigned long long)f, (unsigned long long)((t - t_last) / 1000000), n, cap);
+        if (td) td();
+        if (hd) { char w[96]; snprintf(w, sizeof w, "短停顿现场：停在第 %llu 帧", (unsigned long long)f); hd(w); }
+    }
+    return NULL;
+}
 // 写跟踪计数（维护者 10-20 动森能耗：iPhone 比旧库多约 3 W 在 CPU 侧，要「陷入 / mprotect 每秒多少次」）：MARK 时存快照打一行，
 // 收局打全量与 MARK 后增量折每秒——真机正式局 / Mac 局都自带，不另起局
 static s2a_track_stat g_ts_mark; static uint64_t g_ts_mark_ns;
 int s2a_ap_session_stop(void) {
-    atomic_store(&g_stall_stop, 1);
+    atomic_store(&g_stall_stop, 1); atomic_store(&g_short_stop, 1);
+    if (g_short_started) { int error = pthread_join(g_short_thread, NULL); if (error) { LOG("【红】短停顿现场线程 join 失败：%d", error); return -1; } g_short_started = 0; }
     if (g_stall_started) {
         int error = pthread_join(g_stall_thread, NULL);
         if (error) { LOG("【红】停帧监视线程 join 失败：%d", error); return -1; }

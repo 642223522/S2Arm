@@ -67,6 +67,16 @@ class ErrorRecoveryTests(JobCase):
         self.assert_failure(failed, "keys_invalid")
         self.assertEqual(self.c.keys.read_bytes(), before)
 
+    def test_missing_keys_file_is_keys_invalid_not_our_file_missing(self):
+        # 诊断#c719ce：选的 prod.keys 已经不在（被移动 / 删除 / iCloud 没下载），原先 stat 抛 FileNotFoundError 落到 job_failed，
+        #   报成「S2Arm 自己的文件找不到了」。期望手写：报 keys_invalid、说是选的密钥文件找不到、让玩家重新选；原有密钥不变
+        self.import_keys()
+        before = self.c.keys.read_bytes()
+        _, failed = self.worker("keys", path=str(self.root / "gone" / "prod.keys"))
+        diagnostic = self.assert_failure(failed, "keys_invalid")
+        self.assertIn("找不到", json.dumps(diagnostic, ensure_ascii=False)); self.assertIn("重新选择", json.dumps(diagnostic, ensure_ascii=False))
+        self.assertEqual(self.c.keys.read_bytes(), before)
+
     def test_specific_reader_error_replaces_tool_exit_and_preserves_evidence(self):
         self.import_keys(); self.install_reader_fixture()
         source = self.root / "source.nsp"
@@ -144,15 +154,20 @@ class ErrorRecoveryTests(JobCase):
             raise ValueError("synthetic callback failure")
         # Bound the pre-fix failure as well: a swallowed callback exception must
         # not leave the test sleeping indefinitely or leave its child running.
-        timer = threading.Timer(3, self.c.stop)
+        # The judgment is our own output, not wall-clock time (a loaded host stretches any time
+        # bound): the run must end through the callback-failure path, never through this backstop.
+        backstop = threading.Event()
+        def stop_by_backstop():
+            backstop.set()
+            self.c.stop()
+        timer = threading.Timer(20, stop_by_backstop)
         timer.start()
-        start = time.monotonic()
         try:
             with patch("threading.excepthook"), self.assertRaisesRegex(ValueError, "synthetic callback failure"):
                 self.c.run([sys.executable, "-c", "import time; print('fixture', flush=True); time.sleep(30)"], on_line=broken)
         finally:
             timer.cancel()
-        self.assertLess(time.monotonic() - start, 3)
+        self.assertFalse(backstop.is_set(), "the child was stopped by the backstop timer, not by the callback-failure path")
         self.assertTrue(children)
         self.assertTrue(all(child.poll() is not None for child in children))
         self.assertFalse(self.c.children)
@@ -216,6 +231,187 @@ raise SystemExit(main.main())
                          "input_missing")   # 游戏库根整个不在 = 外接盘没插
         self.assertEqual(explain(Failure("No space left on device")).code, "job_failed")
         self.assertEqual(explain(ValueError("Check keys")).code, "job_failed")
+
+    def test_disk_io_error_named(self):
+        # D-2NH2（Windows 0.6.8）：installUpdate 读游戏库遇 WinError 483「设备硬件出现致命错误」，原先落笼统的「本地任务失败」。
+        #   期望手写：WinError 483 / 23 / 1117、POSIX EIO → disk_io_error，原文与路径进 internal；工具日志里同样的原文 → disk_io_error；
+        #   反证：同一路径的 WinError 5（拒绝访问）不归它
+        lib = self.root / "d2nh2-lib"; lib.mkdir()
+        for win in (483, 23, 1117):
+            with self.subTest(winerror=win):
+                e = OSError(errno.EINVAL, "localized", str(lib / "games/x/a.bin")); e.winerror = win
+                got = explain(e, library=lib)
+                self.assertEqual(got.code, "disk_io_error"); self.assertIn(f"WinError {win}", got.internal)
+        self.assertEqual(explain(OSError(errno.EIO, "Input/output error", str(lib / "a"))).code, "disk_io_error")
+        deny = OSError(errno.EACCES, "denied", str(lib / "a")); deny.winerror = 5
+        self.assertNotEqual(explain(deny, library=lib).code, "disk_io_error")
+        import errors
+        code, why = errors.classify_failure("ipa", None, ["OSError: [WinError 483] 由于设备硬件出现致命错误，请求失败。: 'D:\\lib\\a.bin'"])
+        self.assertEqual(code, "disk_io_error", why)
+
+    def test_windows_app_control_block_named(self):
+        # #0745b9：Windows 应用控制（4551 智能应用控制 / WDAC、1260 组策略、225 / 226 杀毒软件）拦下我们自带的工具 → app_control_blocked，
+        #   上屏点名被拦的工具（winproc.popen 补的文件名）；原先落到「本地任务失败，请检查日志和输入」。errno 写成 EACCES 也先认应用控制
+        for code_w in (4551, 1260, 225, 226):
+            with self.subTest(winerror=code_w):
+                e = OSError(errno.EACCES, "应用程序控制策略已阻止此文件。", r"C:\S2Arm\Engine\tools\nx_reader.exe")
+                e.winerror = code_w
+                got = explain(e)
+                self.assertEqual(got.code, "app_control_blocked")
+                self.assertIn("「nx_reader.exe」", str(got))
+                self.assertIn({4551: "智能应用控制", 1260: "组策略"}.get(code_w, "杀毒软件"), str(got))
+                self.assertIn(f"WinError {code_w}", got.internal)
+        e = OSError(errno.EINVAL, "x"); e.winerror = 4551
+        self.assertIn("「S2Arm 自带的工具」", str(explain(e)), "不带文件名照样认")
+        self.assertIn("app_control_blocked", RECOVERY)
+
+    def test_orch_spawn_or_link_denied_is_app_control(self):
+        # D-GVDA / #1912（Windows 0.6.3）：出包「准备资源」起随包预编的 Yaz0 编码器被拒（编排层子进程里，错误只剩回溯文字），
+        #   同机建 RomFS 目录链接（junction）也被拒：都归 app_control_blocked，不再落笼统的 package_failed。原文取自诊断（路径已脱敏）
+        import errors
+        spawn = ('一键出包失败（八个轻阶段）：light.log：rc=1；    File "subprocess.py", line 1538, in _execute_child /   '
+                 'PermissionError: [WinError 5] 拒绝访问。 / 【红】编排中止：[WinError 5] 拒绝访问。')
+        junction = ('    File "[SOURCE]\\pack\\orch\\roots.py", line 109, in _junction\n    raise C.WinError(C.get_last_error())\n'
+                    '  PermissionError: [WinError 5] 拒绝访问。\n【红】编排中止：[WinError 5] 拒绝访问。')
+        for label, text in (("起编码器被拒", spawn), ("建 junction 被拒", junction)):
+            with self.subTest(label):
+                code, why = errors.classify_failure("ipa", None, [text])
+                self.assertEqual(code, "app_control_blocked", why)
+                self.assertEqual(errors.player_reason(code), "被 Windows 拦下：Windows 的应用控制或杀毒软件没让 S2Arm 自带的工具运行。")
+        for w in (4551, 225):   # 编排层里应用控制原号同样认
+            self.assertEqual(errors.classify_failure("ipa", None, [f'line 1538, in _execute_child / PermissionError: [WinError {w}] x'])[0], "app_control_blocked")
+        # 反证：别处的拒绝访问（改名 / 删文件）不算拦工具，照旧不归 app_control_blocked
+        other = '  File "x.py", line 3, in replace\n  PermissionError: [WinError 5] 拒绝访问。: \'D:\\a\' -> \'D:\\b\''
+        self.assertNotEqual(errors.classify_failure("ipa", None, [other])[0], "app_control_blocked")
+
+    def test_missing_prebuilt_tool_is_app_control(self):
+        # D-VPXS / #1912（Windows 0.6.3）：随包 rewriter\\s2a-rewrite.exe 不在了（旁边的 .source 还在），改写阶段退回现编、报「CMake 未就绪」；
+        #   失败归因时对随包清单 prepare.json：缺的、被清空的列出来，归 app_control_blocked。期望按构造手写：清单 3 个文件，删 1 个、清空 1 个
+        import errors
+        tools = self.root / "Prepare"; (tools / "rewriter").mkdir(parents=True); (tools / "codecs").mkdir()
+        (tools / "rewriter" / "s2a-rewrite.exe.source").write_text("x" * 65)
+        (tools / "codecs" / "yaz0enc-1.exe").write_bytes(b"")          # 清单记 4 字节，盘上被清空
+        (tools / "codecs" / "libyaz0dec.dll").write_bytes(b"abcd")
+        (tools / "prepare.json").write_text(json.dumps({"schema": 1, "source": "x", "files": {
+            "rewriter\\s2a-rewrite.exe": [1547776, "0" * 64], "rewriter\\s2a-rewrite.exe.source": [65, "0" * 64],
+            "codecs/yaz0enc-1.exe": [4, "0" * 64], "codecs/libyaz0dec.dll": [4, "0" * 64]}}))
+        env = {"S2A_PREBUILT_TOOLS": str(tools)}
+        self.assertEqual(sorted(errors.missing_prebuilt(env)), ["codecs/yaz0enc-1.exe", "rewriter\\s2a-rewrite.exe"])
+        with patch.dict(os.environ, env):
+            code, why = errors.classify_failure("ipa", None, ["light.log：rc=75；【黄】winenv：自动源码改写器固定依赖/CMake 未就绪；不下载"])
+        self.assertEqual(code, "app_control_blocked", why)
+        self.assertIn("s2a-rewrite.exe", why); self.assertIn("2 个", why)
+        # 反证：清单里的都在、大小对 → 不归它（照旧按阶段）；没给 S2A_PREBUILT_TOOLS（Mac / 源码树）→ 不查
+        (tools / "codecs" / "yaz0enc-1.exe").write_bytes(b"abcd"); (tools / "rewriter" / "s2a-rewrite.exe").write_bytes(b"\0" * 1547776)
+        self.assertEqual(errors.missing_prebuilt(env), [])
+        with patch.dict(os.environ, env):
+            self.assertNotEqual(errors.classify_failure("ipa", None, ["light.log：rc=75；【黄】winenv：自动源码改写器固定依赖/CMake 未就绪；不下载"])[0], "app_control_blocked")
+        self.assertEqual(errors.missing_prebuilt({}), [])
+
+    def test_disk_full_beats_missing_prebuilt(self):
+        # D-6ZDD（Windows 0.6.7）：写 game.img 时 [Errno 28]，同时随包 rcodesign 大小不对。盘满能让解出来的随包件大小不对，反过来不成立：
+        #   日志确凿写满 → disk_full（随包件缺照记进说明）；只有随包件缺 → 照旧 app_control_blocked。期望按构造手写
+        import errors
+        tools = self.root / "Prepare"; (tools / "signing").mkdir(parents=True)
+        (tools / "signing" / "rcodesign.exe").write_bytes(b"ab")          # 清单记 4 字节
+        (tools / "prepare.json").write_text(json.dumps({"schema": 1, "source": "x", "files": {"signing/rcodesign.exe": [4, "0" * 64]}}))
+        env = {"S2A_PREBUILT_TOOLS": str(tools)}
+        full = 'Traceback (most recent call last):\n  File "romfs_image.py", line 88, in write\nOSError: [Errno 28] No space left on device'
+        with patch.dict(os.environ, env):
+            code, why = errors.classify_failure("ipa", None, [full])
+            self.assertEqual(code, "disk_full", why)
+            self.assertIn("rcodesign.exe", why)
+            code2, why2 = errors.classify_failure("ipa", None, ["light.log：rc=1；没有别的原因"])
+            self.assertEqual(code2, "app_control_blocked", why2)
+
+    def test_graphics_api_verdict_beats_missing_prebuilt(self):
+        # D-TW4Z（Windows 0.6.9）：日志写着「unsupported graphics API: unknown」（gfx_api.py 读游戏程序的结论，不经随包工具），
+        #   同时随包 rcodesign 记成缺 → 原先归 app_control_blocked。期望手写：归 graphics_api_unsupported，说明里写清 rcodesign 缺的是哪种
+        import errors
+        tools = self.root / "Prepare"; (tools / "rcodesign").mkdir(parents=True)
+        (tools / "rcodesign" / "rcodesign.exe").write_bytes(b"ab")          # 清单记 4 字节
+        (tools / "prepare.json").write_text(json.dumps({"schema": 1, "source": "x", "files": {"rcodesign/rcodesign.exe": [4, "0" * 64]}}))
+        env = {"S2A_PREBUILT_TOOLS": str(tools)}
+        gap = "light.log：rc=3；【黄】直连缺口：配置推导不支持本款：unsupported graphics API: unknown（没有 NVN / Vulkan / OpenGL 任一接口的证据）"
+        with patch.dict(os.environ, env):
+            code, why = errors.classify_failure("ipa", None, [gap])
+            self.assertEqual(code, "graphics_api_unsupported", why)
+            self.assertIn("rcodesign/rcodesign.exe（大小 2 / 应为 4 字节）", why)
+            (tools / "rcodesign" / "rcodesign.exe").unlink()
+            code2, why2 = errors.classify_failure("ipa", None, ["light.log：rc=1；没有别的原因"])
+            self.assertEqual(code2, "app_control_blocked", why2)
+            self.assertIn("rcodesign/rcodesign.exe（不在）", why2)
+
+    def test_junction_denied_from_abort_line(self):
+        # D-QNJQ（Windows 0.6.9）：建目录联接被拒的回溯只在编排的刷新日志里，作业主日志尾巴只剩「编排中止」一行，原先归 package_failed。
+        #   roots._junction 把「在 _junction」附在异常上（编排中止拼 __notes__）→ 同一行认成 app_control_blocked；不带附注的 WinError 5 不归它。期望手写
+        import errors
+        line = "light.log：rc=1；【红】编排中止：[WinError 5] 拒绝访问。 （在 _junction 建目录联接被拒：current）"
+        self.assertEqual(errors.classify_failure("ipa", None, [line])[0], "app_control_blocked")
+        self.assertNotEqual(errors.classify_failure("ipa", None, ["light.log：rc=1；【红】编排中止：[WinError 5] 拒绝访问。"])[0], "app_control_blocked")
+
+    def test_nostall_watchdog_is_build_stalled(self):
+        # D-PD33（Windows 0.6.7）：直连库编批库 15 分钟没有一批编完，无进展看门狗停掉 dsh_batch（rc=124），原先落「package_failed，按阶段 未识别」。
+        #   期望手写：只有看门狗那行 → build_stalled，上屏句是它自己的；同段还有写满 → disk_full（看门狗只是结果）
+        import errors
+        stalled = "[直连库] 🔴 出库失败 rc=124：【红】无进展看门狗：python dsh_batch.py build --pkg x 900 秒产出没有前进"
+        code, why = errors.classify_failure("direct", None, [stalled])
+        self.assertEqual(code, "build_stalled", why)
+        self.assertNotEqual(errors.player_reason("build_stalled"), errors.player_reason("package_failed"))
+        code2, why2 = errors.classify_failure("direct", None, ["OSError: [Errno 28] No space left on device\n" + stalled])
+        self.assertEqual(code2, "disk_full", why2)
+
+    def test_windows_metal_version_unreadable(self):
+        # D-TYCN（Windows 0.6.3）：编着色器库前核工具读不到 metal.exe 版本，原先落笼统的 package_failed + 开发者口吻的 --update-lock 提示。
+        #   起进程被拒 → app_control_blocked；文件不在 / 起来没打版本 → win_metal_missing（原文取自诊断与 dmsh_chain.tools_now 的写法）
+        import errors
+        head = "[直连库] 🔴 出库前核工具 / 链号失败：dmsh_chain.py 退出码 1：[RED] translation chain tools do not match the lock file: "
+        lock = "metal_macosx: lock Apple metal version 32023.883 (metalfe-32023.883) / actual "
+        for tail, want in (("missing", "win_metal_missing"),
+                           ("missing (no version output: exit code 0xc0000135)", "win_metal_missing"),
+                           ("missing (start blocked: [WinError 5] 拒绝访问。)", "app_control_blocked")):
+            with self.subTest(tail):
+                code, why = errors.classify_failure("ipa", None, [head + lock + tail])
+                self.assertEqual(code, want, why)
+        self.assertEqual(errors.player_reason("win_metal_missing"), "缺少Windows版Metal工具：未找到能报告有效版本的官方Windows版Metal编译器。")
+        # 反证：版本不同（不是 missing）不归这两个码
+        self.assertNotIn(errors.classify_failure("ipa", None, [head + lock + "Apple metal version 32100.1 (metalfe-32100.1)"])[0], ("win_metal_missing", "app_control_blocked"))
+
+    def test_unrecognized_volume_during_classification_does_not_mask_original_error(self):
+        lib = self.root / "classify-volume-lib"
+        src = self.root / "classify-volume-src"
+        lib.mkdir(); src.mkdir()
+        missing_cache = lib / "games" / "Absolum" / "build" / "extract"
+        original = FileNotFoundError(errno.ENOENT, "synthetic missing cache", str(missing_cache))
+
+        def unrecognized_volume(*args, **kwargs):
+            error = OSError(errno.EIO, "synthetic unrecognized volume")
+            error.winerror = 1005
+            raise error
+
+        with patch("errors.os.path.realpath", side_effect=unrecognized_volume):
+            got = explain(original, sources=[src], library=lib)
+        self.assertEqual(got.code, "job_failed")
+        self.assertIn(str(missing_cache), got.internal)
+
+    def test_unrecognized_volume_check_does_not_mark_library_as_missing(self):
+        lib = self.root / "classify-stat-lib"
+        src = self.root / "classify-stat-src"
+        lib.mkdir(); src.mkdir()
+        original_stat = os.stat
+
+        def stat_with_unrecognized_volume(path, *args, **kwargs):
+            if os.fspath(path) == str(lib):
+                error = OSError(errno.EIO, "synthetic unrecognized volume", str(lib))
+                error.winerror = 1005
+                raise error
+            return original_stat(path, *args, **kwargs)
+
+        missing_cache = lib / "games" / "fixture" / "build" / "extract"
+        original = FileNotFoundError(errno.ENOENT, "synthetic missing cache", str(missing_cache))
+        with patch("errors.os.stat", side_effect=stat_with_unrecognized_volume):
+            got = explain(original, sources=[src], library=lib)
+        self.assertEqual(got.code, "job_failed")
 
     def test_non_os_error_keeps_type_message_and_location(self):
         # #372 / #854（Windows 0.3.9 报修打包 AttributeError）：不是 OSError 的异常原先连原文一起丢，玩家复制的摘要里只剩「本地任务失败」。
@@ -442,11 +638,11 @@ raise SystemExit(main.main())
         self.assert_t75_recovery(self.c.describe_failure(raised.exception), "content_invalid",
                                  "文件是否完整", "重新导入", "保留对应日志")
 
-    def test_t75_architecture_unsupported_recovery(self):
+    def test_t75_intel_mac_can_package_iphone(self):
         row = self.t75_preflight(machine="x86_64")["Apple Silicon"]
-        self.assertFalse(row["ok"])
-        self.assert_t75_recovery(row["diagnostic"], "architecture_unsupported",
-                                 "Apple Silicon Mac", "换用支持的设备", "重试不会")
+        self.assertTrue(row["ok"])
+        self.assertIn("Intel Mac", row["message"])
+        self.assertIn("iPhone", row["message"])
 
     def test_t75_os_unsupported_recovery(self):
         row = self.t75_preflight(version="14.7")["macOS"]
@@ -474,6 +670,18 @@ raise SystemExit(main.main())
         # guidance, rather than crashing a legacy consumer.
         self.assertTrue(self.c.describe_failure(Failure("future", code="future_code"))["suggestion"])
 
+
+
+class SourceMissingCause(unittest.TestCase):
+    def test_unpack_source_missing_is_input_missing(self):
+        # 诊断#24fb13：解包读原件时路径不在（外置盘没连上 / 原件挪走），原先按阶段 unpack 落成 content_invalid「文件没下完整」。
+        #   期望：解包工具的分类行「【原因 source_missing】」→ input_missing，上屏句说原件找不到、下一步是接盘或重新放进来
+        import errors
+        text = "🔴 找不到源文件（Could not find a part of the path 'E:\\x\\game.nsp'.）：原件被挪走或删掉了……\n【原因 source_missing】\n"
+        code, why = errors.classify_failure("unpack", None, [text])
+        self.assertEqual(code, "input_missing", why)
+        self.assertIn("找不到游戏文件", errors.player_reason(code))
+        self.assertEqual(errors.classify_failure("unpack", None, ["🔴 读源文件失败（x）\n【原因 io】\n"])[0], "content_invalid", "别的读盘错照旧按阶段")
 
 if __name__ == "__main__":
     unittest.main()

@@ -178,6 +178,7 @@ typedef struct {
   Alloc* allocs;
   /* 布局重选（同 patch_nso.py #290）：retry_front 非 0 = 本轮是容量不足后的重做；req / now = 上一轮 / 本轮成功的自旋回边 (头, 回边) */
   size_t retry_front, next_front;
+  size_t retry_gaps0, next_gaps0;   /* 触发本轮重做的那一轮的缺口数（#1476）：重做后缺口比它多才算布局重选失败 */
   int retry_dual, next_dual;   // 本轮 / 下一轮是双岛布局
   const Pair* req;
   size_t nreq;
@@ -680,6 +681,69 @@ static int wconst(A at, int* reg, uint32_t* value) {
 }
 static uint32_t movz_hi(int reg, uint32_t value) {
   return 0x52a00000 | ((value >> 16) << 5) | reg;
+}
+/* 游戏缺陷修补表（S2A_FIX_TSV = 仓库 runtime/fix/<main 构建号前 16 位>.tsv，11-16）：游戏自己代码里的缺陷、宿主调度挡不住的，按构建号精确改字。
+ * 改写器别处只认代码形状、不认具体游戏；这里是例外，所以只收两种最窄的（行格式同帧率表 c 行）——
+ *   c <模块> <偏移> word <原字> <新字>    # 理由          原位换一条指令；分析前改（phase 0，后面的分析看到的就是改好的代码）
+ *   c <模块> <偏移> veneer <原字> <体字…>  # 理由          原位改成 B 跳板，体字与记号同帧率表 veneer（veneer_row）；同宽屏点在生成之后（phase 1）。
+ *                                                          用途：游戏自己无锁的并发改，按调用点包一把客体自旋锁（锁字 = 本模块键页前 FIX_LOCK_TAIL 字节处，
+ *                                                          体字 adrp:x16 + sub x16, x16, #0x10 取到；pack/cpatch.py 给 FPSLocker 变量的区间不含这 16 字节）
+ * 原字不符（不是这一版）、点不在代码段 → 记缺口不改。与帧率表分开放：帧率表的存在本身有含义
+ * （「本款已有我方帧率表」→ 社区帧率补丁不收，pack/cpatch.py），修补表不该带上它。以后与按款旋钮表并成一套时按同一格式合并 */
+static int veneer_row(A off, char* a1, char* a2, char* a3, const char* tag);
+static void fix_rows(int phase) {
+  const char* path = g->r.fix_tsv;
+  if (!path || !*path)
+    return;
+  FILE* f = fopen(path, "rb");
+  if (!f) {
+    int error = errno;
+    if (error != ENOENT)
+      fail("无法打开游戏缺陷修补表：%s", strerror(error));
+    msg("[黄] %s 游戏缺陷修补表不存在，跳过\n", g->r.module);
+    return;
+  }
+  char line[512];
+  while (fgets(line, sizeof(line), f)) {
+    char* h = strchr(line, '#');
+    if (h)
+      *h = 0;
+    char *t0 = strtok(line, " \t\r\n"), *mod = strtok(NULL, " \t\r\n"), *offs = strtok(NULL, " \t\r\n"), *kind = strtok(NULL, " \t\r\n"),
+         *origs = strtok(NULL, " \t\r\n"), *news = strtok(NULL, " \t\r\n");
+    if (!t0 || !eq(t0, "c") || !mod || !eq(mod, g->r.module))
+      continue;
+    int ven = kind && eq(kind, "veneer");
+    if (!offs || !kind || !(ven || eq(kind, "word")) || !origs || !news) {
+      if (phase == 0)
+        gap(0, "fix", "游戏缺陷修补表行不全或种类不是 word / veneer");
+      continue;
+    }
+    if (ven != (phase == 1))
+      continue;
+    A off = strtoll(offs, NULL, 16);
+    uint32_t orig = (uint32_t)strtoul(origs, NULL, 16), nw = (uint32_t)strtoul(news, NULL, 16), w = 0;
+    if (off < 0 || off % 4 || off + 4 > (A)g->text) {
+      gap(off, "fix", "修补点不在代码段");
+      continue;
+    }
+    memcpy(&w, g->img + off, 4);
+    if (w != orig) {
+      gap(off, "fix", "修补点原字 0x%x，表里写的是 0x%x（不是这一版）", w, orig);
+      continue;
+    }
+    if (ven) {
+      char *a2 = strtok(NULL, " \t\r\n"), *a3 = a2 ? strtok(NULL, " \t\r\n") : NULL;
+      if (veneer_row(off, news, a2, a3, "fix")) {
+        bump("game_fix_veneer");
+        msg("游戏缺陷修补：%s+%#llx 跳板\n", g->r.module, (unsigned long long)off);
+      }
+      continue;
+    }
+    memcpy(g->img + off, &nw, 4);
+    bump("game_fix");
+    msg("游戏缺陷修补：%s+%#llx %08x → %08x\n", g->r.module, (unsigned long long)off, w, nw);
+  }
+  fclose(f);
 }
 /* Recognize the SDK code shape, never a game identity or fixed address. Scan
  * and collect every constructor before changing any instruction, as Python does. */
@@ -2268,13 +2332,24 @@ static void data_in_text(void) {
   msg("%s 内嵌数据判定：启用；代码段 %zu 字节，真实代码 %zu（函数范围 %zu、动态符号 %zu 个、分支闭包 %zu），排除 %zu 字节；异常类指令 %zu 条（范围外 %zu）；缺口 %zu → %zu，改写点 %zu → %zu\n",
       g->r.module, (size_t)g->text, code, fde, syms, walked, (size_t)g->text - code, exc, outside, gaps0, g->gaps.n, sites0, g->sites.n);
 }
+/* 社区补丁写进代码段尾巴（代码段结尾到 ro 开头之间的填充）的新代码字（#1628：FPSLocker 在旷野之息 1.9.0 主程序末尾放新函数，里面读计时器）。
+   这段不在代码段里，分析不覆盖；scan() 把这里的字也当代码看，要改写的（读计时器 / svc / 线程寄存器 / ctr）照常记成改写点，生成时同代码段里的点 */
+static A g_cptail[4096];
+static int g_ncptail;
+static int cp_tail(A a) {
+  for (int i = 0; i < g_ncptail; i++)
+    if (g_cptail[i] == a) return 1;
+  return 0;
+}
 static void scan(void) {
   /* NRO（romfs 里 nn::ro 装的模块，runtime/rewriter/nro_to_nso.py 转来）：text 段开头 [4, 0x80) 是 NRO 头（MOD0 偏移、
      'NRO0'、大小、段表、构建号），是数据不是指令，不扫（构建号字节会被认成 hvc 等缺口）；NSO 没有这个标记，扫描范围不变（与 patch_nso.py 同口径） */
   const A hdr = g->text >= 0x80 && !memcmp(g->img + 0x10, "NRO0", 4) ? 0x80 : 0;
-  for (A a = 0; a < (A)g->text; a += 4) {
+  A hi = (A)g->text;
+  for (int i = 0; i < g_ncptail; i++) if (g_cptail[i] + 4 > hi) hi = g_cptail[i] + 4;
+  for (A a = 0; a < hi; a += 4) {
     if (a >= 4 && a < hdr) continue;
-    if (!in_code(a)) continue;
+    if (a < (A)g->text ? !in_code(a) : !cp_tail(a)) continue;   /* 代码段外只看社区补丁写进尾巴的字（#1628） */
     uint32_t w = iw(a);
     const char* k = NULL;
     int arg = 0;
@@ -2296,6 +2371,12 @@ static void scan(void) {
     } else if ((w & 0xffffffe0) == 0xd53b0020) {
       k = "ctr";
       arg = w & 31;
+    } else if ((w & 0xffe0fc00) == 0x9ac03000) {
+      /* pacga Xd, Xn, Xm|SP：通用指针认证。宿主进程的 GA 密钥每个进程不同（实测同一输入三次运行三个结果），游戏把它算出的校验值存进内存
+         （较新 Switch 2 SDK 切纤程：nn::os DispatchFiberContext），换进程（即时快照恢复）后校验不过、游戏主动陷阱。换成固定密钥的确定性实现，
+         同一进程内语义等价（同输入同输出、只占高 32 位） */
+      k = "pacga";
+      arg = (int)(w & 0x001f03ff);
     } else if ((w & 0xffe0001f) == 0xd4200000 && ((w >> 5) & 65535) >= 0xb000 &&
                ((w >> 5) & 65535) <= 0xbfff) {
       gap(a, "brk", "brk #0x%x：macOS 内核截走 0xB000–0xBFFF，进程无声被杀", (w >> 5) & 65535);
@@ -2313,6 +2394,10 @@ static void scan(void) {
       Ins x;
       if (decode(w, a, &x) && has18(&x))
         k = "x18";
+    }
+    if (k && a >= (A)g->text && eq(k, "x18")) {   /* 尾巴新代码不在任何函数里，x18 改写要靠函数分析（窗口 / 跳转），做不了：记缺口，那份补丁不进包 */
+      gap(a, "cpatch", "代码段尾巴新代码 0x%x 用到 x18，改写不了", w);
+      continue;
     }
     if (k) {
       Site s = {a, k, arg, 0};
@@ -3482,6 +3567,44 @@ static void gensite(Site* s) {
     }
     emit(branch(here(), s->at + 4));
     bump(s->kind);
+  } else if (eq(s->kind, "pacga")) {
+    /* 确定性 pacga：h = (n ^ ror(m, 23)) * K；h ^= h >> 29；h *= K；h ^= h >> 32；Xd = h << 32（低 32 位为 0，同硬件结果的形状） */
+    const int d = s->arg & 31, n = (s->arg >> 5) & 31, m = (s->arg >> 16) & 31;
+    int T, U;
+    pick(BIT(d) | BIT(n) | BIT(m) | BIT(18), &T, &U);
+    if (noredzone())
+      emit(STPRE(T, U, 31, -16));
+    else {
+      emit(STUR(T, 31, -16));
+      emit(STUR(U, 31, -24));
+    }
+    if (n == 31)
+      emit(MOVZ(T, 0, 0));
+    else
+      emit(0xaa0003e0u | (n << 16) | T); /* mov T, Xn */
+    if (m == 31)
+      emit(ADDI(U, 31, noredzone() ? 16 : 0, 0)); /* mov U, sp（压栈过的要加回 16） */
+    else
+      emit(0xaa0003e0u | (m << 16) | U);           /* mov U, Xm */
+    emit(0xca000000u | (3u << 22) | (U << 16) | (23u << 10) | (T << 5) | T); /* eor T, T, U, ror #23 */
+    emit(MOVZ(U, 0x9e37, 3));
+    emit(MOVK(U, 0x79b9, 2));
+    emit(MOVK(U, 0x7f4a, 1));
+    emit(MOVK(U, 0x7c15, 0));
+    emit(0x9b007c00u | (U << 16) | (T << 5) | T);                             /* mul T, T, U */
+    emit(0xca000000u | (1u << 22) | (T << 16) | (29u << 10) | (T << 5) | T); /* eor T, T, T, lsr #29 */
+    emit(0x9b007c00u | (U << 16) | (T << 5) | T);                             /* mul T, T, U */
+    emit(0xca000000u | (1u << 22) | (T << 16) | (32u << 10) | (T << 5) | T); /* eor T, T, T, lsr #32 */
+    if (d != 31)
+      emit(0xd3400000u | (32u << 16) | (31u << 10) | (T << 5) | d);          /* lsl Xd, T, #32 */
+    if (noredzone())
+      emit(LDPOST(T, U, 31, 16));
+    else {
+      emit(LDUR(U, 31, -24));
+      emit(LDUR(T, 31, -16));
+    }
+    emit(branch(here(), s->at + 4));
+    bump(s->kind);
   } else if (eq(s->kind, "ctr")) {
     emit(MOVZ(N, 0xc004, 0));
     emit(MOVK(N, 0x8444, 1));
@@ -3636,6 +3759,180 @@ static void sdk_aregion(void) {
   }
   g->guarding = 0;
 }
+/* 36 位老 SDK 写死的两段地址区间（#1503）：nnosInitialize 用常数构造两个 nn::os::detail::AddressSpaceAllocator(起点, 终点, 保护区 0x4000)——
+ *   可随机区 [0x8000000, 2^36)、线程栈区 [0x8000000, 0x80000000)，就是 Horizon 36 位布局里的这两区，没问 GetInfo
+ *   （新 SDK 同两处取 GetInfo AslrRegion / StackRegion）。游戏地址 = 宿主地址，苹果 4 GB 以下是 __PAGEZERO，这两段宿主给不出。
+ *   认出后把装起点 / 终点的四条常数指令各写成一条 brk 兜底，运行时按本局布局填可随机区 / 栈区的起止（runtime/src/traps.c），每条只写自己的寄存器、pc + 4，
+ *   不假设别处不跳进这几条之间。只认代码形状：bl 前紧挨着最多 4 条，x1 = 0x8000000、x2 = 2^36 或 2^31、x3 = 0x4000 都由常数指令写
+ *   （MOVZ / MOVN / ORR 立即数），其余只许不碰 x1–x3 的 add x0, xN, #imm；两段都认出、调的是同一个函数才改，否则一处不改（记一行黄）。
+ *   样本：两个 36 位款的 SDK（构建号 99d55fb2…、cc774be5…）同形，都在 sdk+0x8c6xx，被调是 AddressSpaceAllocatorC1Emmm 的 PLT 桩 */
+static int xconst(uint32_t w, int* rd, uint64_t* v) {   /* mov 别名的常数写：MOVZ / MOVN / ORR Rd, ZR, #位掩码（32 位写零扩展） */
+  int sf = (int)(w >> 31);
+  uint64_t mask = sf ? ~0ull : 0xffffffffull;
+  *rd = (int)(w & 31);
+  if (((w >> 23) & 0x3f) == 0x25 && (((w >> 29) & 3) == 0 || ((w >> 29) & 3) == 2)) {
+    unsigned hw = (w >> 21) & 3;
+    if (!sf && hw > 1)
+      return 0;
+    uint64_t x = (uint64_t)((w >> 5) & 0xffff) << (16 * hw);
+    *v = ((w >> 29) & 3) == 0 ? ~x & mask : x;
+    return 1;
+  }
+  if (((w >> 23) & 0x3f) == 0x24 && ((w >> 29) & 3) == 1 && ((w >> 5) & 31) == 31) {
+    unsigned n = (w >> 22) & 1, immr = (w >> 16) & 0x3f, imms = (w >> 10) & 0x3f, len = 6;
+    if (!sf && n)
+      return 0;
+    while (len && !(((n << 6) | (~imms & 0x3f)) >> len & 1))
+      len--;
+    if (!len)
+      return 0;
+    unsigned esize = 1u << len, s = imms & (esize - 1), r = immr & (esize - 1);
+    if (s == esize - 1)
+      return 0;
+    uint64_t emask = esize == 64 ? ~0ull : (1ull << esize) - 1, e = (1ull << (s + 1)) - 1;
+    if (r)
+      e = ((e >> r) | (e << (esize - r))) & emask;
+    uint64_t x = 0;
+    for (unsigned k = 0; k < (sf ? 64u : 32u); k += esize)
+      x |= e << k;
+    *v = x & mask;
+    return 1;
+  }
+  return 0;
+}
+static void hex(FILE* f, A a);
+static void trap_rows(FILE* f) {   /* 序号 = 出现顺序（brk #(0x8000 + 序号)）：偏移 / 种类 / 寄存器 / 原字 */
+  for (size_t i = 0; i < g->traps.n; i++) {
+    fprintf(f, "# TRAP\t");
+    hex(f, g->traps.v[i].at);
+    fprintf(f, "\t%s\t%d\t0x%08x\n", g->traps.v[i].kind, g->traps.v[i].reg, g->traps.v[i].w);
+  }
+}
+/* nn::mem::StandardAllocator 初始化入口闸（分配器预留压小，runtime/src/svc_mem.c s2a_sainit_gate）：游戏把
+ * 「地址传空、尺寸几十 GiB」交给分配器，SDK 在别名区划一整块地址、用到才提交。宿主窗口放不下这块时，块的顶端伸出窗口
+ * 走远端代执行（每帧数百毫秒）。入口处挂一个门，宿主按窗口可放量把尺寸（x2）压小；放得下的不动寄存器。
+ * 门类复用 aregion、参数 1（门表格式不变、不升 HOST_ABI）：进门前 x0 压栈并清零，旧宿主的 aregion 处理看到 w0 = 0
+ * 什么都不做；出门恢复 x0、执行原入口第一条、跳回 +4。原第一条只收与位置无关、只碰栈或寄存器的几类（见 sainit_movable）。 */
+static const char* const SAINIT[] = {
+    "_ZN2nn3mem17StandardAllocator10InitializeEPvm", "_ZN2nn3mem17StandardAllocator10InitializeEPvmb",
+    "_ZN2nn3mem17StandardAllocatorC1EPvm",           "_ZN2nn3mem17StandardAllocatorC1EPvmb",
+    "_ZN2nn3mem17StandardAllocatorC2EPvm",           "_ZN2nn3mem17StandardAllocatorC2EPvmb"};
+static int sainit_movable(uint32_t w) {
+  if ((w & 0xfffff01fu) == 0xd503201fu)   /* 提示类（nop / paciasp / bti …） */
+    return 1;
+  if ((w & 0x1c000000u) == 0x10000000u)   /* 数据处理（立即数），adr / adrp 除外 */
+    return (w & 0x1f000000u) != 0x10000000u;
+  if ((w & 0x0e000000u) == 0x0a000000u)   /* 数据处理（寄存器） */
+    return 1;
+  if ((w & 0x0a000000u) == 0x08000000u)   /* 读写内存：只收以 sp 为基址的（压栈），字面量取数除外 */
+    return (w & 0x3b000000u) != 0x18000000u && ((w >> 5) & 31) == 31;
+  return 0;
+}
+static void gen_sainit(void* p) {
+  A at = *(A*)p, start = here();
+  emit(STRPRE(0, 31, -16));
+  emit(MOVZ(0, 0, 0));
+  emit(STPRE(29, 30, 31, -16));
+  gatecall();
+  emit(BLR(30));
+  Gate q = {here(), at, "aregion", 1};
+  PUSH(g->gates, q);
+  emit(LDPOST(29, 30, 31, 16));
+  emit(LDRPOST(0, 31, 16));
+  emit(iw(at));
+  emit(branch(here(), at + 4));
+  put(at, branch(at, start));
+  done(at);
+  bump("sdk_sainit");
+}
+static void sdk_sainit(void) {
+  if (!g->sdk_cut)
+    return;
+  g->guarding = 1;
+  for (size_t i = 0; i < sizeof SAINIT / sizeof *SAINIT; i++) {
+    A at, size;
+    if (!dynsym(SAINIT[i], &at, &size) || consumed(at))
+      continue;
+    Ins x;
+    if (!decode(iw(at), at, &x) || x.r18 || !sainit_movable(iw(at))) {
+      msg("【黄】%s 分配器初始化闸 0x%" PRIx64 " 跳过（不计缺口）：入口第一条 %08x 不能搬进补丁岛\n", g->r.module, (uint64_t)at, iw(at));
+      bump("sdk_sainit_skip");
+      continue;
+    }
+    if (!unit_run(at, gen_sainit, &at, NULL)) {
+      msg("【黄】%s 分配器初始化闸 0x%" PRIx64 " 跳过（不计缺口）：%s\n", g->r.module, (uint64_t)at, g->error);
+      bump("sdk_sainit_skip");
+    }
+  }
+  g->guarding = 0;
+}
+static void sdk_as36_ranges(void) {
+  typedef struct {
+    A at[2], call;
+    int reg[2], stack;
+  } Ctor;
+  Ctor m[8];
+  int nm = 0, naslr = 0, nstack = 0, many = 0;
+  for (A b = 16; b + 4 <= (A)g->text; b += 4) {
+    uint32_t w = iw(b);
+    if ((w >> 26) != 0x25)   /* bl */
+      continue;
+    A at[4] = {-1, -1, -1, -1};
+    uint64_t v[4] = {0};
+    for (A p = b - 4; p >= 0 && p >= b - 16; p -= 4) {
+      uint32_t x = iw(p);
+      int rd;
+      uint64_t c;
+      if (xconst(x, &rd, &c) && rd >= 1 && rd <= 3) {
+        if (at[rd] < 0) {   /* 离 bl 最近的那次写才是实参 */
+          at[rd] = p;
+          v[rd] = c;
+        }
+        continue;
+      }
+      if ((x & 0xff80001fu) == 0x91000000u)   /* add x0, xN, #imm */
+        continue;
+      break;
+    }
+    if (at[1] < 0 || at[2] < 0 || at[3] < 0 || v[1] != 0x8000000 || v[3] != 0x4000 ||
+        (v[2] != 1ull << 36 && v[2] != 1ull << 31))
+      continue;
+    if (nm == 8) {
+      many = 1;
+      break;
+    }
+    int32_t imm = (int32_t)(w << 6) >> 6;
+    Ctor c = {{at[1], at[2]}, b + (A)imm * 4, {1, 2}, v[2] == 1ull << 31};
+    m[nm++] = c;
+    if (c.stack)
+      nstack++;
+    else
+      naslr++;
+  }
+  if (!nm)
+    return;
+  int same = 1, free_ = 1;
+  for (int i = 0; i < nm; i++) {
+    same &= m[i].call == m[0].call;
+    free_ &= !consumed(m[i].at[0]) && !consumed(m[i].at[1]);
+  }
+  if (many || !naslr || !nstack || !same || !free_ || g->traps.n + 2 * (size_t)nm > TRAP_MAX) {
+    msg("[黄] %s 36 位老 SDK 地址区间：认出 %d 处（可随机区 %d、栈区 %d）%s，不改\n", g->r.module, nm, naslr, nstack,
+        many ? "，超过 8 处" : !naslr || !nstack ? "，两段没认全" : !same ? "，调的不是同一个函数" : !free_ ? "，常数指令已被别的改写单元搬走" : "，兜底点已满");
+    return;
+  }
+  for (int i = 0; i < nm; i++)
+    for (int k = 0; k < 2; k++) {
+      static const char* const kinds[2][2] = {{"as_aslr_lo", "as_aslr_hi"}, {"as_stack_lo", "as_stack_hi"}};
+      Trap t = {m[i].at[k], kinds[m[i].stack][k], m[i].reg[k], iw(m[i].at[k])};
+      put(t.at, 0xd4200000u | ((uint32_t)(TRAP_IMM0 + g->traps.n) << 5));
+      PUSH(g->traps, t);
+      bump("sdk_as36_range");
+    }
+  for (int i = 0; i < nm; i++)
+    msg("36 位老 SDK %s：+0x%" PRIx64 " / +0x%" PRIx64 " 改 brk 兜底（构造函数 +0x%" PRIx64 "）\n", m[i].stack ? "栈区" : "可随机区",
+        (uint64_t)m[i].at[0], (uint64_t)m[i].at[1], (uint64_t)m[i].call);
+}
 /* Wide-screen recipe input is explicit; the library never discovers game data. */
 /* 帧率表改指令（S2A_FPS_TSV = 产物根里的 fps.tsv，帧率能耗线 10-26；体系提升方案 D）：按构建号把社区资料指出的位置按语义改成我方的写法，
  * 改前核原字（本模块有一行不符就整组不改、记黄，见 fps_precheck）。行：c <模块> <偏移> <种类> <原字> [参数…]，种类：
@@ -3695,6 +3992,41 @@ static int fps_reg(const char* s, char kind) {
   if (!s || s[0] != kind) return -1;
   long r = strtol(s + 1, &e, 10);
   return *e || r < 0 || r > 30 ? -1 : (int)r;
+}
+/* veneer 行（帧率表 / 游戏缺陷修补表共用）：解析体字与记号、核能否原样搬进跳板、在补丁区生成；失败记缺口（tag 为缺口类别）返回 0 */
+static int veneer_row(A off, char* a1, char* a2, char* a3, const char* tag) {
+  FpsVeneer v = {off, 0, {0}, {0}};
+  const char* why = NULL;
+  for (char* t = a1; t && !why; t = v.n == 1 ? a2 : v.n == 2 ? a3 : strtok(NULL, " \t\r\n")) {
+    if (v.n == FPS_VEN_MAX) { why = "体字超过 16 条"; break; }
+    char* e;
+    if (!strncmp(t, "adrp:", 5)) {
+      int x = fps_reg(t + 5, 'x');
+      if (x < 0) { why = "adrp: 后寄存器不认"; break; }
+      v.kind[v.n] = 'a'; v.w[v.n++] = (uint32_t)x; continue;
+    }
+    if (!strncmp(t, "bl:", 3)) {
+      unsigned long x = strtoul(t + 3, &e, 16);
+      if (*e || e == t + 3 || x % 4 || x + 4 > (unsigned long)g->text) { why = "bl: 目标不在代码段"; break; }
+      v.kind[v.n] = 'l'; v.w[v.n++] = (uint32_t)x; continue;
+    }
+    unsigned long x = strtoul(t, &e, 16);
+    if (*e || x > 0xffffffffUL) { why = "体字不是 8 位十六进制"; break; }
+    v.w[v.n++] = (uint32_t)x;
+  }
+  if (!why && !v.n) why = "没有体字";
+  if (why) { gap(off, tag, "veneer %s", why); return 0; }
+  int bad = -1;
+  for (int i = 0; i < v.n && bad < 0; i++)
+    if (!v.kind[i] && (why = fps_ven_check(v.w[i], i, v.n))) bad = i;
+  if (bad >= 0) { gap(off, tag, "veneer 第 %d 条体字 0x%08x 不能原样搬进跳板（%s）", bad + 1, v.w[bad], why); return 0; }
+  if (site_at(off) || consumed(off)) { gap(off, tag, "veneer 点已是改写点"); return 0; }
+  g->guarding = 1;
+  int ok = unit_run(off, gen_fps_veneer, &v, NULL);
+  g->guarding = 0;
+  if (!ok) { gap(off, tag, "AssertionError: %s", g->error); return 0; }
+  done(off);
+  return 1;
 }
 /* 改前先核本模块所有 c 行原字（在原始代码上、一次）：同表的行成组配合（word 跳过两条 + adrp_slot / ldr_slot 读槽），只改一半会拿游戏原来的寄存器当基址读、
  * 或步长读到垃圾值，所以全有或全无（原生层线 10-26 审出）。有一行不符：本模块的 c 行一行都不改，打一行 [黄] 列出不符的偏移、计 fps_orig_skip、不算缺口；
@@ -3760,38 +4092,7 @@ static void fps_rows(int phase) {
       if (st < 0 || x < 0 || slot < FPS_SLOT_LO || slot > FPS_SLOT_HI) { gap(off, "fps", "ldr_slot 参数不认或槽 %d 不在 %d–%d", slot, FPS_SLOT_LO, FPS_SLOT_HI); continue; }
       nw = 0xbd400000u | ((uint32_t)(slot * 2) << 10) | ((uint32_t)x << 5) | (uint32_t)st; /* LDR St, [Xn, #slot*8]（imm12 按 4 字节缩放） */
     } else if (eq(kind, "veneer")) {
-      FpsVeneer v = {off, 0, {0}, {0}};
-      const char* why = NULL;
-      for (char* t = a1; t && !why; t = v.n == 1 ? a2 : v.n == 2 ? a3 : strtok(NULL, " \t\r\n")) {
-        if (v.n == FPS_VEN_MAX) { why = "体字超过 16 条"; break; }
-        char* e;
-        if (!strncmp(t, "adrp:", 5)) {
-          int x = fps_reg(t + 5, 'x');
-          if (x < 0) { why = "adrp: 后寄存器不认"; break; }
-          v.kind[v.n] = 'a'; v.w[v.n++] = (uint32_t)x; continue;
-        }
-        if (!strncmp(t, "bl:", 3)) {
-          unsigned long x = strtoul(t + 3, &e, 16);
-          if (*e || e == t + 3 || x % 4 || x + 4 > (unsigned long)g->text) { why = "bl: 目标不在代码段"; break; }
-          v.kind[v.n] = 'l'; v.w[v.n++] = (uint32_t)x; continue;
-        }
-        unsigned long x = strtoul(t, &e, 16);
-        if (*e || x > 0xffffffffUL) { why = "体字不是 8 位十六进制"; break; }
-        v.w[v.n++] = (uint32_t)x;
-      }
-      if (!why && !v.n) why = "没有体字";
-      if (why) { gap(off, "fps", "veneer %s", why); continue; }
-      int bad = -1;
-      for (int i = 0; i < v.n && bad < 0; i++)
-        if (!v.kind[i] && (why = fps_ven_check(v.w[i], i, v.n))) bad = i;
-      if (bad >= 0) { gap(off, "fps", "veneer 第 %d 条体字 0x%08x 不能原样搬进跳板（%s）", bad + 1, v.w[bad], why); continue; }
-      if (site_at(off) || consumed(off)) { gap(off, "fps", "veneer 点已是改写点"); continue; }
-      g->guarding = 1;
-      int ok = unit_run(off, gen_fps_veneer, &v, NULL);
-      g->guarding = 0;
-      if (!ok) { gap(off, "fps", "AssertionError: %s", g->error); continue; }
-      done(off);
-      bump("fps_veneer");
+      if (veneer_row(off, a1, a2, a3, "fps")) bump("fps_veneer");
       continue;
     } else if (tramp) {
       int wt = fps_reg(a1, 'w'), slot = a2 ? atoi(a2) : -1;
@@ -3829,7 +4130,9 @@ static void fps_rows(int phase) {
  *   同一点可有多行 p（宽 / 窄两套模板各占一位、互斥开），跳板依次 TBNZ 各位分到各自的补丁路，都不开走原指令；同点各行原字须一致
  *   p 行第 7 列「@k」：这一路先 adrp x16, <本模块键页> 再执行补丁指令（补丁指令以 x16 为基址读键页里的画幅值槽，runtime/src/cpatch.c 按当前屏幕比写），
  *     然后恢复 x16；补丁指令须是 ldr <Rt>, [x16, #imm] 且不写 x16
- *   w 行第 6 列「@k」：新字是 adrp Xd, …，按本点位置改成 adrp Xd, <本模块键页>（填充区补丁代码读键页值槽；同 fps 表 adrp_slot） */
+ *   w 行第 6 列「@k」：新字是 adrp Xd, …，按本点位置改成 adrp Xd, <本模块键页>（填充区补丁代码读键页值槽；同 fps 表 adrp_slot）
+ *   p 行第 7 列「=<十六进制值>」（#1321，pack/cpatch.py literal_pool）：补丁指令是 LDR (literal)，读的是同一份补丁写在原代码上的数据字（补丁自带的字面量池）。
+ *     双路下那块原代码不动、内存里还是原字，照搬 LDR 读到的是原字：这一路改成直接把值装进 Rt（整数 movz / movk；浮点经 x16 中转再 fmov，x16 存取同跳板） */
 #define CP_SLOT 2046
 #define CP_VAR_MAX 8
 static const char* cp_check(uint32_t w, A a) {
@@ -3885,7 +4188,35 @@ typedef struct {
   uint32_t nw[CP_VAR_MAX];
   int bit[CP_VAR_MAX];
   char key[CP_VAR_MAX]; /* 1 = 这一路先 adrp x16 到本模块键页 */
+  char litn[CP_VAR_MAX]; /* 非 0 = 这一路的 LDR (literal) 按 lit 装值（字节数 4 / 8） */
+  uint64_t lit[CP_VAR_MAX];
 } CpRow;
+static void cp_movimm(uint32_t rd, uint64_t v, int x) { /* movz / movk 把 v 装进 Rd（x：64 位） */
+  emit((x ? 0xd2800000u : 0x52800000u) | ((uint32_t)(v & 0xffff) << 5) | rd);
+  for (uint32_t h = 1; h < (x ? 4u : 2u); h++) {
+    uint32_t part = (uint32_t)(v >> (16 * h)) & 0xffff;
+    if (part) emit((x ? 0xf2800000u : 0x72800000u) | (h << 21) | (part << 5) | rd);
+  }
+}
+static int cp_lit_size(uint32_t w) { /* LDR (literal) 读几字节：4 / 8；不是字面量 ldr、PRFM、128 位 q 读 → 0（不认） */
+  if ((w & 0x3b000000u) != 0x18000000u) return 0;
+  uint32_t opc = w >> 30, v = (w >> 26) & 1;
+  if (!v) return opc == 1 ? 8 : opc == 3 ? 0 : 4;
+  return opc == 0 ? 4 : opc == 1 ? 8 : 0;
+}
+static void cp_lit(uint32_t w, uint64_t v) { /* 把 LDR (literal) w 换成「Rt = v」（同宽：w / x / ldrsw 符号扩展 / s / d） */
+  uint32_t opc = w >> 30, vv = (w >> 26) & 1, rt = w & 31;
+  if (!vv) {
+    if (opc == 0) cp_movimm(rt, v & 0xffffffffu, 0);
+    else if (opc == 1) cp_movimm(rt, v, 1);
+    else cp_movimm(rt, (uint64_t)(int64_t)(int32_t)(uint32_t)v, 1);
+    return;
+  }
+  emit(STRPRE(16u, 31u, -16));
+  cp_movimm(16u, opc ? v : (v & 0xffffffffu), opc != 0);
+  emit(opc ? (0x9e670000u | (16u << 5) | rt) : (0x1e270000u | (16u << 5) | rt)); /* fmov d<rt>, x16 / fmov s<rt>, w16 */
+  emit(LDRPOST(16u, 31u, 16));
+}
 static void gen_cpatch(void* q) {
   CpRow* c = q;
   A off = c->off, start = here();
@@ -3896,6 +4227,7 @@ static void gen_cpatch(void* q) {
   for (int i = 0; i < c->n; i++) {
     A p = here();
     if (c->key[i]) { emit(adrp(16, here(), g->key)); emit(c->nw[i]); emit(LDRPOST(16u, 31u, 16)); }
+    else if (c->litn[i]) { emit(LDRPOST(16u, 31u, 16)); cp_lit(c->nw[i], c->lit[i]); }
     else { emit(LDRPOST(16u, 31u, 16)); cp_emit(c->nw[i], off); }
     emit(branch(here(), off + 4));
     int64_t d = (p - (g->po + (A)tb[i] * 4)) >> 2;
@@ -3917,7 +4249,7 @@ static int cp_claimed(A off, A n) {
 }
 static void cpatch_rows(int phase) {
   const char* path = g->r.cpatch_tsv;
-  if (phase == 0) g_ncpclaim = 0;
+  if (phase == 0) g_ncpclaim = g_ncptail = 0;
   if (!path || !*path) return;
   FILE* f = fopen(path, "rb");
   if (!f) {
@@ -3941,7 +4273,8 @@ static void cpatch_rows(int phase) {
     uint32_t orig = (uint32_t)strtoul(origs, NULL, 16), nw = (uint32_t)strtoul(news, NULL, 16);
     if (phase == 0) {
       /* 代码段结尾到 ro 开头之间的填充（同在代码段末页，装载器按宿主页封成只读可执行）也收：金手指往这里写新代码（暗黑 3 0xC72Fxx）。
-         只收原字是全 0 / udf 的字、不越过 ro 开头；这里的字本改写器不分析不翻译，要翻译的指令（x18 / svc / tpidr）由 pack/cpatch.py 先挡掉 */
+         只收原字是全 0 / udf 的字、不越过 ro 开头；这里的新代码不进分析，scan() 按 g_cptail 逐字看：读计时器 / svc / 线程寄存器 / ctr 照常改写（#1628），
+         改写不了的（x18 / 系统寄存器 / brk 0xB000–0xBFFF）由 pack/cpatch.py tail_hazard 先挡掉 */
       int tail = off >= (A)g->text && off + 4 <= (A)g->ro && (orig == 0 || orig >> 16 == 0);
       if (off < 0 || off % 4 || (off + 4 > (A)g->text && !tail)) { gap(off, "cpatch", "w 点不在代码段"); continue; }
       if (iw(off) != orig) { gap(off, "cpatch", "w 点原字 0x%x，表里 0x%x", iw(off), orig); continue; }
@@ -3950,14 +4283,21 @@ static void cpatch_rows(int phase) {
         nw = adrp((int)(nw & 31), off, g->key);
       }
       put(off, nw);
+      if (tail && g_ncptail < (int)(sizeof g_cptail / sizeof g_cptail[0])) g_cptail[g_ncptail++] = off;
       bump("cpatch_w");
       continue;
     }
     if (!bits) { gap(off, "cpatch", "p 行缺位号"); continue; }
     int bit = atoi(bits);
     char* bases = strtok(NULL, " \t\r\n");
-    int base = 0;
-    if (bases) {
+    int base = 0, litn = 0;
+    uint64_t lit = 0;
+    if (bases && bases[0] == '=') {
+      char* e = NULL;
+      lit = strtoull(bases + 1, &e, 16);
+      litn = cp_lit_size(nw);
+      if (!litn || !e || *e || e == bases + 1 || (litn == 4 && lit >> 32)) { gap(off, "cpatch", "p 行 =值 的补丁指令不是 4 / 8 字节的字面量 ldr，或值超宽：%08x %s", nw, bases); continue; }
+    } else if (bases) {
       if (!eq(bases, "@k")) { gap(off, "cpatch", "p 行第 7 列不认：%s", bases); continue; }
       base = 1;
     }
@@ -3975,7 +4315,8 @@ static void cpatch_rows(int phase) {
       memset(&cps[ncp], 0, sizeof *cps); cps[ncp].off = off; cps[ncp].orig = orig; ncp++;
     }
     if (cps[j].n == CP_VAR_MAX) { gap(off, "cpatch", "p 点变体超过 %d 个", CP_VAR_MAX); continue; }
-    cps[j].nw[cps[j].n] = nw; cps[j].bit[cps[j].n] = bit; cps[j].key[cps[j].n] = (char)base; cps[j].n++;
+    cps[j].nw[cps[j].n] = nw; cps[j].bit[cps[j].n] = bit; cps[j].key[cps[j].n] = (char)base;
+    cps[j].litn[cps[j].n] = (char)litn; cps[j].lit[cps[j].n] = lit; cps[j].n++;
   }
   fclose(f);
   /* 同点各行收齐后再生成（同点多变体编进同一个跳板） */
@@ -4850,7 +5191,7 @@ static int cmpgap(const void* a, const void* b) {
 static int cmpbump(const void* a, const void* b) {
   return strcmp(((const Stat*)a)->key, ((const Stat*)b)->key);
 }
-/* 首轮零 GAP 且补丁放不进 FRONT 时按实际长度 align64KiB(补丁 + 16KiB) 整轮重做（上限 32 MiB）；自旋是可选优化，但换布局不许丢掉上一轮成功的回边 */
+/* 补丁放不进 FRONT 时按实际长度 align64KiB(补丁 + 16KiB) 整轮重做（首轮有 GAP 也重做，GAP 带到下一轮照常降级，#1476）；自旋是可选优化，但换布局不许丢掉上一轮成功的回边 */
 #define RETRY_RC (-100)
 static size_t lost_spins(void) {
   size_t n = 0;
@@ -4884,11 +5225,15 @@ static int outputs(void) {
     g->next_front = 0;
     return RETRY_RC;
   }
-  /* 双岛的前岛超容量时本轮的单元落点不作数（缺口可能就是越界落点造成的）：不看缺口，直接放大前岛重做 */
-  if ((g->dual || (!g->gaps.n && !lost)) && capacity_short) {
+  /* 前岛超容量时本轮的单元落点不作数（缺口可能就是越界落点造成的）：不看缺口，直接放大前岛重做。
+   *   单前岛原先只在零缺口时重做，首轮有缺口（与容量无关的 brk / 窗口等）又超容量就删产物返回 3，出包整包失败（#1476）；
+   *   现在单前岛同双岛一样放大重做，原有缺口照常降级出产物，重做后缺口比触发那轮多才算布局重选失败（retry_gaps） */
+  if ((g->dual || !lost) && capacity_short) {
     remove_output("patched.bin");
+    g->next_gaps0 = g->gaps.n;
     if (next_front <= front_max) {
-      msg("%s 补丁容量不足，重新生成：FRONT 0x%zx → 0x%zx，补丁 0x%zx\n", g->r.module, g->front, next_front, flen);
+      msg("%s 补丁容量不足，重新生成：FRONT 0x%zx → 0x%zx，补丁 0x%zx%s\n", g->r.module, g->front, next_front, flen,
+          g->gaps.n ? "（本轮已有缺口照常降级）" : "");
       g->next_dual = g->dual;
       g->next_front = next_front;
       return RETRY_RC;
@@ -4948,7 +5293,7 @@ static int outputs(void) {
     }
   }
   /* 能进入重做说明原布局零 GAP：此时新增缺口属于布局重选失败 */
-  int retry_gaps = !g->dual && g->retry_front && g->gaps.n;
+  int retry_gaps = !g->dual && g->retry_front && g->gaps.n > g->retry_gaps0;
   int layout_fatal = retry_gaps || (!g->gaps.n && (capacity_short || lost));
   msg("PFRW mod=%s need=%zu gaps=%zu fatal=%d\n", g->r.module, total, g->gaps.n, layout_fatal);
   if (g->gaps.n && !retry_gaps && (capacity_short || lost)) {
@@ -4964,8 +5309,8 @@ static int outputs(void) {
   if (layout_fatal) {
     remove_output("patched.bin");
     if (retry_gaps)
-      fail("补丁布局重选后 B / ADRP 超出跳转范围，新增 %zu 个编码缺口（text 末尾 0x%zx，新 FRONT 0x%zx）；首轮零 GAP，当前布局不可用，拒绝输出",
-           g->gaps.n, g->text, g->front);
+      fail("补丁布局重选后 B / ADRP 超出跳转范围，新增 %zu 个编码缺口（text 末尾 0x%zx，新 FRONT 0x%zx）；重做前 %zu 个，当前布局不可用，拒绝输出",
+           g->gaps.n - g->retry_gaps0, g->text, g->front, g->retry_gaps0);
     if (lost)
       fail("扩大补丁布局后丢失 %zu 条已成功的自旋回边，拒绝输出", lost);
     fail("补丁区 0x%zx 字节放不进首址前的 0x%zx（可用 0x%zx）；需要 0x%zx，布局策略上限 0x%zx", flen,
@@ -5014,16 +5359,16 @@ static int outputs(void) {
     char b[24];
     fprintf(f, "# PATCH2_OFF\t%s\n# PATCH2_LEN\t0x%zx\n# TRAP_SITES\t%zu\n# SPIN_UNREACHED\t%zu\n", shx(b, g->po2), g->patch2.n * 4,
             g->traps.n, g->spin_miss.n);
-    for (size_t i = 0; i < g->traps.n; i++) {   /* 序号 = 出现顺序（brk #(0x8000 + 序号)）：偏移 / 种类 / 寄存器 / 原字 */
-      fprintf(f, "# TRAP\t");
-      hex(f, g->traps.v[i].at);
-      fprintf(f, "\t%s\t%d\t0x%08x\n", g->traps.v[i].kind, g->traps.v[i].reg, g->traps.v[i].w);
-    }
+    trap_rows(f);
     if (g->fars.n) {   /* 远跳（brk #FAR_IMM）：<从> <到>（相对基址，有符号）<E 入口 | X 出口>；装载器按 <从> 二分查 */
       fprintf(f, "# FAR_JUMPS\t%zu\n", g->fars.n);
       for (size_t i = 0; i < g->fars.n; i++)
       { char b2[24]; fprintf(f, "# FAR\t%s\t%s\t%c\n", shx(b, g->fars.v[i].from), shx(b2, g->fars.v[i].to), g->fars.v[i].entry ? 'E' : 'X'); }
     }
+  }
+  if (!g->dual && g->traps.n) {   /* 单岛只有 36 位老 SDK 地址区间（sdk_as36_ranges）会出兜底点；没有时表头不变 */
+    fprintf(f, "# TRAP_SITES\t%zu\n", g->traps.n);
+    trap_rows(f);
   }
   fprintf(f, "# KEY_K18_IDX\t0\n# KEY_KTLS_IDX\t1\n# KEY_KTLR_IDX\t2\n# KEY_KGATE_IDX\t3\n");
   if (g->ohos)
@@ -5136,6 +5481,11 @@ static int outputs(void) {
   msg(" slot_refs %zu gates %zu\n", g->fixrefs, g->gates.n);
   return g->gaps.n ? 3 : 0;   /* 有缺口：产物照出、退 3（pack/stage_rewrite.sh 记降级继续；社区补丁轮按 3 认领缺口） */
 }
+/* 映像结尾（含 bss）到键页之间至少留的可写空余（#1628）：金手指空洞开关表（前 0x400）与 FPSLocker 变量都放这里
+ * （pack/cpatch.py module_layout / MIRROR_FPSL）。原先键页只按 16 KB 取整，映像结尾正好压在 16 KB 边界上的模块（#1628 的主程序
+ * 结尾 0x1e98000）空余为 0，变量整份放不下。运行时照表头 KEY_PAGE_OFF 定位键页、数据写入允许到键页前（runtime/src/cpatch.c），不另改 */
+#define KEY_TAIL_MIN 0x1000
+
 static void load(void) {
   FILE* f = fopen(g->r.input, "rb");
   if (!f)
@@ -5159,7 +5509,7 @@ static void load(void) {
     REQUIRE(sz[i] <= INT_MAX && csz[i] <= INT_MAX);
   }
   uint32_t flags = u32(src + 12), bss = u32(src + 0x3c);
-  uint64_t end = (uint64_t)mo[2] + sz[2], near = ((end + bss + 0x3fff) & ~0x3fffULL) + 0x4000;
+  uint64_t end = (uint64_t)mo[2] + sz[2], near = ((end + bss + KEY_TAIL_MIN + 0x3fff) & ~0x3fffULL) + 0x4000;
   near = (near + 0xffff) & ~0xffffULL;
   g->far = near > 0x7000000;
   REQUIRE(end <= SIZE_MAX - 0x10000 && end + bss < UINT32_MAX);
@@ -5170,7 +5520,7 @@ static void load(void) {
   REQUIRE(g->len >= 8 && g->text % 4 == 0);
   for (int i = 0; i < 3; i++)
     REQUIRE((uint64_t)mo[i] + sz[i] <= g->len);
-  g->img = zalloc(g->len + 0x4000);
+  g->img = zalloc(g->len + 0x8000);
   for (int i = 0; i < 3; i++) {
     if ((flags >> i) & 1) {
       int got = LZ4_decompress_safe((const char*)src + fo[i], (char*)g->img + mo[i], csz[i], sz[i]);
@@ -5193,7 +5543,7 @@ static void load(void) {
     REQUIRE(g->front >= 0x100000);
     g->po = -(A)g->front;
     g->filelen = (g->len + 0x3fff) & ~0x3fffULL;
-    g->key = (g->len + bss + 0x3fff) & ~0x3fffULL;
+    g->key = (g->len + bss + KEY_TAIL_MIN + 0x3fff) & ~0x3fffULL;
     g->imagesize = g->key + 0x4000;
     g->po2 = (g->imagesize + 0xffff) & ~0xffffULL;   /* 后岛：键页后按 64 KB 对齐（只在双岛下用） */
     g->split = g->po2 / 2;
@@ -5201,8 +5551,9 @@ static void load(void) {
     /* 仅 Apple：data 起点落进 text 末尾所在的 16 KB 宿主页时，基址前移 bias 使「基址 + data」对齐宿主页；
      * 追加的键页、补丁区按同一网格对齐（同 patch_nso.py LOAD_BIAS / _al；不共页时 bias = 0，与原式相同） */
     g->bias = !noredzone() && g->data < ((g->text + 0x3fff) & ~(size_t)0x3fff) ? (0x4000 - (g->data & 0x3fff)) & 0x3fff : 0;
-    g->key = ((g->len + g->bias + 0x3fff) & ~0x3fffULL) - g->bias;
-    g->len += 0x4000;
+    size_t key0 = ((g->len + g->bias + 0x3fff) & ~0x3fffULL) - g->bias;   /* 不留空余时的键页：空余已够的模块布局与原先逐字节相同 */
+    g->key = ((g->len + g->bias + KEY_TAIL_MIN + 0x3fff) & ~0x3fffULL) - g->bias;
+    g->len += 0x4000 + (g->key - key0);   /* 键页后挪几页补丁区 po 跟着挪几页：po ≥ 键页末（key + 0x4000） */
     g->po = ((g->len + g->bias + 0xffff) & ~0xffffULL) - g->bias;
     /* 双岛的前岛：基址前 FRONT（映射从基址 − bias 起，前岛贴着它往前放，同一宿主页网格） */
     g->front = g->retry_front ? g->retry_front : 0x100000;
@@ -5326,7 +5677,7 @@ static void rel_upgrade(void) {
   if (n) msg("独占存补 release：共 %d 处%s\n", n, n > 16 ? "（上面只列前 16 处）" : "");
 }
 static int attempt(const s2a_rewrite_request* r, const s2a_rewrite_options* options, FILE* log, size_t* front, int* dual,
-                   Pair** carry, size_t* ncarry) {
+                   size_t* gaps0, Pair** carry, size_t* ncarry) {
   RW *prev = g, *ctx = calloc(1, sizeof(*ctx));
   if (!ctx)
     return 1;
@@ -5334,6 +5685,7 @@ static int attempt(const s2a_rewrite_request* r, const s2a_rewrite_options* opti
   g->r = *r;
   g->retry_front = *front;
   g->retry_dual = *dual;
+  g->retry_gaps0 = *gaps0;
   g->req = *carry;
   g->nreq = *ncarry;
   g->log = log;
@@ -5356,6 +5708,7 @@ static int attempt(const s2a_rewrite_request* r, const s2a_rewrite_options* opti
     g->one = cs_malloc(g->cs);
     REQUIRE(g->one);
     load();
+    fix_rows(0);
     fps_rows(0);
     cpatch_rows(0);
     code_rows();
@@ -5368,7 +5721,10 @@ static int attempt(const s2a_rewrite_request* r, const s2a_rewrite_options* opti
     analyze();
     generate();
     sdk_aregion();
+    sdk_sainit();
+    sdk_as36_ranges();
     widen();
+    fix_rows(1);
     fps_rows(1);
     cpatch_rows(1);
     spins();
@@ -5391,6 +5747,7 @@ static int attempt(const s2a_rewrite_request* r, const s2a_rewrite_options* opti
     free(*carry);
     *front = g->next_front;
     *dual = g->next_dual;
+    *gaps0 = g->next_gaps0;
     if (g->dual || g->next_dual) {   /* 双岛不带自旋回边（够不着的另出表头 SPIN_UNREACHED） */
       free(g->now);
       *carry = NULL;
@@ -5410,11 +5767,11 @@ int s2a_rewrite_files_with_options(const s2a_rewrite_request* r,
   if (!r || !r->input || !r->output_dir || !r->module || !r->module[0] || strchr(r->module, '/') ||
       strchr(r->module, '\\') || eq(r->module, ".") || eq(r->module, ".."))
     return 1;
-  size_t front = 0, ncarry = 0;
+  size_t front = 0, ncarry = 0, gaps0 = 0;
   int dual = 0;
   Pair* carry = NULL;
   int rc;
-  while ((rc = attempt(r, options, log, &front, &dual, &carry, &ncarry)) == RETRY_RC) {
+  while ((rc = attempt(r, options, log, &front, &dual, &gaps0, &carry, &ncarry)) == RETRY_RC) {
   }
   free(carry);
   return rc;

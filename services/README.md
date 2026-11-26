@@ -73,4 +73,4 @@ export LIBRARY_PATH="$(brew --prefix openssl@3)/lib:$(brew --prefix brotli)/lib$
 TMPDIR="$PWD/build/file-system-check/tmp/" timeout 60 build/file-system-check/aot/FileSystem.Lifecycle.Tests
 ```
 
-完整服务测试程序也可使用 `--filesystem-restart`，位于 `FakeNative.Install` 之前。这是实际文件系统生命周期验证，不代表实际游戏或 iOS 设备重启验收。
+门禁跑的是完整服务测试程序的独立模式 `--filesystem-restart`（`[SoloTest]`，位于 `FakeNative.Install` 之前，随 `services/test.sh` 那次编译跑，不再单独编本工程）；上面两条是手动核 JIT / NativeAOT 两条路径用的。这是实际文件系统生命周期验证，不代表实际游戏或 iOS 设备重启验收。

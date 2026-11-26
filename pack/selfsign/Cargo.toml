@@ -1,0 +1,15 @@
+# s2a-selfsign：电脑上给游戏程序库（arm64 dylib）签 Apple 代码签名，免费 / 付费开发团队都认（0.6.0 通用壳，Mac 与 Windows 同一份）。
+#   签法照手机端 runtime/src/selfsign.c（真机验过）：签名标识 = 包名、XML + DER 两份权限、CodeDirectory 0x20400、CMS 带叶证书 + WWDR G3 + Apple Root。
+#   系统 codesign 不给 dylib 放权限槽，免费团队认不了，所以自己签。依赖只有 ring（RSA PKCS#1 v1.5 + SHA-256，devpush 已在用的同一版本）
+# 编：cargo build --release --manifest-path pack/selfsign/Cargo.toml --target-dir build/selfsign
+[package]
+name = "s2a-selfsign"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+
+[dependencies]
+ring = "0.17.14"
+
+[profile.release]
+strip = true

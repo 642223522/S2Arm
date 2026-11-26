@@ -33,6 +33,22 @@ static inline uint32_t s2a_spv_word(const unsigned char *p) {
     return (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24;
 }
 
+// 模块开头是否声明了某项 OpCapability（规范把能力排在最前，之后才是扩展 / 导入 / 寻址；碰到别的指令就停）。
+// 返回 1 声明了，0 没声明，-1 不是合法的 SPIR-V 头。blob 不保证 4 字节对齐：逐字节取字。
+// #1340：16 位整数（Int16 = 22）按程序拒收，不再整机要 shaderInt16。
+static inline int s2a_spirv_declares_cap(const void *bytes, size_t size, uint32_t cap) {
+    const unsigned char *p = (const unsigned char *)bytes;
+    if (!p || size < 20 || (size & 3u) || s2a_spv_word(p) != 0x07230203u) return -1;
+    for (size_t i = 5, n = size / 4; i < n;) {
+        uint32_t first = s2a_spv_word(p + i * 4), count = first >> 16, op = first & 65535u;
+        if (!count || count > n - i) return -1;
+        if (op == 17 && count >= 2 && s2a_spv_word(p + (i + 1) * 4) == cap) return 1;   // OpCapability
+        if (op != 17 && op != 10 && op != 11) break;   // OpExtension / OpExtInstImport 可能夹在能力之间，其余说明能力段已过
+        i += count;
+    }
+    return 0;
+}
+
 static inline int s2a_spirv_storage_need(const void *bytes, size_t size, uint32_t expected_model) {
     const unsigned char *p = (const unsigned char *)bytes;
     if (!p || size < 20 || (size & 3u) || s2a_spv_word(p) != 0x07230203u) return -1;

@@ -14,6 +14,7 @@ int s2a_ios_caps_value(const char *cap);
 //   s2a_ios_set_fps60：玩家拨开关（写 S2AFps60 + S2AFps60Manual，起局只认后者算「开」）
 BOOL s2a_ios_fps60_on(void);
 BOOL s2a_ios_metalfx_blocked(NSString *gid);   // 画质提升：这款没走直连（清单 direct 0）→ 锐利放大用不了
+BOOL s2a_ios_hdr_upscale_bypassed(void);       // HDR 开关联动（PR3d）：S2A_HDR=auto/on（启动环境）→ 抗锯齿 / 缩放滤镜 / 补帧对 HDR 窗口旁路（8 位感知缩放不适配 PQ 码值，产品限制；SDR 窗口照常）
 BOOL s2a_ios_fi_on(void);       // 补帧开关（这款；没设过 = 开）
 void s2a_ios_set_fi(BOOL on);
 void s2a_ios_set_fps60(BOOL on);
@@ -21,6 +22,13 @@ void s2a_ios_set_fps60(BOOL on);
 // 同上，指定哪一款（游戏库里还没进游戏的款；nil = 正在跑的这款 / 单款壳）
 BOOL s2a_ios_fps60_on_for(NSString *gid);
 void s2a_ios_set_fps60_for(NSString *gid, BOOL on);
+// S4「SDR 转 HDR」（#625 第二阶段 PR-B；按款存 S2AHdrSdrMap，评审终稿：只放游戏库每款设置页）：此刻开没开；
+//   拨开关写按款（起局 s2a_ios_apply_graphics_settings 只落 S2A_HDR_SDR_MAP——不联动 S2A_HDR，PQ 层载体由引擎侧
+//   层视角开关 nvn2_hdr_layer_sw 补，vi 照玩家 S2A_HDR 口径回答）；没拨过 = 关（缺省关，字节级回现状）
+BOOL s2a_ios_hdr_sdr_map_on(void);
+void s2a_ios_set_hdr_sdr_map(BOOL on);
+BOOL s2a_ios_hdr_sdr_map_on_for(NSString *gid);
+void s2a_ios_set_hdr_sdr_map_for(NSString *gid, BOOL on);
 // 满屏（自适应）此刻生效没有：*on = 实际开关；返回 1 = 包内清单判这款满屏坏、改不动（如实显示关、置灰），0 = 可改
 int s2a_ios_fullscreen_state(NSString *gid, BOOL *on);
 void s2a_ios_set_fullscreen(NSString *gid, BOOL on);
@@ -43,6 +51,9 @@ int s2a_ios_reload_graphics_settings(void);
 //   起局读取、游戏内设置页、撑不住就问玩家、社区补丁都用它，不再直接用 standardUserDefaults 读写画面键。
 NSUserDefaults *s2a_ios_settings_defaults(void);
 NSArray *s2a_ios_per_game_keys(void);
+// 本款那一层和 App 级分开拿（改键页「设为所有游戏的默认」，#1987）：分层对象读本款没有时会回落 App 级，看不出「这款自己存过没有」。
+//   多款容器选了游戏：*game = S2AGame.<游戏号>（与 s2a_ios_settings_defaults 写的是同一个对象）、*app = App 级；单款壳 / 没选游戏：*game = App 级、*app = nil
+void s2a_ios_settings_layers(NSUserDefaults *__strong *game, NSUserDefaults *__strong *app);
 // 游戏语言（定义表 launchers/shared/game_settings.v1.json 的 language，11-13）：按款存（per_game_keys），值是宿主枚举名；没存 / "system" = 跟随系统
 //   （服务层读本 App 首选语言）。起局时 s2a_ios_apply_graphics_settings 落成 S2A_SYSTEM_LANGUAGE。列表与定义表 options 同序（pack/jobs/tests/test_community.py test_game_language_ios_same_as_table 核）
 #define S2AGameLanguageKey @"S2AGameLanguage"
@@ -62,6 +73,8 @@ NSDictionary *s2a_ios_graphics_snapshot(NSUserDefaults *defaults);
 //   返回 -1 = 底座没变，0 / 1 = 要切成掌机 / 主机；*restart = 除底座外还有要重启才生效的画面设置变了
 NSInteger s2a_ios_settings_docked_change(NSDictionary *entry, NSDictionary *now, BOOL *restart);
 void s2a_ios_apply_graphics_settings(NSUserDefaults *defaults);
+// App 级联机偏好；默认不改环境，指定模式只在下次完整启动时读取。
+void s2a_ios_apply_ldn_settings(NSUserDefaults *defaults);
 // 浮层两个开关（S2ADevHUD / MetalHUDForceEnabled）的偏好先落成环境变量：要在 app.m 建视图、hud.m 挂浮层之前调一次，
 // 否则 s2a_hud_on() 会把还没设的 S2A_HUD 缓存成 0（#153）；host_run 里 s2a_ios_apply_graphics_settings 会再调一次兜底。
 // 启动环境显式给的优先；开关语义仍是「下次启动生效」。

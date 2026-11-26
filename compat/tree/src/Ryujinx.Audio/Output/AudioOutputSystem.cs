@@ -320,6 +320,16 @@ namespace Ryujinx.Audio.Output
         /// Get the count of sample played in this session.
         /// </summary>
         /// <returns>The count of sample played in this session</returns>
+        // S2Arm 即时存档：缓冲队列存取（AudioDeviceSession.S2APending / S2AReleased / S2ARestore），持本会话锁
+        public ((ulong, ulong, ulong)[] Released, (ulong, ulong, ulong)[] Pending, ulong Played, bool Started) S2ASnapshot()
+        {
+            lock (_parentLock) { return (_session.S2AReleased(), _session.S2APending(), _session.S2APlayedSampleCount, _session.GetState() == AudioDeviceState.Started); }
+        }
+        public int S2ARestore((ulong, ulong, ulong)[] released, (ulong, ulong, ulong)[] pending, ulong played)
+        {
+            lock (_parentLock) { return _session.S2ARestore(released, pending, played); }
+        }
+
         public ulong GetPlayedSampleCount()
         {
             lock (_parentLock)

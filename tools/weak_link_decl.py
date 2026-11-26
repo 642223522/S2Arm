@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 # 弱链接登记：宿主弱符号放行清单的唯一来源是源码里的「// 弱链接[<场合,…>]：<符号>」注释（runtime/build.mk S2A_WEAK_U 按同一口径收）。
 #   python3 tools/weak_link_decl.py check          runtime/src 里每个 __attribute__((weak_import)) 都要有「弱链接[…host…]」登记；全仓（除本工具与 .md）不许手写链接放行参数；缺了 / 有了逐个报出、退出 1
-#   python3 tools/weak_link_decl.py flags <场合>    打印该场合的 -Wl,-U,_<符号> 参数（给不走 make 的测试用，如 Mac 图形 Python 测试）
+#   python3 tools/weak_link_decl.py flags <场合>    打印该场合的 -Wl,-U,_<符号> 参数（给不走 make 的测试用，如 Mac 图形 Python 测试），
+#                                                    后接该场合登记的系统库（「// 系统库[<场合,…>]：-lxxx」或「-framework Xxx」）
+# 系统库登记（11-19）：直连层单测要链的系统框架 / 库原先写死在 graphics/nvn/Makefile 与 runtime/build.mk 的 NVN_TEST_WEAK 一行，谁加减一个库都改这一行
+#   （快照压缩的 -lcompression 撤回 / 合回三次、每次都和别的支撞同一行）。改成在用到它的源文件里登记，那一行只调本工具、不再有人改。
 # 11-01 合入线：原先 5 个单测 mk、gfxmode 单测替身、Mac 图形 Python 测试各抄一份放行清单，加一个弱符号要改 7 处、漏一处门禁就红（织梦岛 s2a_vi_entry 连退两次）。
 import re
 import sys
@@ -15,6 +18,8 @@ DECL_GLOBS = ("runtime/src/*.c", "ios/*.m", "graphics/nvn/gfx/*/*.m", "graphics/
 APPLE_PLACES = ("host", "ios", "nvntest", "autoplay", "lab", "touchtest")   # 苹果 / 共用构建取放行参数的场合（runtime/build.mk、tests/build.mk、Mac 图形测试）
 ANDROID_DECL_GLOBS = ("android/native/nvn/*.c", "android/native/direct/*.c", "graphics/nvn/replay/*.c")   # direct/：W2 导出门 / 诊断的弱引用（11-06）；replay/：Vulkan 回放核心对后端可选件的弱引用（安卓 / 鸿蒙，iOS 不编，所以不进苹果侧场合）
 REG = re.compile(r"弱链接\[([^\]]*)\]：([A-Za-z0-9_]+)")
+SYSLIB = re.compile(r"系统库\[([^\]]*)\]：(-l[A-Za-z0-9_+.-]+|-framework [A-Za-z0-9_]+)")
+SYSLIB_EXTRA_GLOBS = ("graphics/nvn/gfx/*/*.inc",)   # 系统库登记另扫直连层的 .inc（被 .m / .c 收进来编的那几份，如贴图快照压缩 nvn_frame_rec.inc）；弱链接登记范围不变
 WEAK = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\([^;{}]*\)\s*__attribute__\(\(weak_import\)\)")
 
 
@@ -32,13 +37,23 @@ def registered(place, root=ROOT):
     return out
 
 
+def syslibs(place, root=ROOT):
+    """这个场合登记的系统库参数（按登记文本去重排序；-framework 拆成两个参数）"""
+    found = set()
+    for p in decl_files(root, place) + sorted(q for g in SYSLIB_EXTRA_GLOBS for q in Path(root).glob(g)):
+        for m in SYSLIB.finditer(p.read_text(errors="replace")):
+            if place in [s.strip() for s in m.group(1).split(",")]:
+                found.add(m.group(2))
+    return [a for lib in sorted(found) for a in lib.split()]
+
+
 def u_flags(symbols):
     """放行参数的唯一生成处：按符号名给 ld64 的 -U（登记表与 android/tests/host_link.py 按目标文件实算的弱引用集都走这里）"""
     return ["-Wl,-U,_" + s for s in sorted(symbols)]
 
 
 def flags(place, root=ROOT):
-    return u_flags(registered(place, root))
+    return u_flags(registered(place, root)) + syslibs(place, root)
 
 
 def missing(root=ROOT):

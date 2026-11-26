@@ -1,4 +1,4 @@
-#if canImport(UIKit)
+#if canImport(UIKit) && !os(tvOS)   // tvOS 没有触屏虚拟手柄，不编布局编辑页
 import SwiftUI
 import UIKit
 import ShellUI

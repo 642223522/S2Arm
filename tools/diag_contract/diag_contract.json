@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "about": "诊断收件契约：diag.s2arm.com 收哪些诊断包成员（单一定义）。发包端（pack/jobs/library.py diagnostics、ios/diag.m build_zip）由 tests/diag_contract_test.sh 真打包逐个成员核；收件 Worker（维护方私有工具库 release/diag/）用这份的逐字节拷贝。解释器：tools/diag_contract/diag_contract.py 与 Worker 的 diag_contract.js，两边都跑 cases.json。规则见 diag_contract.py 头注释。",
+  "limits": {
+    "zip_bytes": 31457280,
+    "members": 1000,
+    "member_bytes": 16777216,
+    "total_bytes": 268435456,
+    "manifest_bytes": 4194304
+  },
+  "forbidden_dirs": ["keys", "saves", "games", "resources"],
+  "forbidden_suffixes": [".keys"],
+  "rules": [
+    {"id": "shader_site", "label": "着色器现场文件", "dir": "shaders", "ext": ["ctl", "code"], "max_bytes": 1048576, "count": "shaders",
+     "why": "现编失败现场：ios/diag.m shaders/<程序号>_<键>.inflight|fail.ctl|code（每份 ≤ 1 MB）"},
+    {"id": "shader_slow_metal", "label": "着色器现场文件", "dir": "shaders", "ext": ["metal"], "max_bytes": 4259840, "count": "shaders",
+     "why": "编了 5 秒还没完的管线的 MSL 源：ios/diag.m shaders/<程序号>_<键>.slow.metal。发包端截到 4 MB 后中间插一行截断标记，成品略超 4 MB（v0.4.3 起的客户端已在发），上限 4 MB + 64 KB"},
+    {"id": "shader_salvage", "label": "着色器补料", "dir": "shader_miss", "name": "^[0-9a-f]{16}\\.tar$",
+     "why": "着色器补料：ios/diag.m、pack/jobs/library.py shader_miss/<程序号>.tar，每款一个"},
+    {"id": "general", "label": "文件", "dir": "*", "ext": ["log", "txt", "json", "tsv", "csv", "plist", "ips", "crash", "png", "jpg", "jpeg", "mp4", "mov", "webm"],
+     "why": "日志、文本、表格、崩溃报告、截图、录屏：任意目录"}
+  ],
+  "counts": {"shaders": 32}
+}

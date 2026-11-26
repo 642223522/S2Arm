@@ -10,6 +10,9 @@ rm -f "$APP/embedded.mobileprovision"
 # 扩展属性（Finder 信息、资源分叉、iCloud 同步的桌面 / 文稿里文件被挂上的属性）codesign 一律拒签「resource fork, Finder information,
 #   or similar detritus not allowed」（#1138：游戏库在 ~/Desktop，成功两次后每次都卡在内嵌库）。签名前整棵清掉，苹果给的标准做法
 xattr -cr "$APP" 2> /dev/null || :
+# App 在 exFAT 盘上时还会有 AppleDouble 附属文件 ._<名>（存扩展属性用；被不认得它的拷贝当普通文件带进来就清不掉，成了孤儿）：
+#   它不是 App 的内容，codesign 把 ._NS2Pro.framework 当库去签报 Operation not permitted（#1529）。签名前一并删掉
+find "$APP" -name '._*' -exec rm -f {} + 2> /dev/null || :
 n=0
 while IFS= read -r p; do
   err=$(codesign --force --sign - --timestamp=none "$p" 2>&1 > /dev/null) || { echo "🔴 自签内嵌库失败：${p#$APP/}（${err##*: }）"; exit 1; }; n=$((n + 1))

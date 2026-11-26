@@ -14,7 +14,7 @@
 static inline void s2a_thread_name(const char *name) {
 #if defined(__APPLE__)
     pthread_setname_np(name);
-#elif defined(__ANDROID__) || defined(_GNU_SOURCE)   // bionic 无条件声明；glibc 只在 _GNU_SOURCE 下声明
+#elif (defined(__ANDROID__) || defined(__OHOS__)) || defined(_GNU_SOURCE)   // bionic 无条件声明；glibc 只在 _GNU_SOURCE 下声明
     pthread_setname_np(pthread_self(), name);
 #else
     (void)name;
@@ -65,16 +65,19 @@ __attribute__((format(printf, 1, 2))) static inline void s2a_log_line2(const cha
     if (p != b) free(p);
 }
 
-#if defined(__ANDROID__)
-// Android 地址窗口：平台实现先按最大值整块保留（platform/vawin_android.inc），起局时
-// svc_mem 用 s2a_layout_need 算出本款跨度再 s2a_window_trim 收缩。非 Android 由 vawin.c
-// 直接按本款跨度预留，不再使用这个最大值常量。
-#define S2A_WIN_SIZE (72ull << 30)   // 63 GiB 别名区 + 栈区 2 GiB（Horizon 真值）+ 堆 + 模块放得下（layout_android.inc）
-#endif
+#include "s2a_window.h"   // S2A_WIN_SIZE：安卓 / 鸿蒙地址窗口最大值（唯一来源）
 void s2a_log_session_start(void);   // iOS 主线程：正式激活才轮换日志 / 切 fd / 起控制台副本；幂等
 // energy.c：进程能耗分账（快照单位：纳秒 / 纳焦；s2a_energy_log 打「上次调用以来」一行）
 typedef struct { uint64_t wall, cpu, pcpu, nj, pnj, cyc, pcyc, intr, idle; double gpu_ms, gpu_clk_ms; int ok_g; } s2a_esnap;   // gpu_ms：直连层 GPU 忙累计毫秒（时间，非能耗；ok_g = 有直连层）
 int s2a_energy_snap(s2a_esnap *s);
+// 即时存档开关（runtime/src/snapshot.c，唯一定义处）：存档中 / 恢复中 / 两者之一。关着时三者都是 0
+int s2a_snap_saving(void); int s2a_snap_restoring(void); int s2a_snap_mode(void); int s2a_snap_logging(void);
+// 这一局关掉即时存档（snapsw.c）与原因码：S2A_SNAP_OFF_ADDRESS = 这台设备地址空间放不下标准布局、窗口外也放不下命令记录区（vawin.c）
+#define S2A_SNAP_OFF_ADDRESS 1
+void s2a_snap_disable(int why); int s2a_snap_off_reason(void); int s2a_snap_reenable(int why);   // snapsw.c：构造期因 why 关的快照、选定游戏后放得下时重新打开（vawin.c s2a_window_snap_late）
+void s2a_window_snap_late(int no_far);   // vawin.c：布局定了、收尾前调，这一款没有远端段时在收尾还回去的那段里补放快照区
+int s2a_snap_late_fits(uint64_t released, uint64_t a, uint64_t host_min);   // vawin.c：纯函数
+const char *s2a_snap_source(void);   // snapsw.c：「能存」这一位按什么定的（启动环境 / 玩家设置 / 缺省）
 // 两次采样之间的 GPU 忙 ms/s：分母取 GPU 时钟差（gpu_clk_ms，已入账各帧最晚 GPU 结束），不取墙钟——GPU 忙晚 8 帧在 CPU 帧边界入账，墙钟窗口会把慢帧前的时间挤进来；
 //   读不到（没有直连层）返回 -1，这段时间没有帧入账返回 0
 double s2a_gpu_busy_rate(const s2a_esnap *a, const s2a_esnap *b);
@@ -91,6 +94,8 @@ static inline int s2a_crash_quiet(void) {
     return (q && q[0] == '1') || getenv("DM_GLSLC_JOB") || getenv("DM_OODLE_SERVE") || getenv("S2A_PSO_HARVEST") || getenv("S2A_FRAME_REPLAY");
 }
 __attribute__((noreturn)) static inline void s2a_native_fatal(void) {
+    { const char *(*wn)(void) = (const char *(*)(void))dlsym(RTLD_DEFAULT, "s2a_waived_note"); const char *w = wn ? wn() : NULL;   // waived.c：带着没过的校验跑到这里
+      if (w && *w) LOG("【红】之前这些校验没过（照常继续了）：%s", w); }
     void (*boot_abort)(void) = (void (*)(void))dlsym(RTLD_DEFAULT, "s2a_session_abort_boot");
     if (boot_abort) boot_abort();
     if (s2a_crash_quiet()) _exit(70);
@@ -106,6 +111,9 @@ void s2a_window_reserve(void);                 // 一次性预留；所有启动
 void s2a_window_get(uint64_t *base, uint64_t *size);
 uint64_t s2a_window_spare(void);              // 窗口之外还能给宿主大映射的地址（收尾还回 + 窗口所在空洞其余部分，vawin.c）
 void s2a_window_need(uint64_t *need, uint64_t *fit);   // 本款要的跨度、本机 2^39 以下最大能放的一块（自检提示用）
+uint64_t s2a_window_hole_top(void);   // 2^39 / 2^36 以下那次找空洞的上界（与系统地址上限取小；没算到 0）
+int s2a_window_hi36_tried(void);   // 36 位款是否在 2^36 以上按 2^36 对齐的各块里找过窗口（#1419）
+void s2a_window_fatal_msg(char *out, size_t cap, uint64_t need, uint64_t fit, uint64_t hole_top, int hi36);   // 窗口没占到时的 FATAL 文字（纯函数）
 // 客体窗口里在内存 / 已压缩换出的字节（mincore 扫整窗，心跳用）
 void s2a_window_resident(uint64_t *res, uint64_t *out);
 int s2a_guest_fd(void); int s2a_guest_zero(uint64_t a, uint64_t n); void *s2a_guest_map_any(uint64_t len);   // vawin.c：客体内存文件后备（S2A_GUEST_FILE）——文件 fd（-1 = 没开）；还页打洞 + 原偏移重映射成不可访问（不在窗口 / 没开 = 0）
@@ -141,8 +149,16 @@ int   s2a_tail_has(const void *p);
 void  s2a_tail_note(char *o, size_t cap);
 void s2a_fd_usage(int *open_n, uint64_t *soft, uint64_t *hard);   // 已开文件句柄数（探到 min(软上限, 4096)）+ RLIMIT_NOFILE 软 / 硬上限
 int s2a_gc_limit_pick(uint64_t largest); void s2a_gc_limit_apply(void);   // GC 上限自适应三档（gclimit.c）：0 不设 / 1 总 2 GB / 2 分堆
+uint64_t s2a_window_for_span(uint64_t learned);                     // vawin.c：按学到的跨度该给多大窗口（learned × 1.25 + 2 GiB，1 GiB 取整；0 = 没学到、不限）
+uint64_t s2a_window_host_floor(uint64_t fit);   // vawin.c：宿主下限（空洞 ≥ 22 GiB 给 6 GiB，更小 3 GiB；依据见定义处）
 uint64_t s2a_window_host_below(uint64_t fit, uint64_t learned);   // vawin.c：放不下标准布局时窗口下方留给宿主多少（按学到的跨度，#783）
+uint64_t s2a_window_host_below_for_pool(uint64_t fit, uint64_t learned, uint64_t pool);  // vawin.c：按本款应用池给窗口（小内存 iPad 的 3234 MB 堆，宿主至少 2 GiB）
 uint64_t s2a_window_span_seen(uint64_t pid);                        // vawin.c：本款本机学到的地址跨度（wire/<程序号>/span_peak；没有 = 0）
+uint64_t s2a_window_span_trust(const char *pre, uint64_t pid, uint64_t span);   // vawin.c：已知跨度这局能不能拿来收窗（上一局按它收窄后没到首帧 = 0；pre = 文档根下前缀，NULL = 直接 wire/）
+int s2a_window_span_cap_blocked(uint64_t span, uint64_t bad);         // vawin.c：纯函数，跨度不超过「收窄后没到首帧」记下的值就不收
+void s2a_window_cap_try(const char *pre, uint64_t pid, uint64_t span); // vawin.c：这局按 span 收窄了窗口，记 wire/<号>/span_cap_try
+void s2a_window_cap_ok(void);                                         // vawin.c：首帧上屏，删本局的收窄标记
+uint64_t s2a_mem_span_learn(void);                                   // svc_mem.c：本局该记下的跨度（span_now 过贴顶规则，贴顶且没碰过窗口外 = 0）
 uint64_t s2a_mem_span_now(void);                                     // svc_mem.c：本局已碰到的地址跨度（碰到的最高地址 − 窗口基址）
 void s2a_low_holes(uint64_t *total, uint64_t *largest);   // 4 GB 到窗口底之间的空洞合计 / 最大块           // 布局只用前 size 字节时把尾部还给系统        // 打一行窗口探测：窗口内除自己的占位外还有没有别人的映射
 void s2a_lowva_start(void);   // 低区统一记账（lowva.c，接口 runtime/include/s2a_lowva.h）：起巡检线程
@@ -172,12 +188,18 @@ uint64_t s2a_app_pool(void); void s2a_app_pool_set(uint64_t v);   // layout.c
 #define S2A_HEAP_DEFAULT (S2A_APP_POOL & ~((2ull << 20) - 1))
 // 标准布局（各区全有宿主地址）的跨度，含模块段；0 = 地址空间类型不支持
 uint64_t s2a_layout_need(uint32_t as_type, uint64_t sys_resource_size, uint64_t module_span);
+int s2a_snap_arena_place(uint64_t out, uint64_t below, uint64_t a, uint64_t host_min);   // layout.c：即时存档命令记录区放哪（1 窗口外 / 2 宿主段底部 / 0 关快照）
+int s2a_snap_arena_place2(uint64_t out, uint64_t fit, uint64_t *below, uint64_t a, uint64_t host_min, uint64_t span, uint64_t margin);   // layout.c：宿主段不够时按本款已知最高跨度决定让不让窗口（11-21）
+uint64_t s2a_span_seed(uint64_t pid);   // vawin.c：种子表里本款的最高跨度（0 = 没有）
+uint64_t s2a_sainit_size(uint64_t alias_base, uint64_t alias_size, uint64_t win_end, uint64_t pool, uint64_t size);   // layout.c：分配器预留压小后的尺寸（等于 size = 不压）
+uint64_t s2a_alias_report_size(uint64_t alias_base, uint64_t alias_size, uint64_t win_end, uint64_t hole, uint64_t need, int alias_gb, int full_flag);   // layout.c：报给游戏的别名区大小（#1441）
 // 按宿主占到的窗口 [win_base, +win_size) 排布局：放得下标准布局就照标准排，放不下就小区在前、别名区伸出窗口。
 //   out->win_size = 布局实际用的宿主地址（其余还给宿主）；*mod_base = 模块段起点。0 成功，-1 地址空间类型不支持，-2 窗口连前段都放不下
 //   alias_gb：出包静态认出的开局别名区大区（GiB，含 SDK 元数据；0 = 没有）——非 0 即别名优先，乙里放得下它时别名区收到窗口末、不伸出；
 //     负数 = 同样大小但读码判「上限不定」（addr_need.tsv 别名区上限 = 不定），别名优先照旧、不收窗口
 //   乙另回 *shadow_base = 堆区起点：远端影子块从堆区顶往下分（far.c），与堆共用这段地址；别名区没伸出窗口（甲，或别名优先收在窗口内）为 0
 #define S2A_FAR_SLACK (256ull << 20)   // 乙的堆区比应用池多给这么多：影子按 2 MiB 块取整的余量
+int s2a_layout_cap_fits(int rc, uint64_t heap_base, uint64_t win_end, uint64_t heap_want);   // layout.c：按学到跨度收窗口前的试算判据（D-PR33）
 int s2a_layout_compute(uint32_t as_type, uint64_t sys_resource_size, uint64_t module_span, int alias_gb, uint64_t win_base, uint64_t win_size, s2a_layout *out, uint64_t *mod_base, uint64_t *shadow_base);
 
 // ---------- 远端（far.c，乙布局一律开）：别名区伸出宿主窗口那段的内容放影子区，游戏一碰即缺页代执行并记点 ----------
@@ -211,10 +233,16 @@ void s2a_envfile_log_flush(void);   // 启动单线程调用，输出后清空�
 uint64_t guest_ns(void);
 uint64_t guest_tick(void);      // 系统计数器（Switch 19.2 MHz / Switch 2 31.25 MHz，s2a_guest_tick_hz）
 uint64_t s2a_guest_tick_hz(void); uint64_t s2a_ns_to_tick(uint64_t ns);
+// 后端已校准的宿主时刻（plat_now_ns 域；安卓为 CLOCK_MONOTONIC）转游戏计数器。
+// 苹果 plat_now_ns 是 mach_absolute_time 域，不能直接传 CLOCK_MONOTONIC；首版 Metal 不宣告时间戳能力。
+// 仅接受当前冻结/运行映射区间内的非未来样本；跨冻结边界的历史样本无法还原，返回 0 且不改 out。
+// 成功返回 1，*out 可以为 0。任意线程可调；不以完成回调的 CPU 时刻替换输入。
+int s2a_guest_tick_from_host_ns(uint64_t host_ns, uint64_t *out);
 void s2a_thread_set_hw_cores(int n); int s2a_thread_hw_cores(void);   // thread.c：硬件核数（Switch 4、Switch 2 8）
 // 游戏时钟按原因冻结（1 后台会话、2 系统键盘、3 Mac 失焦、4 安卓退后台），全部解除才接着走（os.c）。
 void guest_clock_freeze_for(int reason, int on);
 void guest_clock_freeze(int on);                    // = 原因 1
+void s2a_guest_clock_set(uint64_t gns);   // 即时存档恢复：游戏时间接到快照时刻
 uint64_t s2a_entropy64(void);
 
 // ---------- 模块（loader.c）----------
@@ -301,8 +329,10 @@ static inline int s2a_guest_where(uint64_t a, char *b, size_t n) {
     if (w >= (int)n) s2a_utf8_trim(b, n);
     return 1;
 }
-// brk 兜底点（改写器双岛模式下两岛都够不着的必改点）：种类与序号见 traps.c
-enum { S2A_TRAP_TPIDR_R, S2A_TRAP_TPIDRRO_R, S2A_TRAP_TPIDR_W, S2A_TRAP_CTR };
+// brk 兜底点（改写器双岛模式下两岛都够不着的必改点；36 位老 SDK 写死的可随机区 / 栈区起止，#1503）：种类与序号见 traps.c
+enum { S2A_TRAP_TPIDR_R, S2A_TRAP_TPIDRRO_R, S2A_TRAP_TPIDR_W, S2A_TRAP_CTR, S2A_TRAP_ASLR_LO, S2A_TRAP_ASLR_HI, S2A_TRAP_STACK_LO, S2A_TRAP_STACK_HI, S2A_TRAP_NKIND };
+// 本局布局的可随机区（stack = 0）/ 栈区（1）起止 [*lo, *hi)，给 36 位老 SDK 兜底点用（svc_mem.c）；布局没定回 -1
+int s2a_mem_as_region(int stack, uint64_t *lo, uint64_t *hi);
 struct s2a_trap { uint64_t off, hits; uint32_t orig; uint8_t kind, reg; };
 #define S2A_TRAP_IMM0 0x8000u
 #define S2A_TRAP_MAX 0x2000u   // 按编号的 brk #0x8000–0x9FFF；0xA000 是远跳

@@ -2,7 +2,7 @@
 // 出包离线链（translator/gl_shaders.py，经本文件的命令行入口 S2A_GLSL_ES_MAIN）与宿主运行时兜底（gl_xlate.c，gl_prog.m 调）共用这一份实现，不写两遍。
 // 两步，与 gl_shaders.py translate() 的顺序一致：
 //   ① s2a_glsl_es_prefix（原文、预处理之前）：第一条「#version 300 / 310 / 320」没写 es → 补「 es」（NVIDIA 按 ES 读，glslang 照规范要求写 es；FINAL FANTASY VII 的 ff7/shaders/*.glsl）；
-//      后面跟注释的 es 插在注释前，跟 core / compatibility 的换成 es（#749）
+//      后面跟注释的 es 插在注释前，跟 core / compatibility 的换成 es（#749）；桌面「#version 110 / 120 / 130」→「#version 100」（D-45J6）
 //   ② s2a_glsl_es_rewrite（glslang 预处理之后的文本）：
 //      · 版本：没有 #version 或 #version 100 = GLSL ES 1.00 → 去掉版本行，头上加「#version 310 es」+ float / int 缺省精度 highp（ES 1.00 片元常只在 #ifdef GL_ES 下设精度，
 //        预处理时 GL_ES 没定义）；#version 300 es → 310 es（3.10 是 3.00 的超集，语义不变）；
@@ -14,7 +14,8 @@
 //      · 把 gl_Position 重新声明成普通输出的一行删掉（数码宝贝 main 里内置精灵着色器 `out float4 vPosition;`，vPosition 宏成 gl_Position）；
 //      · textureOffset / textureLodOffset 的偏移不是常量（内置 FXAA、FINAL FANTASY VII 的 FXAA）：Metal 的采样偏移也必须是常量，改成在 P + 偏移 / 该级尺寸处采样。
 // 匹配口径照 Python re（gl_shaders.py 原来的正则）：\b 两侧按 [A-Za-z0-9_] 与非 ASCII 字节算单词字符（Python 按 Unicode 字母算；源码经预处理已去注释，GLSL 标识符只有 ASCII），\s = 空格 \t \n \r \f \v \x1c–\x1f。
-// 没覆盖（遇到照旧由 glslang 报红）：ES 1.00 里拿 3.x 关键字 / 内建函数名（texture、sample、flat …）当变量名的源码、gl_FragData 用变量下标。
+// ES 1.00 里拿 3.x 关键字 / 内建函数名当名字（texture、flat …）：升版前整词改名（es3_names，D-4ZBS）；sample 按用法判（sample_names）。
+// 没覆盖（遇到照旧由 glslang 报红）：gl_FragData 用变量下标。
 #include "gl_glsl_es.h"
 #include <stdlib.h>
 #include <string.h>
@@ -99,6 +100,13 @@ char *s2a_glsl_es_prefix(const char *src, size_t n, size_t *out_n) {
                     }
                     #undef WORD_AT
                 }
+                // D-45J6（#852）：桌面 GLSL 110 / 120 / 130 —— glslang 出 SPIR-V 拒收 140 以下的桌面版本（「Desktop shaders for Vulkan SPIR-V require version 140 or higher」，
+                //   整支编不过、有声无画）。版本号换成 100：按 ES 1.00 预处理，s2a_glsl_es_rewrite 再按 ES 1.00 升到 3.10（attribute / varying / gl_FragColor / texture2D 都在那条路上）。
+                //   桌面独有的写法（int 隐式转 float 等）ES 不收，遇到照旧由 glslang 报红（报错带原文版本行，gl_xlate.c）
+                if (k > j && k + 3 <= n && src[k] == '1' && (src[k + 1] == '1' || src[k + 1] == '2' || src[k + 1] == '3') && src[k + 2] == '0'
+                    && (k + 3 == n || !(src[k + 3] >= '0' && src[k + 3] <= '9'))) {
+                    sb o = {0}; sb_put(&o, src, k); sb_str(&o, "100"); sb_put(&o, src + k + 3, n - k - 3); return sb_take(&o, out_n);
+                }
                 break;   // 第一条 #version 已看过：不是要补的形态就原样
             }
         }
@@ -108,6 +116,29 @@ char *s2a_glsl_es_prefix(const char *src, size_t n, size_t *out_n) {
 }
 
 // GLSL ES 1.00 → 3.10 文本（gl_shaders.py 原 es100）：顶点 attribute / varying、片元 varying / gl_FragColor / gl_FragData、缺省精度
+// D-4ZBS（11-23，krkrz 引擎 GL 款）：ES 1.00 源码里拿 ES 3.x 才有的内建函数名 / 关键字当自己的名字（「uniform sampler2D texture;」），
+//   升到 3.10 并把 texture2D 改写成 texture 之后撞内建名，glslang 报「'texture' : redefinition」整支编不过（链接程序没有片元，游戏随后读空指针崩）。
+//   ES 1.00 里这些词不是内建名，出现就只可能是游戏自己的标识符：升版前整词改成「s2a_<名>」，全文一致，语义不变；
+//   之后 fixups 改写出来的 texture( / textureLod( 才是内建调用。sample 另有按用法判的 sample_names，不在这张表里
+static const char *const k_es3_names[] = {
+    "texture", "textureLod", "textureProj", "textureProjLod", "textureGrad", "textureProjGrad", "textureSize", "texelFetch", "textureOffset",
+    "texelFetchOffset", "textureLodOffset", "textureProjOffset", "textureGradOffset", "textureProjGradOffset", "textureProjLodOffset",
+    "flat", "smooth", "centroid", "layout", "uint", "uvec2", "uvec3", "uvec4", "patch", "buffer", "shared", "coherent", "volatile", "restrict",
+    "readonly", "writeonly", "precise", "round", "trunc", "roundEven", "modf", "isnan", "isinf", "inverse", "transpose", "determinant",
+    "outerProduct", "floatBitsToInt", "floatBitsToUint", "intBitsToFloat", "uintBitsToFloat", "packSnorm2x16", "unpackSnorm2x16",
+    "packUnorm2x16", "unpackUnorm2x16", "packHalf2x16", "unpackHalf2x16", "sinh", "cosh", "tanh", "asinh", "acosh", "atanh",
+};
+static char *es3_names(const char *t, size_t n, size_t *on) {
+    sb o = {0}; size_t last = 0;
+    for (size_t i = 0; i < n; ) {
+        if (!is_word((unsigned char)t[i]) || (i && is_word((unsigned char)t[i - 1]))) { i++; continue; }
+        size_t e = i; while (e < n && is_word((unsigned char)t[e])) e++;
+        for (size_t k = 0; k < sizeof k_es3_names / sizeof *k_es3_names; k++)
+            if (strlen(k_es3_names[k]) == e - i && !memcmp(t + i, k_es3_names[k], e - i)) { sb_put(&o, t + last, i - last); sb_str(&o, "s2a_"); sb_put(&o, t + i, e - i); last = e; break; }
+        i = e;
+    }
+    sb_put(&o, t + last, n - last); return sb_take(&o, on);
+}
 static char *es100(const char *t, size_t n, char stage, size_t *on) {
     sb head = {0}; sb_str(&head, "#version 310 es\nprecision highp float;\nprecision highp int;\n");
     char *cur = malloc(n + 1); size_t cn = n; if (!cur) return NULL; memcpy(cur, t, n); cur[n] = 0;
@@ -300,6 +331,64 @@ static char *flatten_blocks(char *t, size_t n, char stage, size_t *on) {
     *on = n; return t;
 }
 
+// 整词 sample：后面（跳过空白）紧跟限定词的是限定符，原样；否则是名字，改成 s2a_sample
+static int sample_is_qualifier(const char *t, size_t n, size_t i) {
+    static const char *const q[] = {"in", "out", "centroid", "flat", "smooth", "noperspective", "highp", "mediump", "lowp", "precise", "invariant", NULL};
+    while (i < n && (t[i] == ' ' || t[i] == '\t' || t[i] == '\n' || t[i] == '\r')) i++;
+    for (int k = 0; q[k]; k++) { size_t l = strlen(q[k]); if (i + l <= n && !memcmp(t + i, q[k], l) && (i + l == n || !is_word((unsigned char)t[i + l]))) return 1; }
+    return 0;
+}
+static char *sample_names(const char *t, size_t n, size_t *on) {
+    sb o = {0}; size_t last = 0;
+    for (size_t i = 0; i + 6 <= n; i++) {
+        if (memcmp(t + i, "sample", 6) || (i && is_word((unsigned char)t[i - 1])) || (i + 6 < n && is_word((unsigned char)t[i + 6]))) continue;
+        if (sample_is_qualifier(t, n, i + 6)) continue;
+        sb_put(&o, t + last, i - last); sb_str(&o, "s2a_sample"); last = i + 6; i += 5;
+    }
+    sb_put(&o, t + last, n - last); return sb_take(&o, on);
+}
+// D-TTP7（11-23，Darkest Dungeon GL 款）：GLSL ES 3.x 里只有 float / int / sampler2D / samplerCube 有缺省精度，其余采样器 / 图像类型（sampler3D、
+//   sampler2DShadow、sampler2DArray、isampler* / usampler*、image* …）用到就必须先声明缺省精度，glslang 照规范报「'sampler/image' : type requires
+//   declaration of default precision qualifier」整支编不过；NVIDIA 驱动放过。正文用到这些类型、又没写对应 precision 语句的，在版本行后补
+//   「precision highp <类型>;」（只补用到的，没用到的源码一字不变）
+static const char *const k_prec_types[] = {
+    "sampler3D", "samplerCubeShadow", "sampler2DShadow", "sampler2DArray", "sampler2DArrayShadow", "sampler2DMS",
+    "isampler2D", "isampler3D", "isamplerCube", "isampler2DArray", "isampler2DMS", "usampler2D", "usampler3D", "usamplerCube", "usampler2DArray", "usampler2DMS",
+    "image2D", "iimage2D", "uimage2D", "image3D", "iimage3D", "uimage3D", "imageCube", "iimageCube", "uimageCube", "image2DArray", "iimage2DArray", "uimage2DArray",
+};
+static int prec_has_word(const char *t, size_t n, const char *w) {
+    size_t wl = strlen(w);
+    for (size_t i = 0; i + wl <= n; i++) if (!memcmp(t + i, w, wl) && boundary_before(t, i) && (i + wl == n || !is_word((unsigned char)t[i + wl]))) return 1;
+    return 0;
+}
+static int has_prec_decl(const char *t, size_t n, const char *w) {   // precision\s+(lowp|mediump|highp)\s+w\b
+    for (size_t i = 0; i + 9 <= n; i++) {
+        if (memcmp(t + i, "precision", 9) || !boundary_before(t, i)) continue;
+        size_t j = skip_space(t, n, i + 9); if (j == i + 9) continue;
+        size_t q = j; while (q < n && is_word((unsigned char)t[q])) q++;
+        if (!(q - j == 4 && !memcmp(t + j, "lowp", 4)) && !(q - j == 7 && !memcmp(t + j, "mediump", 7)) && !(q - j == 5 && !memcmp(t + j, "highp", 5))) continue;
+        size_t k = skip_space(t, n, q); size_t wl = strlen(w);
+        if (k > q && starts(t, n, k, w) && (k + wl == n || !is_word((unsigned char)t[k + wl]))) return 1;
+    }
+    return 0;
+}
+static char *sampler_precision(char *t, size_t n, size_t *on) {   // t 以「#version …」行开头（es100 / 310 es 两条路都是）
+    sb add = {0};
+    for (size_t i = 0; i < sizeof k_prec_types / sizeof *k_prec_types; i++)
+        if (prec_has_word(t, n, k_prec_types[i]) && !has_prec_decl(t, n, k_prec_types[i])) { sb_str(&add, "precision highp "); sb_str(&add, k_prec_types[i]); sb_str(&add, ";\n"); }
+    if (add.oom) { free(add.p); return NULL; }
+    if (!add.n) { *on = n; return t; }
+    // 插在开头连续的预处理行（#version / #extension / #pragma …，及其间空行）之后：#extension 必须在任何非预处理记号之前
+    size_t cut = 0;
+    for (;;) {
+        size_t j = skip_space(t, n, cut); if (j >= n) { cut = n; break; }
+        if (t[j] != '#' && t[j] != '\n') break;
+        const char *nl = memchr(t + j, '\n', n - j); if (!nl) { cut = n; break; }
+        cut = (size_t)(nl + 1 - t);
+    }
+    sb o = {0}; sb_put(&o, t, cut); if (cut && t[cut - 1] != '\n') sb_str(&o, "\n"); sb_put(&o, add.p, add.n); sb_put(&o, t + cut, n - cut); free(add.p); free(t);
+    return sb_take(&o, on);
+}
 char *s2a_glsl_es_rewrite(const char *pre, size_t n, char stage, size_t *out_n, char *err, size_t errn) {
     if (errn) err[0] = 0;
     if (stage != 'v' && stage != 'f' && stage != 'c') { snprintf(err, errn, "stage %c is not v / f / c", stage); return NULL; }
@@ -318,21 +407,22 @@ char *s2a_glsl_es_rewrite(const char *pre, size_t n, char stage, size_t *out_n, 
     if (at && v100) {   // 去掉版本行（到第一个换行为止，含换行），按 ES 1.00 改写
         sb o = {0}; sb_put(&o, pre, (size_t)(at - pre)); if (nl) sb_put(&o, nl + 1, n - (size_t)(nl + 1 - pre));
         size_t tn; char *tt = sb_take(&o, &tn); if (!tt) return NULL;
-        body = es100(tt, tn, stage, &bn); free(tt);
+        size_t rn; char *rt = es3_names(tt, tn, &rn); free(tt); if (!rt) return NULL;
+        body = es100(rt, rn, stage, &bn); free(rt);
     } else if (at) {   // 从 #version 起（之前的空行丢掉）；300 es 的版本行换成 310 es
         sb o = {0};
         if (v300) { sb_str(&o, "#version 310 es"); if (nl) sb_put(&o, nl, n - (size_t)(nl - pre)); }
         else sb_put(&o, at, rest);
         body = sb_take(&o, &bn);
-    } else body = es100(pre, n, stage, &bn);
+    } else { size_t rn; char *rt = es3_names(pre, n, &rn); if (!rt) return NULL; body = es100(rt, rn, stage, &bn); free(rt); }
     if (!body) { if (errn && !err[0]) snprintf(err, errn, "out of memory"); return NULL; }
     // 「sample」在 GLSL ES 3.00 / 3.10 是保留字，3.20 或开了 GL_OES_shader_multisample_interpolation 才是插值限定符；ES 1.00 里是普通名字。
     //   游戏拿它当变量名（ES 1.00 原文、或 NVIDIA 编译器放过的 3.x），升到 3.10 后 glslang 报「'sample' : Reserved word」整支编不过，
     //   游戏查编译状态失败就断言退出（D-9EPN：5 支片元编不过、随后游戏 Break）。结果不是 3.20、也没开那个扩展时，这个词只可能是名字：整词改成 s2a_sample
-    int v320 = 0, msi = 0;
-    if (at) { size_t j = skip_space(at, rest, 8); v320 = starts(at, rest, j, "320") && (j + 3 == rest || !is_word((unsigned char)at[j + 3])); }
-    { static const char ext[] = "GL_OES_shader_multisample_interpolation"; for (size_t i = 0; !msi && i + sizeof ext - 1 <= n; i++) msi = !memcmp(pre + i, ext, sizeof ext - 1); }
-    if (!v320 && !msi) { size_t sn; char *x = sub_word(body, bn, "sample", "s2a_sample", &sn, NULL); free(body); if (!x) { if (errn && !err[0]) snprintf(err, errn, "out of memory"); return NULL; } body = x; bn = sn; }
+    //   11-20 D-45CD：原先只在「结果不是 3.20、也没开扩展」时改名——游戏写「#version 320」（NVIDIA 放过不写 es，s2a_glsl_es_prefix 补成 320 es）
+    //   又拿 sample 当名字，照样报 Reserved word。改成按用法判，不按版本判：sample 后面紧跟 in / out / 插值 / 精度限定词才是限定符（原样），其余一律是名字、改 s2a_sample
+    { size_t sn; char *x = sample_names(body, bn, &sn); free(body); if (!x) { if (errn && !err[0]) snprintf(err, errn, "out of memory"); return NULL; } body = x; bn = sn; }
+    { size_t pn; char *x = sampler_precision(body, bn, &pn); if (!x) { free(body); if (errn && !err[0]) snprintf(err, errn, "out of memory"); return NULL; } body = x; bn = pn; }
     size_t fn; char *fx = fixups(body, bn, &fn, err, errn);
     if (!fx) return NULL;
     return flatten_blocks(fx, fn, stage, out_n);

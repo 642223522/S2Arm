@@ -1,0 +1,101 @@
+diff --git a/src/Ryujinx.Audio.Backends.Apple/AppleHardwareDeviceSession.cs b/src/Ryujinx.Audio.Backends.Apple/AppleHardwareDeviceSession.cs
+index 6ab3e4c5d0342abc43ba50b5781c81b85e52e77a..682d70de69ea61637baad5951100d07e26fa4045 100644
+--- a/src/Ryujinx.Audio.Backends.Apple/AppleHardwareDeviceSession.cs
++++ b/src/Ryujinx.Audio.Backends.Apple/AppleHardwareDeviceSession.cs
+@@ -524,6 +524,7 @@ namespace Ryujinx.Audio.Backends.Apple
+             // S2Arm (11-14 设备缓冲): 设备 IO 缓冲是出声延迟的地板——建队（起会话与自愈重建共用）先请求它，
+             //   再挂布局 / 分配缓冲。失败按原样继续（见 S2AApplyDeviceBufferFrames）
+             S2AApplyDeviceBufferFrames();
++            S2ALogOutputDevice();
+ 
+             // S2Arm（#189）：6 声道队列声明 5.1 布局（起会话与重建共用这条路径）：不声明时系统隐式 6→2 只复制
+             //   FL/FR，中置（对白）与环绕整段丢失；真 5.1 设备声明后按布局直通。设置失败按无布局继续（打出【红】，
+@@ -625,6 +626,51 @@ namespace Ryujinx.Audio.Backends.Apple
+             Console.Error.WriteLine($"[声] 输出 #{_diag.Index}：设备缓冲请求 {frames} 帧，设备实给 {granted} 帧 ≈ {granted * 1000.0 / RequestedSampleRate:F1} ms（只作用于本进程，其他 App 不受影响）");
+         }
+ 
++        // S2Arm (11-16 声音诊断)：建队时记一行系统默认输出设备的传输方式、IO 周期、标称采样率、静音与音量（#1308 爆音 / #1245、诊断#a51362 无声：
++        //   交设备的声音非零，判不了是设备静音、走了蓝牙 / 虚拟设备，还是内容本身）。只读，不改设备；仅 macOS（iOS 没有 HAL 设备属性）
++        private void S2ALogOutputDevice()
++        {
++            if (!OperatingSystem.IsMacOS())   // 平台例外：HAL 设备属性只有 macOS
++            {
++                return;
++            }
++
++            AudioObjectPropertyAddress a = new() { Selector = kAudioHardwarePropertyDefaultOutputDevice, Scope = kAudioObjectPropertyScopeGlobal, Element = kAudioObjectPropertyElementMain };
++            uint device = 0, size = sizeof(uint);
++
++            if (AudioObjectGetPropertyData(kAudioObjectSystemObject, ref a, 0, nint.Zero, ref size, ref device) != 0 || device == 0)
++            {
++                Console.Error.WriteLine($"[声] 【红】输出 #{_diag.Index}：读不到系统默认输出设备");
++                return;
++            }
++
++            string U32(uint selector, uint scope)
++            {
++                AudioObjectPropertyAddress q = new() { Selector = selector, Scope = scope, Element = kAudioObjectPropertyElementMain };
++                uint v = 0, n = sizeof(uint);
++                return AudioObjectGetPropertyData(device, ref q, 0, nint.Zero, ref n, ref v) == 0 ? v.ToString() : null;
++            }
++
++            AudioObjectPropertyAddress t = new() { Selector = kAudioDevicePropertyTransportType, Scope = kAudioObjectPropertyScopeGlobal, Element = kAudioObjectPropertyElementMain };
++            uint tran = 0, ts = sizeof(uint);
++            string transport = AudioObjectGetPropertyData(device, ref t, 0, nint.Zero, ref ts, ref tran) == 0
++                ? (tran switch
++                {
++                    0x626C746E => "内置", 0x626C7565 => "蓝牙", 0x626C6561 => "蓝牙低功耗", 0x75736220 => "USB", 0x68646D69 => "HDMI", 0x64707274 => "DisplayPort",
++                    0x61697270 => "AirPlay", 0x67727570 => "聚合", 0x76697274 => "虚拟", 0x7468756E => "雷雳", 0x70636920 => "PCI", _ => $"其他 0x{tran:x8}",
++                })
++                : "读不到";
++            AudioObjectPropertyAddress r = new() { Selector = kAudioDevicePropertyNominalSampleRate, Scope = kAudioObjectPropertyScopeGlobal, Element = kAudioObjectPropertyElementMain };
++            double rate = 0; uint rs = sizeof(double);
++            string rateText = AudioObjectGetPropertyDataDouble(device, ref r, 0, nint.Zero, ref rs, ref rate) == 0 ? $"{rate:F0} Hz" : "读不到";
++            AudioObjectPropertyAddress vq = new() { Selector = kAudioDevicePropertyVolumeScalar, Scope = kAudioDevicePropertyScopeOutput, Element = kAudioObjectPropertyElementMain };
++            float vol = 0; uint vs = sizeof(float);
++            string volText = AudioObjectGetPropertyDataFloat(device, ref vq, 0, nint.Zero, ref vs, ref vol) == 0 ? $"{vol:F2}" : "主元素读不到（多为按声道调音量的设备）";
++            string frames = U32(kAudioDevicePropertyBufferFrameSize, kAudioObjectPropertyScopeGlobal);
++            string mute = U32(kAudioDevicePropertyMute, kAudioDevicePropertyScopeOutput);
++            Console.Error.WriteLine($"[声] 输出 #{_diag.Index}：系统默认输出设备 {device}，传输方式 {transport}、IO 周期 {frames ?? "读不到"} 帧、标称采样率 {rateText}（本会话 {RequestedSampleRate} Hz）、静音 {mute ?? "读不到"}、音量 {volText}");
++        }
++
+         // S2Arm: the device side of DeviceBufferPump: pool buffer i is _audioQueueBuffers[i]
+         private sealed unsafe class Pump : DeviceBufferPump
+         {
+diff --git a/src/Ryujinx.Audio.Backends.Apple/Native/AudioToolbox.cs b/src/Ryujinx.Audio.Backends.Apple/Native/AudioToolbox.cs
+index 53339103a40d21a3079a971539e4b64466f7de14..ae23d844de6d677d61743a50d0262a4b8436d9a0 100644
+--- a/src/Ryujinx.Audio.Backends.Apple/Native/AudioToolbox.cs
++++ b/src/Ryujinx.Audio.Backends.Apple/Native/AudioToolbox.cs
+@@ -73,6 +73,32 @@ namespace Ryujinx.Audio.Backends.Apple.Native
+             ref uint dataSize,
+             ref uint data);
+ 
++        // S2Arm（11-16 声音诊断）：建队时记下系统默认输出设备的传输方式（'tran'）、标称采样率（'nsrt'，Float64）、输出作用域（'outp'）的静音（'mute'）与音量（'volm'，Float32）。
++        //   #1308 / #1245 / 诊断#a51362：交给设备的声音非零却听不到 / 爆音，日志里没有设备是什么、静没静音
++        internal const uint kAudioDevicePropertyTransportType = 0x7472616E;   // 'tran'
++        internal const uint kAudioDevicePropertyNominalSampleRate = 0x6E737274;   // 'nsrt'
++        internal const uint kAudioDevicePropertyMute = 0x6D757465;   // 'mute'
++        internal const uint kAudioDevicePropertyVolumeScalar = 0x766F6C6D;   // 'volm'
++        internal const uint kAudioDevicePropertyScopeOutput = 0x6F757470;   // 'outp'
++
++        [LibraryImport("/System/Library/Frameworks/CoreAudio.framework/CoreAudio", EntryPoint = "AudioObjectGetPropertyData")]   // 平台例外：Apple 后端平台实现的 CoreAudio P/Invoke 声明（声音诊断，Float32 值）
++        internal static partial int AudioObjectGetPropertyDataFloat(
++            uint objectID,
++            ref AudioObjectPropertyAddress address,
++            uint qualifierDataSize,
++            nint qualifierData,
++            ref uint dataSize,
++            ref float data);
++
++        [LibraryImport("/System/Library/Frameworks/CoreAudio.framework/CoreAudio", EntryPoint = "AudioObjectGetPropertyData")]   // 平台例外：Apple 后端平台实现的 CoreAudio P/Invoke 声明（声音诊断，Float64 值）
++        internal static partial int AudioObjectGetPropertyDataDouble(
++            uint objectID,
++            ref AudioObjectPropertyAddress address,
++            uint qualifierDataSize,
++            nint qualifierData,
++            ref uint dataSize,
++            ref double data);
++
+         internal const uint kAudioFormatFlagIsFloat = (1 << 0);
+         internal const uint kAudioFormatFlagIsSignedInteger = (1 << 2);
+         internal const uint kAudioFormatFlagIsPacked = (1 << 3);

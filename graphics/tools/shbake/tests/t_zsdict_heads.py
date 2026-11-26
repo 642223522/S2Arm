@@ -71,11 +71,12 @@ try:
                 return r(*ra, **rk)
             f.result = result; return f
     def run(root):
-        del reads[:]; live[0] = live[1] = 0; X.open = counting_open; X.cf.ThreadPoolExecutor = Counting
+        # RomFS 文件经 romfs_list.open_file 读（按路径读的唯一入口，镜像形态从镜像读）：在它那里记
+        del reads[:]; live[0] = live[1] = 0; X.romfs_list.open = counting_open; X.cf.ThreadPoolExecutor = Counting
         try:
             out = os.path.join(T, 'zd-' + os.path.basename(os.path.dirname(root))); n = X.find_zsdicts([root], out)
         finally:
-            del X.open; X.cf.ThreadPoolExecutor = Real
+            del X.romfs_list.open; X.cf.ThreadPoolExecutor = Real
         got = {int(f[:-7]): open(os.path.join(out, f), 'rb').read() for f in os.listdir(out) if f.endswith('.zsdict')}
         return n, got
     # ①②：普通小文件开头不像任何容器

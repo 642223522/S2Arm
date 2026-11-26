@@ -1,0 +1,6 @@
+# 视觉门禁 ② 参照真值登记（tests/visual/gate.sh、ref_truth_cmp.py）：录像	帧	真值 sha256	说明
+mk8d_stadium.rec	10	6944431ac2c7e5324608bb53b81dbf655955e666f95d74488a400b5aab47d52b	11-18 参照端 M5 Max / macOS 27.2.1 出，与我方出图差异像素 0.00%
+mk8d_stadium.rec	30	155ebc94de24a13147f62d7625b4e60db9f11d5dfb5d5672a9996b68452e162d	11-18 参照端 M5 Max / macOS 27.2.1 出，与我方出图差异像素 0.00%
+mk8d_stadium.rec	60	3a569d0447703e62205b8cf6ea0ca6103812500e542fa0aebe9a8f1282f21c77	11-18 参照端 M5 Max / macOS 27.2.1 出，与我方出图差异像素 0.00%
+acnh_island.rec	1	7c8ceffe077ff5c7eb7e808396f8300b3aa59bc04b990ee77e5e75ae6cce9858	11-18 参照端 M5 Max / macOS 27.2.1 出，与我方出图差异像素 0.00%
+acnh_tent.rec	1	ceaa2e3971e4b116957a8aa43f468cea1b45bdc9363c7c1199faaf04742e1fbe	11-18 参照端 M5 Max / macOS 27.2.1 出，与我方出图差异像素 0.00%

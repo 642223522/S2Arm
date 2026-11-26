@@ -373,6 +373,15 @@ GL(glBindTexture, void, GLenum target, GLuint name) {
     else if (t && t->target != target) { gl_set_error(GL_INVALID_OPERATION); return; }
     gl_cur->tex_unit[gl_cur->active_unit][slot] = name;
 }
+// 像素解包缓冲（GL 4.5 §8.4.4.1 / ES 3.0 §3.7.1）：绑着它时上传入口的 data 是缓冲内偏移，像素从缓冲取（NULL = 偏移 0）。
+//   缓冲没建存储、映射着（持久映射除外）、偏移 + need 超出大小 → INVALID_OPERATION（规范），不上传。没绑：data 原样是客户端内存
+static size_t unpack_image(GLenum format, GLenum type, GLsizei w, GLsizei h);
+static int unpack_src(const void **data, size_t need) {
+    if (!gl_unpack_buffer_name()) return 1;
+    struct gl_buffer *b = gl_unpack_buffer(); size_t off = (size_t)(uintptr_t)*data;
+    if (!b || !b->buf || (b->map_access && !(b->map_bits & 0x40)) || off > b->size || need > b->size - off) { gl_set_error(GL_INVALID_OPERATION); return 0; }
+    *data = (const uint8_t *)b->buf.contents + off; return 1;
+}
 static int define(GLenum target, GLint level, GLint internal, GLsizei w, GLsizei h, GLint border, int compressed, GLsizei size, GLenum format, GLenum type, const void *data) {
     int face; gl_texture *t = bound_image(target, &face); if (!t) return 0;
     if (t->immutable) { gl_set_error(GL_INVALID_OPERATION); return 0; }
@@ -385,6 +394,7 @@ static int define(GLenum target, GLint level, GLint internal, GLsizei w, GLsizei
         if (size < 0 || (size_t)size != row_bytes(f, (NSUInteger)w) * row_count(f, (NSUInteger)h)) { gl_set_error(GL_INVALID_VALUE); return 0; }
     } else if (k_fmt[f].kind == K_BLOCK) { GLRED1("glTexImage2D 往压缩格式 %#x 传未压缩数据没实现", internal); gl_set_error(GL_INVALID_OPERATION); gl_bad_feat++; return 0; }
     else if (!pixel_layout(format, type, &nc, &nb)) return 0;
+    if (!unpack_src(&data, compressed ? (size_t)size : unpack_image(format, type, w, h))) return 0;
     if (!gpu_settle(t)) return 0;
     if (!face && !level) { gl_wd_drop(&t->wd, 0); t->wd.cpu = data != NULL; }   // 宽屏：第 0 级换存储，影子作废
     if (!w || !h) { t->level[face][level].image = nil; sample_drop(t); return 1; }
@@ -432,6 +442,7 @@ GLB(glTexSubImage2D, void, GLenum target, GLint level, GLint x, GLint y, GLsizei
     // 压缩存储不接受未压缩来源：这是规范规定的错（GL_INVALID_OPERATION），不是本层缺实现，所以不计未实现、不报红
     if (k_fmt[lv->fmt].kind == K_BLOCK) { gl_set_error(GL_INVALID_OPERATION); return; }
     int nc, nb; if (!pixel_layout(format, type, &nc, &nb)) return; if (!w || !h) return;
+    if (!unpack_src(&data, unpack_image(format, type, w, h))) return;
     if (!data) { gl_set_error(GL_INVALID_VALUE); return; }
     if (!gpu_settle(t)) return;
     id<MTLTexture> image = old;
@@ -465,6 +476,7 @@ GLB(glCompressedTexSubImage2D, void, GLenum target, GLint level, GLint x, GLint 
     int edge_x = (NSUInteger)(x + w) == old.width, edge_y = (NSUInteger)(y + h) == old.height;
     if (x % bw || y % bw || (w % bw && !edge_x) || (h % bw && !edge_y)) { gl_set_error(GL_INVALID_VALUE); return; }
     size_t blocks_x = (size_t)((x + w + bw - 1) / bw - x / bw), blocks_y = (size_t)((y + h + bw - 1) / bw - y / bw), row = blocks_x * m->bytes;
+    if (size >= 0 && !unpack_src(&data, (size_t)size)) return;
     if (!data || size < 0 || (size_t)size != row * blocks_y) { gl_set_error(GL_INVALID_VALUE); return; }
     if (!gpu_settle(t)) return;
     id<MTLTexture> image = old;
@@ -789,6 +801,7 @@ GLB(glTexImage3D, void, GLenum target, GLint level, GLint internal, GLsizei w, G
     if (k_fmt[f].kind == K_BLOCK) { GLRED1("glTexImage3D 往压缩格式 %#x 传未压缩数据没实现", internal); gl_set_error(GL_INVALID_OPERATION); gl_bad_feat++; return; }
     if (is3d && k_fmt[f].kind != K_COL) { gl_set_error(GL_INVALID_OPERATION); return; }   // 深度 / 模板格式不能做 3D 纹理（规范）
     if (!pixel_layout(format, type, &nc, &nb)) return;
+    if (!unpack_src(&data, unpack_image(format, type, w, h) * (size_t)d)) return;
     if (!gpu_settle(t)) return;
     if (!w || !h || !d) { t->level[0][level].image = nil; sample_drop(t); return; }
     id<MTLTexture> image = allocate_vol(f, (NSUInteger)w, (NSUInteger)h, (NSUInteger)d, 1, is3d); if (!image) return;
@@ -810,6 +823,7 @@ GLB(glTexSubImage3D, void, GLenum target, GLint level, GLint x, GLint y, GLint z
         (NSUInteger)y > old.height || (NSUInteger)h > old.height - (NSUInteger)y || (NSUInteger)z > depth || (NSUInteger)d > depth - (NSUInteger)z) { gl_set_error(GL_INVALID_VALUE); return; }
     if (k_fmt[lv->fmt].kind == K_BLOCK) { gl_set_error(GL_INVALID_OPERATION); return; }   // 压缩存储不收未压缩来源（规范错误，同 2D）
     int nc, nb; if (!pixel_layout(format, type, &nc, &nb)) return; if (!w || !h || !d) return;
+    if (!unpack_src(&data, unpack_image(format, type, w, h) * (size_t)d)) return;
     if (!data) { gl_set_error(GL_INVALID_VALUE); return; }
     if (!gpu_settle(t)) return;
     id<MTLTexture> image = old;
@@ -972,3 +986,116 @@ GLB(glGetCompressedTexImage, void, GLenum target, GLint level, void *pixels) { @
     NSUInteger n; size_t row, ib; uint8_t *raw = raw_level(lv->image, lv->fmt, &row, &ib, &n); if (!raw) return;
     memcpy(pixels, raw, ib * n); free(raw);   // 压缩图像按块紧排（不受 PACK_ALIGNMENT 影响）
 }}
+
+// ---------- 即时存档：纹理 / 采样器 / 调色板 ----------
+// 纹理的各级图像与采样贴图多是同一张存储的视图（TexStorage 整条级链、组链后的采样贴图）：按「根贴图（不是视图的那张）+ 视图参数」记，根贴图整张存一次（内容含全部级与层），
+//   恢复时先建根、再按参数建视图，各级仍共用同一张存储。采样器状态、换位视图、宽屏影子都是缓存：不存，用到时照常重建
+typedef struct { int32_t root; uint32_t pf, type, level, nlevels, slice, nslices; uint8_t sw[4]; } tx_view;   // root −1 = 没有
+enum { GX_NAME = 1, GX_TARGET, GX_FORMAT, GX_FMT, GX_LVIEW, GX_SVIEW, GX_SBASE, GX_SCOUNT, GX_BASE, GX_MAX, GX_IMM, GX_GPUW, GX_PARAMS, GX_USWZ,
+       GM_NAME = 1, GM_PARAMS, GP_PAL = 1, GP_NPAL, GP_ISHIFT, GP_IOFF };
+static NSUInteger tx_slices(id<MTLTexture> t) { NSUInteger s = t.arrayLength ? t.arrayLength : 1; return t.textureType == MTLTextureTypeCube || t.textureType == MTLTextureTypeCubeArray ? s * 6 : t.textureType == MTLTextureType3D ? 1 : s; }
+static tx_view tx_view_of(id<MTLTexture> img, NSMutableArray *roots) {
+    tx_view v = {-1}; if (!img) return v;
+    id<MTLTexture> r = img; uint32_t lv = 0, sl = 0;
+    while (r.parentTexture) { lv += (uint32_t)r.parentRelativeLevel; sl += (uint32_t)r.parentRelativeSlice; r = r.parentTexture; }
+    NSUInteger k = [roots indexOfObjectIdenticalTo:r]; if (k == NSNotFound) { k = roots.count; [roots addObject:r]; }
+    v.root = (int32_t)k; v.pf = (uint32_t)img.pixelFormat; v.type = (uint32_t)img.textureType; v.level = lv; v.nlevels = (uint32_t)img.mipmapLevelCount; v.slice = sl; v.nslices = (uint32_t)tx_slices(img);
+    MTLTextureSwizzleChannels s = img.swizzle; v.sw[0] = s.red; v.sw[1] = s.green; v.sw[2] = s.blue; v.sw[3] = s.alpha;
+    return v;
+}
+static id<MTLTexture> tx_view_make(const tx_view *v, NSArray *roots) {
+    if (v->root < 0 || (NSUInteger)v->root >= roots.count || roots[(NSUInteger)v->root] == (id)[NSNull null]) return nil;
+    id<MTLTexture> r = roots[(NSUInteger)v->root];
+    MTLTextureSwizzleChannels s = MTLTextureSwizzleChannelsMake(v->sw[0], v->sw[1], v->sw[2], v->sw[3]), id_ = MTLTextureSwizzleChannelsDefault;
+    if (!v->level && v->nlevels == r.mipmapLevelCount && !v->slice && v->nslices == tx_slices(r) && v->pf == r.pixelFormat && v->type == r.textureType && !memcmp(&s, &id_, sizeof s)) return r;   // 就是根本身
+    if (!memcmp(&s, &id_, sizeof s)) return [r newTextureViewWithPixelFormat:(MTLPixelFormat)v->pf textureType:(MTLTextureType)v->type levels:NSMakeRange(v->level, v->nlevels) slices:NSMakeRange(v->slice, v->nslices)];
+    return [r newTextureViewWithPixelFormat:(MTLPixelFormat)v->pf textureType:(MTLTextureType)v->type levels:NSMakeRange(v->level, v->nlevels) slices:NSMakeRange(v->slice, v->nslices) swizzle:s];
+}
+static void tx_rec(sfw *w, GLuint name, gl_texture *t, NSMutableArray *roots) {
+    GLenum fmt_[6][TEX_LEVELS]; int fmi[6][TEX_LEVELS]; tx_view lv[6][TEX_LEVELS];
+    for (int f = 0; f < 6; f++) for (int l = 0; l < TEX_LEVELS; l++) { fmt_[f][l] = t->level[f][l].format; fmi[f][l] = t->level[f][l].fmt; lv[f][l] = tx_view_of(t->level[f][l].image, roots); }
+    tx_view sv = tx_view_of(t->sample, roots);
+    sfw_rec(w); GLSF_W(w, GX_NAME, name); GLSF_W(w, GX_TARGET, t->target); GLSF_W(w, GX_FORMAT, fmt_); GLSF_W(w, GX_FMT, fmi); GLSF_W(w, GX_LVIEW, lv); GLSF_W(w, GX_SVIEW, sv);
+    GLSF_W(w, GX_SBASE, t->sample_base); GLSF_W(w, GX_SCOUNT, t->sample_count); GLSF_W(w, GX_BASE, t->base); GLSF_W(w, GX_MAX, t->max); GLSF_W(w, GX_IMM, t->immutable);
+    GLSF_W(w, GX_GPUW, t->gpu_written); GLSF_W(w, GX_PARAMS, t->params); GLSF_W(w, GX_USWZ, t->uswz); sfw_end_rec(w);
+}
+typedef struct { GLuint name; gl_texture *t; tx_view lv[6][TEX_LEVELS], sv; } tx_pend;
+static gl_texture *tx_parse(const sfr *r, tx_pend *p) {
+    gl_texture *t = new_texture(); if (!t) return NULL; memset(p, 0, sizeof *p);
+    GLenum fmt_[6][TEX_LEVELS] = {{0}}; int fmi[6][TEX_LEVELS] = {{0}};
+    for (int f = 0; f < 6; f++) for (int l = 0; l < TEX_LEVELS; l++) p->lv[f][l].root = -1;
+    p->sv.root = -1;
+    GLSF_R(r, GX_NAME, p->name); GLSF_R(r, GX_TARGET, t->target); GLSF_R(r, GX_FORMAT, fmt_); GLSF_R(r, GX_FMT, fmi); GLSF_RC(r, GX_LVIEW, p->lv, "gl.tx_view", tx_view); GLSF_RC(r, GX_SVIEW, p->sv, "gl.tx_view", tx_view);
+    GLSF_R(r, GX_SBASE, t->sample_base); GLSF_R(r, GX_SCOUNT, t->sample_count); GLSF_R(r, GX_BASE, t->base); GLSF_R(r, GX_MAX, t->max); GLSF_R(r, GX_IMM, t->immutable);
+    GLSF_R(r, GX_GPUW, t->gpu_written); GLSF_R(r, GX_PARAMS, t->params); GLSF_R(r, GX_USWZ, t->uswz);
+    for (int f = 0; f < 6; f++) for (int l = 0; l < TEX_LEVELS; l++) { t->level[f][l].format = fmt_[f][l]; t->level[f][l].fmt = fmi[f][l]; }
+    t->last_use = 0; p->t = t; return t;
+}
+static int tx_finish(tx_pend *p, NSArray *roots) {   // 建视图；该有却建不出的回 0
+    int ok = 1; gl_texture *t = p->t;
+    for (int f = 0; f < 6; f++) for (int l = 0; l < TEX_LEVELS; l++) if (p->lv[f][l].root >= 0) { t->level[f][l].image = tx_view_make(&p->lv[f][l], roots); ok &= t->level[f][l].image != nil; }
+    if (p->sv.root >= 0) { t->sample = tx_view_make(&p->sv, roots); ok &= t->sample != nil; }
+    return ok;
+}
+// 弱链接[nvntest]：nvn_snap_tex_save（直连层 graphics/nvn/gfx/nvn/nvn_snap.inc 提供；GL 单测只链 GL 片，链接行按这行放行未定义）
+// 弱链接[nvntest]：nvn_snap_tex_load（同上）
+static int roots_write(FILE *f, NSArray *roots, uint64_t *nc) {
+    if (!nvn_snap_tex_save) return -1;
+    uint32_t n = (uint32_t)roots.count; if (fwrite(&n, 4, 1, f) != 1) return -1;
+    for (id<MTLTexture> r in roots) { int k = nvn_snap_tex_save(f, (__bridge void *)r); if (k < 0) return -1; if (!k && nc) (*nc)++; }
+    return 0;
+}
+static NSMutableArray *roots_read(FILE *f) {
+    if (!nvn_snap_tex_load) return nil;
+    uint32_t n; if (fread(&n, 4, 1, f) != 1) return nil; NSMutableArray *a = [NSMutableArray arrayWithCapacity:n];
+    for (uint32_t i = 0; i < n; i++) { void *p = nvn_snap_tex_load(f); if (p) [a addObject:(__bridge_transfer id<MTLTexture>)p]; else return nil; }
+    return a;
+}
+int gl_tex_snap_one_save(FILE *f, gl_texture *t) {
+    uint8_t has = t != NULL; if (fwrite(&has, 1, 1, f) != 1) return -1; if (!t) return 0;
+    NSMutableArray *roots = [NSMutableArray array]; sfw w; sfw_sec(&w, f, "gl.tex1", 1); tx_rec(&w, 0, t, roots);
+    return sfw_end(&w) || roots_write(f, roots, NULL) ? -1 : 0;
+}
+gl_texture *gl_tex_snap_one_load(FILE *f) {
+    uint8_t has; if (fread(&has, 1, 1, f) != 1 || !has) return NULL;
+    sfr r; tx_pend p = {0}; if (sfr_sec(&r, f, "gl.tex1", 1)) return NULL;
+    while (sfr_rec(&r) == 1) if (!p.t) tx_parse(&r, &p);
+    sfr_done(&r);
+    NSArray *roots = roots_read(f); if (!roots || !p.t) { free_texture(p.t); return NULL; }
+    tx_finish(&p, roots); return p.t;
+}
+int gl_tex_snap_save(FILE *f) {
+    NSMutableArray *roots = [NSMutableArray array]; sfw w; sfw_sec(&w, f, "gl.tex", 1); uint32_t n = 0;
+    for (GLuint i = 1; i < textures.n; i++) if (textures.v[i]) { tx_rec(&w, i, textures.v[i], roots); n++; }
+    if (sfw_end(&w)) return -1;
+    uint64_t nc = 0; if (roots_write(f, roots, &nc)) return -1;
+    sfw_sec(&w, f, "gl.smp", 1);
+    for (GLuint i = 1; i < samplers.n; i++) { gl_sampler *s = samplers.v[i]; if (!s) continue; sfw_rec(&w); GLSF_W(&w, GM_NAME, i); GLSF_W(&w, GM_PARAMS, s->params); sfw_end_rec(&w); }
+    if (sfw_end(&w)) return -1;
+    sfw_sec(&w, f, "gl.pal", 1); sfw_rec(&w); GLSF_W(&w, GP_PAL, g_palette); GLSF_W(&w, GP_NPAL, g_npalette); GLSF_W(&w, GP_ISHIFT, g_index_shift); GLSF_W(&w, GP_IOFF, g_index_offset); sfw_end_rec(&w);
+    GLOG("即时存档：GL 纹理 %u 个、存储 %lu 张（其中只存描述、不存内容 %llu 张）", n, (unsigned long)roots.count, (unsigned long long)nc);
+    return sfw_end(&w);
+}
+int gl_tex_snap_restore(FILE *f) {
+    sfr r; if (sfr_sec(&r, f, "gl.tex", 1)) return -1;
+    tx_pend *pend = NULL; uint32_t n = 0, cap = 0; int bad = 0;
+    while (sfr_rec(&r) == 1) { if (n == cap) { cap = cap ? cap * 2 : 256; pend = realloc(pend, cap * sizeof *pend); } if (tx_parse(&r, &pend[n])) n++; else bad = 1; }
+    sfr_done(&r);
+    NSArray *roots = bad ? nil : roots_read(f); int nmiss = 0;
+    for (uint32_t i = 0; i < n; i++) {
+        if (!roots || !pend[i].name) { free_texture(pend[i].t); bad = 1; continue; }
+        if (!tx_finish(&pend[i], roots)) nmiss++;
+        if (!gl_name_put(&textures, pend[i].name, pend[i].t)) { free_texture(pend[i].t); bad = 1; }
+    }
+    free(pend);
+    if (bad || sfr_sec(&r, f, "gl.smp", 1)) return -1;
+    while (sfr_rec(&r) == 1) { GLuint nm = 0; GLSF_R(&r, GM_NAME, nm); gl_sampler *s = calloc(1, sizeof *s); if (!nm || !s) { free(s); continue; } s->params = defaults(); GLSF_R(&r, GM_PARAMS, s->params);
+        if (!gl_name_put(&samplers, nm, s)) { free(s); bad = 1; } }
+    sfr_done(&r);
+    if (bad || sfr_sec(&r, f, "gl.pal", 1)) return -1;
+    while (sfr_rec(&r) == 1) { GLSF_R(&r, GP_PAL, g_palette); GLSF_R(&r, GP_NPAL, g_npalette); GLSF_R(&r, GP_ISHIFT, g_index_shift); GLSF_R(&r, GP_IOFF, g_index_offset); }
+    sfr_done(&r);
+    GLOG("%s即时存档恢复：GL 纹理 %u 个、存储 %lu 张%s", nmiss ? "【黄】 " : "", n, (unsigned long)roots.count, nmiss ? [NSString stringWithFormat:@"（%d 个纹理的视图没建出来）", nmiss].UTF8String : "");
+    return 0;
+}
+void gl_tex_snap_fps(gl_fp_cb cb) { cb("gl.tex_params", SNAP_FP_TYPE(tex_params)); cb("gl.tx_view", SNAP_FP_TYPE(tx_view)); }

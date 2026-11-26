@@ -47,6 +47,7 @@ static uint64_t g_stx_lost_tiles, g_stx_fresh_tiles;
 typedef struct { int32_t page; uint8_t dirty; uint64_t key; } stx_ent;   // page：堆号 << 16 | 页号（一块），0（尾项，已映射），-1 = 没映射；key：所在页的共享键（0 不共享）
 typedef struct nvn_stex {
     void *tex;                       // id<MTLTexture>，拥有时持有
+    void *dev;                       // id<MTLDevice>（不持有，设备随进程常驻）：同步时用它，不向贴图发 device——nvn_mtl.m 这个编译单元发出的选择子都要有延后编码替身（t_nvn_rec_cover）
     MTLPixelFormat pf;
     int share, gpu, owned;           // share：块可共用堆页（块压缩格式，和所有 GPU 写的）；gpu：GPU 写（块不上传、新页清零）；owned：tex 持有引用（nvn_stex_take 之前）
     nvn_texdesc d, tile;             // 贴图；一块 64 KB 当一张块线性小贴图（去混排用）
@@ -113,7 +114,7 @@ static nvn_stex *nvn_stex_new(id<MTLDevice> dev, MTLTextureDescriptor *desc, con
     if (!s->e || !s->tailpg) { free(s->e); free(s->tailpg); free(s); return NULL; }
     for (size_t i = 0; i < (size_t)s->per_slice * s->slices; i++) s->e[i] = (stx_ent){-1, 0, 0};
     s->pf = td.pixelFormat;
-    s->tex = (__bridge_retained void *)t;
+    s->tex = (__bridge_retained void *)t; s->dev = (__bridge void *)dev;
     return s;
 }
 
@@ -250,7 +251,7 @@ static size_t stx_up_bytes(const nvn_stex *s, unsigned lv) {   // 一项的暂�
 API_AVAILABLE(macos(26.0), ios(26.0))
 static int64_t nvn_stex_sync(nvn_stex *s, id q, const nvn_stex_guest *g, const nvn_stex_host *h, uint64_t budget) {
     if (!s || !q || !g || !h) return -1;
-    id<MTLTexture> t = (__bridge id<MTLTexture>)s->tex;
+    id<MTLTexture> t = (__bridge id<MTLTexture>)s->tex; id<MTLDevice> dev = (__bridge id<MTLDevice>)s->dev;
     const unsigned per = s->per_slice;
     if (!per) return 0;
     size_t ne = (size_t)per * s->slices; stx_oplist o = {0}; int fail = 0;
@@ -259,13 +260,13 @@ static int64_t nvn_stex_sync(nvn_stex *s, id q, const nvn_stex_guest *g, const n
         uint64_t a, n; unsigned lv; uint32_t x, y; stx_ent_geom(s, z, k, &a, &n, &lv, &x, &y);
         // 一块有没有内存；好几页的尾只要有一页有就算有（没映射的页读 0，同 GPU）
         int m = 0; for (uint64_t p = 0; p < n && !m; p += STX_TILE) m = g->mapped(g->ctx, g->base + a + p, MIN((uint64_t)STX_TILE, n - p));
-        if (!m) { if (e->page >= 0) stx_ent_map(s, &o, t.device, h, z, k, 0, 0); e->dirty = 0; continue; }
+        if (!m) { if (e->page >= 0) stx_ent_map(s, &o, dev, h, z, k, 0, 0); e->dirty = 0; continue; }
         // 共享键只在新映射或页变过时问（范围里有新映射就算变过）：内存搬走的块离开它共用的页。新映射的块总上传，页里就是现在的内存；GPU 写的块不传（它的内存就是页），自己一页清零
         #define STX_KEY() (s->share && lv < s->tiled && g->backing ? stx_share_key(g->backing(g->ctx, g->base + a), s->pf, s->gpu) : 0)
-        if (e->page < 0) { int r = stx_ent_map(s, &o, t.device, h, z, k, 1, STX_KEY()); if (r < 0) fail = 1; else e->dirty = s->gpu ? (uint8_t)r : 1; }
+        if (e->page < 0) { int r = stx_ent_map(s, &o, dev, h, z, k, 1, STX_KEY()); if (r < 0) fail = 1; else e->dirty = s->gpu ? (uint8_t)r : 1; }
         else if (g->changed(g->ctx, g->base + a, n)) {
             uint64_t key = STX_KEY(); if (!s->gpu) e->dirty = 1;
-            if (key != e->key) { stx_ent_map(s, &o, t.device, h, z, k, 0, 0); int r = stx_ent_map(s, &o, t.device, h, z, k, 1, key); if (r < 0) { fail = 1; e->dirty = 0; } else e->dirty = s->gpu ? (uint8_t)r : 1; }
+            if (key != e->key) { stx_ent_map(s, &o, dev, h, z, k, 0, 0); int r = stx_ent_map(s, &o, dev, h, z, k, 1, key); if (r < 0) { fail = 1; e->dirty = 0; } else e->dirty = s->gpu ? (uint8_t)r : 1; }
         }
         #undef STX_KEY
     }
