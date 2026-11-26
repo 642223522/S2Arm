@@ -8088,7 +8088,7 @@ static void shmap_load_once(void) {
     id<MTLLibrary> at_lib; NSString *at_main, *at_u; NSMutableDictionary<NSNumber *, id<MTLFunction>> *at_fns; uint8_t has_atms, fout_fc; uint8_t pb_av, pb_av_done, pb_bad;   // gap families 34 / 37: a fragment main0 declaring S2A_AT / S2A_MSOFF (Dsh.cs FsAlphaMs): its library and entry names, specialized per (u, at, msoff, output types) on demand (fs_atms_fn); fout_fc: main0 also declares S2A_FU / S2A_FS (Dsh.cs FsFout), its output types are constants too
     int load_depth_zero;   // captured with the identity, also used by its layer variant
     uint8_t u_mask;   // S2Arm gap 2 A: the colour outputs fn_u returns as uint, bit n = color(n) (json u_mask; dmsh_build.py fs_uint turns only the integer-bit writers)
-    uint16_t tf_stride[4]; uint32_t cb_ext[16], sb_ro; nvn_refl rf; uint8_t t3d /* 0 not looked at, 1 no 3D texture slot, 2 has one (tex3d_prepare) */, fb_tex /* 0 not looked at, 1 no NVN_RB_TEX < NTEX, 2 has one (fb_prepare) */, has_img /* 0 not looked at, 1 no NVN_RB_IMG/IMGU, 2 has one (img_wr_prescan) */; id<MTLArgumentEncoder> ae; NSUInteger arg_len; int stage, range_ro, afr, layer_out; const char *builtin; uint64_t logged; char key[24]; id<MTLBuffer> c1buf; uint64_t c1_gpu; size_t c1off;
+    uint16_t tf_stride[4]; uint32_t cb_ext[16], cb_cext[16] /* cb_extent.tsv c<reg>:bytes — constant reads of a slot that also reads dynamically: zero-padding only, never cb_len */, sb_ro; nvn_refl rf; uint8_t t3d /* 0 not looked at, 1 no 3D texture slot, 2 has one (tex3d_prepare) */, fb_tex /* 0 not looked at, 1 no NVN_RB_TEX < NTEX, 2 has one (fb_prepare) */, has_img /* 0 not looked at, 1 no NVN_RB_IMG/IMGU, 2 has one (img_wr_prescan) */; id<MTLArgumentEncoder> ae; NSUInteger arg_len; int stage, range_ro, afr, layer_out; const char *builtin; uint64_t logged; char key[24]; id<MTLBuffer> c1buf; uint64_t c1_gpu; size_t c1off;
     uint32_t geo_vertices, geo_invocations, geo_output, geo_stride, geo_index_stride;
     // NVN2 task / mesh shader (json msl_entry_kind object / mesh, at stage 3 / 4; nvn_geometry.inc mesh_tasks_draw): mesh_kind 1 object 2 mesh (0 = neither); its workgroup's threads,
     //   the payload's bytes (task), a task shader feeds it (mesh), the most vertices / primitives a mesh workgroup emits (Switch2 line's interface contract, item 6)
@@ -8856,6 +8856,7 @@ static NvShader *shader_build(NSString *pc, int stage, int layer, int depth_zero
     NSString *ext = g_cb_ext[[pc hasSuffix:@"_b"] ? [pc substringToIndex:pc.length - 2] : pc];   // bytes each uniform slot can read (cb_len), storage slots never written (sb_ro)
     for (NSString *f in [ext componentsSeparatedByString:@" "]) { int r = 0, n = 0;
         if (sscanf(f.UTF8String, "%d:%d", &r, &n) == 2 && r >= 0 && r < 16 && n > 0) o->cb_ext[r] = (uint32_t)n;
+        else if (sscanf(f.UTF8String, "c%d:%d", &r, &n) == 2 && r >= 0 && r < 16 && n > 0) o->cb_cext[r] = (uint32_t)n;
         else if (sscanf(f.UTF8String, "s%d", &r) == 1 && r >= 0 && r < 32) o->sb_ro |= 1u << r; }
     return o;
 }
@@ -13966,9 +13967,13 @@ static void audit_probe_report(uint64_t frame) {
          (unsigned long long)frame, (unsigned long long)g_p65_tables, (unsigned long long)g_p65_wd, (unsigned long long)g_p65_pool,
          (unsigned long long)g_p20_checked, (unsigned long long)g_p20_type, (unsigned long long)g_p20_type_d2d, (unsigned long long)g_p20_cls);
 }
+// How many bytes a uniform slot must hold so that the shader's unclamped constant-index reads see 0 past the binding (Maxwell reads 0 out of bounds): the slot's
+//   whole read range (cb_ext) when offline proved one, else the reach of its constant reads (cb_cext, a slot that also reads dynamically: those go through the
+//   gal_ubo_len clamp). Neither known = 0 = no padding: the binding is used in place. Padding every unknown slot to 64 KB re-allocated and zeroed 64 KB per
+//   bind on the hot path and moved every such binding off its buffer (#2237 review; nvn_args_patch ② / ⑥)
 static inline uint64_t cb_want(NvShader *sh, int reg) {
-    uint32_t e = sh && reg >= 0 && reg < 16 ? sh->cb_ext[reg] : 0;
-    return e && e < 65536u ? e : 65536ull;
+    uint32_t e = sh && reg >= 0 && reg < 16 ? (sh->cb_ext[reg] ? sh->cb_ext[reg] : sh->cb_cext[reg]) : 0;
+    return e < 65536u ? e : 65536ull;
 }
 // Per-arena-generation cache for zero-padded short or pool-edge UBO copies.
 enum { CBP_CACHE = 32 };
@@ -13979,6 +13984,7 @@ typedef struct {
 } cb_pad_ent;
 static cb_pad_ent g_cb_pad[CBP_CACHE];
 static unsigned g_cb_pad_i;
+static uint64_t g_cb_pad_made;   // padded copies made (cache misses); single-threaded like the cache
 
 static int cbuf_pad_alloc(uint64_t key, uint8_t is_wd, const void *src_cpu, id<MTLBuffer> src_buf, size_t src_off,
                           uint64_t copy, uint64_t want, int gpu_src, int rmu_held,
@@ -13993,7 +13999,7 @@ static int cbuf_pad_alloc(uint64_t key, uint8_t is_wd, const void *src_cpu, id<M
         }
     }
     __unsafe_unretained id<MTLBuffer> ab;
-    size_t ao = arena_alloc_u((size_t)want, &ab);
+    size_t ao = arena_alloc_u((size_t)want, &ab); g_cb_pad_made++;
     uint8_t *dst = (uint8_t *)ab.contents + ao;
     if (want > copy) memset(dst + copy, 0, (size_t)(want - copy));
     if (copy) {
@@ -14050,7 +14056,7 @@ static int cbuf_slot(NvShader *sh, int nvn_stage, int reg, int rmu_held,
         }
         RED_ONCE(92, "a uniform update deferred inside the pass covers only part of the binding (stage %d cb%d): the content before the update is read", nvn_stage, reg);
     }
-    if (u->size >= want && *pav >= want) return 1;
+    if (!want || (u->size >= want && *pav >= want)) return 1;   // no known reach, or the binding already covers it: in place
     uint64_t copy = MIN(*ul, *pav);
     if (pend_hits(u->addr, copy) && !gw_live(u->addr, u->addr + copy) && !sbw_hits(u->addr, u->addr + copy)) {
         uint64_t g; const uint8_t *c;

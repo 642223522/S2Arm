@@ -128,6 +128,13 @@ int main(void) {
         vs->rf.pos_attr = -1; vs->rf.has_user = 1;
 
         NvProg *loop_pr = [NvProg new]; loop_pr->sh[0] = vs; loop_pr->sh[1] = make_fs_loop(lib, "2222222222222222_b");
+        // The loop shader's slot 11 also reads dynamically, so offline gives no whole-slot extent (cb_ext[11] = 0): C1Cb writes the reach of its constant reads,
+        //   _m0[147] → 148 × 16 = 2368 bytes, as c11:2368 (cb_cext). That, not a 64 KB guess, is what the host pads a shorter binding to
+        loop_pr->sh[1]->cb_cext[11] = 2368;
+        // Plain shader with no known reach (cb_ext = cb_cext = 0): its binding is used in place, never redirected to a padded copy (#2237 review: the 64 KB guess
+        //   re-allocated and zeroed 64 KB per bind and moved every such binding off its buffer)
+        NvProg *noext_pr = [NvProg new]; noext_pr->sh[0] = vs; noext_pr->sh[1] = make_fs_ext(lib, "5555555555555555_b", 6, 0);
+        prog_t noext_p = {.magic = MAGIC('P', 'R', 'O', 'G'), .serial = nvn_new_serial()}; serial_put(noext_p.serial, noext_pr);
         prog_t loop_p = {.magic = MAGIC('P', 'R', 'O', 'G'), .serial = nvn_new_serial()}; serial_put(loop_p.serial, loop_pr);
 
         NvProg *ext_pr = [NvProg new]; ext_pr->sh[0] = vs; ext_pr->sh[1] = make_fs_ext(lib, "3333333333333333_b", 6, 144);
@@ -195,6 +202,18 @@ int main(void) {
             unlink(map); unlink(user);
             printf("✗ t_nvn_ubo_bounds: aborted early on GPU hang (%u checks, %u failures)\n", checks, failures);
             return 1;
+        }
+
+        // Case 0: no known reach (cb_ext = cb_cext = 0) → the binding is used in place: no padded copy is made. Old logic padded every such slot to 64 KB
+        {
+            uint8_t *ubo_plain = memory + 3 * 65536; memset(ubo_plain, 0, 256);
+            nvn_be_sub_begin(); state_reset(); S.prog = &noext_p; set_rt(&rt);
+            S.ubo[1][6] = (p_bind_buf){.addr = (uint64_t)(uintptr_t)ubo_plain, .size = 112};
+            uint64_t made0 = g_cb_pad_made;
+            draw(&tri, NULL);
+            int w0 = nvn_be_wait(nvn_be_sub_commit(), 10000000000ull);
+            CHECK(w0 && cb_want(noext_pr->sh[1], 6) == 0 && g_cb_pad_made == made0,
+                  "cb_ext = cb_cext = 0: cb_want 0, no padded copy made (made %llu, old logic: one 64 KB copy per bind)", (unsigned long long)(g_cb_pad_made - made0));
         }
 
         // Case 2: cb_ext[6]=144, bound=112, poison at +128 (_m0[8].x).
