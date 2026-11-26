@@ -3904,18 +3904,27 @@ void s2a_thread_dump(void) {
             uint64_t at[2] = {pc, lr};
             for (int k = 0; k < 2; k++) { module_t *rm = at[k] ? module_of((void *)at[k]) : NULL;   // 宿主代码里（门、桩）的 pc / lr 不在游戏模块内，略过
                 if (rm && s2a_guest_where(at[k], w, sizeof w)) bn += snprintf(bt + bn, sizeof bt - bn, " %s%s", k ? "lr " : "pc ", w); }
-            for (int d = 0; d < 8 && fp && !(fp & 0xF); d++) {
+            // 宿主帧也往上走（诊断#085d7e：游戏线程停在宿主条件变量上，原先碰到第一个宿主帧就停，只剩 pc / lr 两个系统库地址，
+            //   定不了是 S2Arm 哪个函数在等）：游戏帧打导出名，宿主帧按 dladdr 打「库:符号+偏移」。这时目标已恢复（上面 thread_resume），dladdr 拿 dyld 锁无妨
+            char hb[1536]; int hn = 0; uint64_t fp0 = fp; int hosted = 0;
+            if (run && (pc || lr)) for (int k = 0; k < 2; k++) { if (!at[k] || module_of((void *)at[k])) continue;
+                Dl_info di = {0}; if (dladdr((void *)at[k], &di) && hn < (int)sizeof hb - 160) { const char *lib = di.dli_fname ? strrchr(di.dli_fname, '/') : NULL;
+                    hn += snprintf(hb + hn, sizeof hb - hn, " %s%s:%s+%#llx", k ? "lr " : "pc ", lib ? lib + 1 : "?", di.dli_sname ? di.dli_sname : "?", (unsigned long long)(at[k] - (uint64_t)(di.dli_saddr ? di.dli_saddr : di.dli_fbase))); } }
+            for (int d = 0; d < 16 && fp && !(fp & 0xF); d++) {
                 uint64_t fr[2]; vm_size_t got = 0;
                 if (vm_read_overwrite(mach_task_self(), (vm_address_t)fp, sizeof fr, (vm_address_t)fr, &got) != KERN_SUCCESS || got != sizeof fr) break;
-                if (!s2a_guest_where(fr[1], w, sizeof w)) break;
-                bn += snprintf(bt + bn, sizeof bt - bn, " ← %s", w);
+                uint64_t ra = fr[1] & 0x0000007fffffffffull;   // 去掉指针认证位
+                if (s2a_guest_where(ra, w, sizeof w)) bn += snprintf(bt + bn, sizeof bt - bn, " ← %s", w);
+                else if (run) { Dl_info di = {0}; if (!dladdr((void *)ra, &di)) break; const char *lib = di.dli_fname ? strrchr(di.dli_fname, '/') : NULL; hosted = 1;
+                    bn += snprintf(bt + bn, sizeof bt - bn, " ← 宿主 %s:%s+%#llx", lib ? lib + 1 : "?", di.dli_sname ? di.dli_sname : "?", (unsigned long long)(ra - (uint64_t)(di.dli_saddr ? di.dli_saddr : di.dli_fbase))); }
+                else break;
                 if (fr[0] <= fp || bn >= (int)sizeof bt - 256) break;
                 fp = fr[0];
             }
-            if (bn) LOG("    客体回溯%s%s", run ? "（在跑，采样）" : "", bt);
+            if (bn) LOG("    客体回溯%s%s%s", run ? "（在跑，采样）" : "", hosted ? hb : "", bt);
             // 采样到的 pc / lr 落在宿主代码（core_acquire 里等核、宿主层阻塞）时上面一行打不出任何帧——
             //   而「持核者在哪」正是判「等核是不是被持核者卡住」的唯一线索，所以原样把地址打出来
-            else if (run && (pc || lr)) LOG("    客体回溯（在跑，采样）：pc %#llx lr %#llx 不在游戏模块内（宿主代码），fp %#llx", (unsigned long long)pc, (unsigned long long)lr, (unsigned long long)fp);
+            else if (run && (pc || lr)) LOG("    客体回溯（在跑，采样）：pc %#llx lr %#llx 不在游戏模块内（宿主代码），fp %#llx%s", (unsigned long long)pc, (unsigned long long)lr, (unsigned long long)fp0, hn ? hb : "");
         }
 #endif
         if (t->tlr && !t->exited) { uint64_t tt = *(uint64_t *)((uint8_t *)t->tlr + 0x1f8);   // SDK 线程对象里的句柄字段（锁标签来源）与线程句柄不一致时打出
