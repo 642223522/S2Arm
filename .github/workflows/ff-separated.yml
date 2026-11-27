@@ -1,0 +1,22 @@
+name: ff-separated
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ff-separated
+  cancel-in-progress: false
+
+jobs:
+  pack:
+    runs-on: xcode-27
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+      - name: FF Resonance separated pack (shell-only IPA + .s2arm)
+        env:
+          RELAY_TOKEN: ${{ secrets.RELAY_TOKEN }}
+        run: bash ci/ff-separated.sh
