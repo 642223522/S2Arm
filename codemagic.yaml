@@ -206,12 +206,20 @@ workflows:
           df -h /
 
       - name: Convert pack to IMG (insurance copy for the relay)
+        ignore_failure: true
         script: |
           set -eux
           FF_WORK="$HOME/ff-work"
           PY="$FF_WORK/venv/bin/python"
-          ROOT=$(dirname "$(find "$FF_WORK/out/roots" -name unpack.tsv | head -1)")
-          [ -n "$ROOT" ] && [ -d "$ROOT/romfs" ] || { echo "product root romfs not found"; exit 1; }
+          # Insurance only: a failed convert must never block the upload
+          # (container build #2 lesson). Find the root that actually holds
+          # the RomFS: new code keeps it as the standard image romfs.std
+          # (0.6.0, "RomFS 不落散文件"), older roots keep a loose romfs/
+          # directory; img.py convert handles both. The seed root (@sd-)
+          # has neither — don't let unpack.tsv discovery pick it.
+          ROOT=$(dirname "$(find "$FF_WORK/out/roots" -maxdepth 2 -name 'romfs.std' 2>/dev/null | head -1)")
+          [ -n "$ROOT" ] || ROOT=$(dirname "$(find "$FF_WORK/out/roots" -maxdepth 2 -type d -name romfs 2>/dev/null | head -1)")
+          [ -n "$ROOT" ] && { [ -d "$ROOT/romfs" ] || [ -f "$ROOT/romfs.std" ]; } || { echo "product root with romfs not found:"; find "$FF_WORK/out/roots" -maxdepth 3 | head -40; exit 1; }
           PACK=$(find "$FF_WORK/out" -maxdepth 1 -type d -name '*资源包' | head -1)
           [ -n "$PACK" ] || { echo "resource pack folder not found in out/"; ls "$FF_WORK/out"; exit 1; }
           echo "root: $ROOT"; echo "pack: $PACK"; df -h /
