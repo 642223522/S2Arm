@@ -1,7 +1,14 @@
 # Codemagic pipeline: pack FINAL FANTASY RESONANCE (0100B8A026F14000) with the
-# NEW S2Arm (post-2026-11-26 upstream sync) into a multi-game CONTAINER IPA:
-# one "S2Arm" app (prebuilt shell) + s2a_catalogue.json + Games/<gid>/ +
-# Frameworks/S2AImages-<gid>.dylib, unsigned (the user signs it themselves).
+# NEW S2Arm (post-2026-11-26 upstream sync) in the SEPARATED form the user
+# chose on 2026-11-27 (0.6.0 通用壳 design): a shell-only container IPA
+# (S2Arm-shell.ipa, no game baked in) + the game's program package as one
+# .s2arm file (0100B8A026F14000.s2arm) that the user opens with the S2Arm
+# app on the phone to install the game into the library. Both unsigned
+# (the user signs themselves; the phone re-signs program packages with
+# the imported cert on install, team left empty on purpose).
+# Builds #1-#3 targeted the baked-in container instead; #2 proved the
+# assembly works (24 s) before its insurance step failed, #3 was cancelled
+# by the user in favour of this separated form.
 # The game's data pack is NOT rebuilt for delivery: the existing game.img
 # (S2AIMG01 format 1, pack_id 46ff74c1...) is format-stable by design and the
 # new shell reads it as-is (verified locally: the new pack/img.py lists the
@@ -9,14 +16,16 @@
 # relay as insurance, in <=1800 MiB parts, in case the phone-side claim of
 # the old .img ever fails.
 # Flow: relay inputs -> oneclick (private product root + prebuilt shell) ->
-# pack/ship_ext.py container -> pack/app_bundle.py write_ipa -> relay out.
+# ship_ext container --shell-only + ship_ext program -> write_ipa +
+# .s2arm pack (mirrors pack/jobs/program_pack.py + install.push_program)
+# -> relay out.
 # Inputs come from the private relay repo (642223522/game-relay, release
 # ff-resonance); outputs go to release ff-resonance-container-out there.
 # RELAY_TOKEN lives in the Codemagic environment group "relay": a
 # fine-grained GitHub PAT scoped to game-relay only.
 workflows:
   ff-resonance-container:
-    name: FF Resonance container pack (S2Arm new)
+    name: FF Resonance separated pack (S2Arm new)
     instance_type: mac_mini_m2
     max_build_duration: 120
     environment:
@@ -147,7 +156,7 @@ workflows:
           df -h / || true
           exit $RC
 
-      - name: Assemble container IPA (ship_ext container + write_ipa)
+      - name: Assemble separated products (shell-only IPA + .s2arm program package)
         ignore_failure: true
         script: |
           set -eux
@@ -177,32 +186,143 @@ workflows:
           echo "shell dir: $SHELL_DIR"
           cat "$SHELL_DIR/manifest.json" | head -c 600; echo
           mkdir -p "$FF_WORK/container"
+          # 1) Shell-only container IPA (0.6.0 通用壳: no game baked in).
           "$PY" pack/ship_ext.py container \
+            --shell-only \
             --shell "$SHELL_DIR" \
-            --game "$ROOT" \
             --bundle-id io.s2arm.games \
             --icon launchers/macos/Branding/AppIcon-iOS.png \
             --display-name S2Arm \
             --host-abi 1 \
             --sign none \
             --out "$FF_WORK/container/S2Arm.app" 2>&1 | tee -a "$FF_WORK/container.log"
-          "$PY" pack/app_bundle.py write_ipa "$FF_WORK/container/S2Arm.app" "$FF_WORK/container/S2Arm-container.ipa" 2>&1 | tee -a "$FF_WORK/container.log"
-          ls -la "$FF_WORK/container"
-          "$PY" - "$FF_WORK/container/S2Arm-container.ipa" <<'PYEOF'
+          "$PY" pack/app_bundle.py write_ipa "$FF_WORK/container/S2Arm.app" "$FF_WORK/container/S2Arm-shell.ipa" 2>&1 | tee -a "$FF_WORK/container.log"
+          "$PY" - "$FF_WORK/container/S2Arm-shell.ipa" <<'PYEOF'
           import sys, zipfile, json
           z = zipfile.ZipFile(sys.argv[1])
           names = z.namelist()
-          need = ['Payload/S2Arm.app/s2a_catalogue.json',
-                  'Payload/S2Arm.app/Games/0100B8A026F14000/',
-                  'Payload/S2Arm.app/Frameworks/S2AImages-0100B8A026F14000.dylib']
-          for n in need:
-              hit = any(x.startswith(n) for x in names)
-              print(('OK  ' if hit else 'MISS'), n)
-              assert hit, n
+          assert 'Payload/S2Arm.app/s2a_catalogue.json' in names, 'catalogue missing'
+          baked = [n for n in names if '/Games/' in n or 'S2AImages-' in n]
+          print('baked-in game entries (want none):', baked)
+          assert not baked, baked
           cat = json.loads(z.read('Payload/S2Arm.app/s2a_catalogue.json'))
-          print('catalogue:', json.dumps(cat, ensure_ascii=False))
+          print('shell catalogue:', json.dumps(cat, ensure_ascii=False))
           print('total entries:', len(names))
           PYEOF
+          # 2) The game's program package, packed as ONE .s2arm file.
+          # ship_ext program places {S2AImages-<gid>.dylib, Games/<gid>/};
+          # the packing below mirrors pack/jobs/program_pack.py catalogue()
+          # and pack/jobs/install.py push_program() for the UNSIGNED route
+          # (team=None: the phone re-signs with the imported cert, exactly
+          # like push_programs' else-branch for other tools' S2Arm).
+          # Meta values are derived the same way program_pack.compat does:
+          # host_abi = s2a_host_abi (1), chain = DMSH_CHAIN in
+          # graphics/nvn/gfx/nvn/dmsh_chain.h, rewriter_id =
+          # sha256(pack/rewriter.py source)[:16].
+          "$PY" pack/ship_ext.py program \
+            --shell "$SHELL_DIR" \
+            --root "$ROOT" \
+            --out "$FF_WORK/program-pkg" 2>&1 | tee "$FF_WORK/program.json"
+          "$PY" - "$FF_WORK/program-pkg" "$FF_WORK/container" <<'PYEOF'
+          import hashlib, io, json, os, re, subprocess, sys, tarfile
+          from pathlib import Path
+          pkg, outdir = Path(sys.argv[1]), Path(sys.argv[2])
+          info = json.loads(Path(os.path.expanduser('~/ff-work/program.json')).read_text(encoding='utf-8').strip().splitlines()[-1])
+          gid = info['gid'].upper()
+          image = pkg / f'S2AImages-{gid}.dylib'
+          assert image.is_file(), image
+          def sha(p):
+              h = hashlib.sha256()
+              with open(p, 'rb') as f:
+                  for b in iter(lambda: f.read(1 << 20), b''):
+                      h.update(b)
+              return h.hexdigest()
+          chain = re.search(r'^#define DMSH_CHAIN "([0-9a-f]+)"',
+                            Path('graphics/nvn/gfx/nvn/dmsh_chain.h').read_text(), re.M).group(1)
+          r = subprocess.run([sys.executable, '-X', 'utf8', '-B', 'pack/rewriter.py', 'source'],
+                             capture_output=True, text=True, encoding='utf-8')
+          assert r.returncode == 0 and r.stdout.strip(), r.stderr[-300:]
+          meta = dict(host_abi=1, chain=chain,
+                      rewriter_id=hashlib.sha256(r.stdout.encode()).hexdigest()[:16],
+                      name=info.get('name', ''), display_version=info.get('display_version', ''),
+                      image_sha256=sha(image))
+          cat = dict(schema=1, title_id=gid, name=meta['name'], display_version=meta['display_version'],
+                     host_abi=meta['host_abi'], chain=meta['chain'], rewriter_id=meta['rewriter_id'],
+                     image=image.name, image_sha256=meta['image_sha256'], team=None)
+          if (pkg / 'Games' / gid / 'icon.jpg').is_file():
+              cat['icon'] = f'Games/{gid}/icon.jpg'
+          if (pkg / 'Games' / gid / 'banner.jpg').is_file():
+              cat['banner'] = f'Games/{gid}/banner.jpg'
+          cat_bytes = json.dumps(cat, ensure_ascii=False, indent=1).encode('utf-8')
+          (outdir / 'program-catalogue.json').write_bytes(cat_bytes)
+          files = [('program/' + p.relative_to(pkg).as_posix(), p) for p in sorted(pkg.rglob('*'))
+                   if p.is_file() and p.name not in ('meta.json', '.key', 'catalogue.json')]
+          head = dict(format='s2arm', schema=1, title_id=gid, name=cat['name'],
+                      display_version=cat['display_version'], host_abi=cat['host_abi'],
+                      chain=cat['chain'], rewriter_id=cat['rewriter_id'], image=cat['image'],
+                      image_sha256=cat['image_sha256'],
+                      bytes=len(cat_bytes) + sum(p.stat().st_size for _, p in files),
+                      signer=dict(mode='push', team=None))
+          dest = outdir / f'{gid}.s2arm'
+          # zstd frame with content checksum, same as programs.zstd_writer;
+          # fall back to the zstd CLI if the venv lacks both stdlib (3.14)
+          # and the zstandard module.
+          import contextlib
+          stack = contextlib.ExitStack()
+          try:
+              from compression import zstd
+              z = stack.enter_context(zstd.ZstdFile(str(dest), 'w', options={
+                  zstd.CompressionParameter.compression_level: 3,
+                  zstd.CompressionParameter.checksum_flag: 1}))
+          except ImportError:
+              try:
+                  import zstandard
+                  raw = open(dest, 'wb')
+                  z = stack.enter_context(zstandard.ZstdCompressor(level=3, threads=-1, write_checksum=True).stream_writer(raw, closefd=True))
+              except ImportError:
+                  proc = subprocess.Popen(['zstd', '-3', '--checksum', '-q', '-o', str(dest) + '.tmp'],
+                                          stdin=subprocess.PIPE)
+                  z = proc.stdin
+                  stack.callback(lambda: (z.close(), proc.wait(), os.replace(str(dest) + '.tmp', dest)))
+          with stack, tarfile.open(fileobj=z, mode='w|', format=tarfile.USTAR_FORMAT) as t:
+              def add(name, data=None, path=None):
+                  ti = tarfile.TarInfo(name)
+                  ti.mode, ti.mtime = 0o644, 0
+                  if path is None:
+                      ti.size = len(data)
+                      t.addfile(ti, io.BytesIO(data))
+                      return
+                  ti.size = path.stat().st_size
+                  with open(path, 'rb') as f:
+                      t.addfile(ti, f)
+              add('s2arm.json', json.dumps(head, ensure_ascii=False, indent=1).encode('utf-8'))
+              add('program/catalogue.json', cat_bytes)
+              for name, path in files:
+                  add(name, path=path)
+          # Verify: reopen, first entry must be s2arm.json, dylib present.
+          names = None
+          try:
+              from compression import zstd
+              with zstd.ZstdFile(str(dest), 'r') as z, tarfile.open(fileobj=z, mode='r|') as t:
+                  names = [m.name for m in t]
+          except ImportError:
+              try:
+                  import zstandard
+                  with open(dest, 'rb') as raw, zstandard.ZstdDecompressor().stream_reader(raw) as z, \
+                          tarfile.open(fileobj=z, mode='r|') as t:
+                      names = [m.name for m in t]
+              except ImportError:
+                  subprocess.run(['zstd', '-d', '-q', '-f', str(dest), '-o', str(dest) + '.tar'], check=True)
+                  with tarfile.open(str(dest) + '.tar') as t:
+                      names = t.getnames()
+                  os.unlink(str(dest) + '.tar')
+          print('s2arm entries:', names)
+          assert names[0] == 's2arm.json', names[:3]
+          assert f'program/S2AImages-{gid}.dylib' in names
+          assert 'program/catalogue.json' in names
+          print('s2arm OK:', dest, dest.stat().st_size, 'bytes; head:', json.dumps(head, ensure_ascii=False))
+          PYEOF
+          ls -la "$FF_WORK/container"
           df -h /
 
       - name: Convert pack to IMG (insurance copy for the relay)
@@ -238,17 +358,19 @@ workflows:
           D="$FF_WORK/deliver"
           mkdir -p "$D/logs"
           # Diagnostic copies must NEVER kill the step (build #4 lesson),
-          # and a failed container assembly must not waste the whole pack
-          # (container build #1 lesson): upload whatever exists — container
-          # IPA if present, else the standalone IPA + insurance img — and
-          # let RESULT.txt say plainly which case it is. Fatal only when
-          # no IPA at all was produced.
-          if [ -f "$FF_WORK/container/S2Arm-container.ipa" ]; then
-            cp "$FF_WORK/container/S2Arm-container.ipa" "$D/"
-            echo "container IPA: OK"
+          # and a failed assembly must not waste the whole pack (container
+          # build #1 lesson): upload whatever exists — the separated
+          # products if present, else the standalone IPA + insurance img —
+          # and let RESULT.txt say plainly which case it is. Fatal only
+          # when no IPA at all was produced.
+          if [ -f "$FF_WORK/container/S2Arm-shell.ipa" ]; then
+            cp "$FF_WORK/container/S2Arm-shell.ipa" "$D/"
+            echo "shell IPA: OK"
           else
-            echo "WARNING: container IPA missing; uploading fallback products for diagnosis"
+            echo "WARNING: shell IPA missing; uploading fallback products for diagnosis"
           fi
+          cp "$FF_WORK/container/"*.s2arm "$D/" 2>/dev/null || echo "WARNING: .s2arm package missing"
+          cp "$FF_WORK/container/program-catalogue.json" "$D/" 2>/dev/null || true
           find "$FF_WORK/out" -maxdepth 1 -name '*.ipa' -exec cp {} "$D/" \; 2>/dev/null || true
           [ -n "$(ls "$D"/*.ipa 2>/dev/null)" ] || { echo "FATAL: no IPA at all produced"; exit 1; }
           cp "$FF_WORK/container/S2Arm.app/s2a_catalogue.json" "$D/" 2>/dev/null || true
@@ -258,6 +380,7 @@ workflows:
           cp "$FF_WORK/events.jsonl" "$D/logs/" 2>/dev/null || true
           cp "$FF_WORK/pack-console.log" "$D/logs/" 2>/dev/null || true
           cp "$FF_WORK/container.log" "$D/logs/" 2>/dev/null || true
+          cp "$FF_WORK/program.json" "$D/logs/" 2>/dev/null || true
           cp -R "$FF_WORK/out/logs" "$D/logs/out" 2>/dev/null || true
           for r in "$FF_WORK/out/roots"/*@*; do
             [ -d "$r" ] || continue
@@ -266,10 +389,13 @@ workflows:
             done
           done
           {
-            echo "# FF Resonance CONTAINER pack result (Codemagic, new S2Arm)"
-            if [ -f "$D/S2Arm-container.ipa" ]; then echo "CONTAINER IPA: PRESENT"; else echo "CONTAINER IPA: MISSING (assembly failed; see logs/container.log; fallback products uploaded)"; fi
-            echo "- catalogue:"
+            echo "# FF Resonance SEPARATED pack result (Codemagic, new S2Arm)"
+            if [ -f "$D/S2Arm-shell.ipa" ]; then echo "SHELL IPA: PRESENT"; else echo "SHELL IPA: MISSING (assembly failed; see logs/container.log; fallback products uploaded)"; fi
+            if compgen -G "$D/*.s2arm" > /dev/null; then echo "S2ARM PACKAGE: PRESENT"; else echo "S2ARM PACKAGE: MISSING (see logs/container.log)"; fi
+            echo "- shell catalogue:"
             cat "$D/s2a_catalogue.json" 2>/dev/null || echo "catalogue not collected"
+            echo "- program catalogue:"
+            cat "$D/program-catalogue.json" 2>/dev/null || echo "program catalogue not collected"
             echo "- widen verdict (shipped caps):"
             grep -h '^widen' "$D/logs/s2a_caps.all.tsv" 2>/dev/null || grep -h '^widen' "$D/logs/s2a_caps.tsv" 2>/dev/null || echo "caps not collected"
             echo "- deliverables:"
@@ -296,7 +422,7 @@ workflows:
             REL_ID=$(curl -s -X POST -H "Authorization: Bearer $RELAY_TOKEN" \
               -H "Accept: application/vnd.github+json" \
               https://api.github.com/repos/642223522/game-relay/releases \
-              -d '{"tag_name":"ff-resonance-container-out","name":"最终幻想：共鸣 容器版产物（S2Arm 新版 / Codemagic）","body":"S2Arm 新版容器包：S2Arm-container.ipa（未签名，含 FF 共鸣程序包）+ game.img 分片（保险副本，1800 MiB/片，合并：cat game.img.part-* > game.img）+ s2a_catalogue.json + app.entitlements + 日志。"}' \
+              -d '{"tag_name":"ff-resonance-container-out","name":"最终幻想：共鸣 分离式产物（S2Arm 新版 / Codemagic）","body":"S2Arm 新版分离式：S2Arm-shell.ipa（空容器，未签名）+ 0100B8A026F14000.s2arm（FF 共鸣程序包，手机上用 S2Arm 打开导入）+ game.img 分片（保险副本，1800 MiB/片，合并：cat game.img.part-* > game.img）+ s2a_catalogue.json / program-catalogue.json + app.entitlements + 日志。"}' \
               | python3 -c "import sys, json; print(json.load(sys.stdin)['id'])")
           else
             curl -s -H "Authorization: Bearer $RELAY_TOKEN" \
