@@ -148,12 +148,20 @@ workflows:
           exit $RC
 
       - name: Assemble container IPA (ship_ext container + write_ipa)
+        ignore_failure: true
         script: |
           set -eux
+          set -o pipefail
           FF_WORK="$HOME/ff-work"
           PY="$FF_WORK/venv/bin/python"
-          ROOT=$(dirname "$(find "$FF_WORK/out/roots" -name unpack.tsv | head -1)")
-          [ -n "$ROOT" ] && [ -f "$ROOT/main.npdm" ] || { echo "product root not found under out/roots:"; find "$FF_WORK/out/roots" -maxdepth 2 | head -20; exit 1; }
+          # The ship_ext product root is the versioned <name>@pkg-<commit9>
+          # root (top-level main.npdm), NOT the oneclick seed root
+          # <name>@oc-<hash> (unpack.tsv, exefs/main.npdm) that img.py uses.
+          # Build #1 died on exactly this mix-up; the pack itself was fine.
+          C=$(git rev-parse HEAD | cut -c1-9)
+          ROOT=$(ls -d "$FF_WORK/out/roots"/*@pkg-"$C" 2>/dev/null | head -1)
+          [ -n "$ROOT" ] || ROOT=$(dirname "$(find "$FF_WORK/out/roots" -maxdepth 2 -name main.npdm 2>/dev/null | head -1)")
+          [ -n "$ROOT" ] && [ -f "$ROOT/main.npdm" ] || { echo "pkg product root (top-level main.npdm) not found:"; find "$FF_WORK/out/roots" -maxdepth 3 | head -40; exit 1; }
           echo "product root: $ROOT"
           # The oneclick run built the game-independent prebuilt shell into
           # the shell cache (pack/ipa.sh step 1). Find it: a dir holding
@@ -177,8 +185,8 @@ workflows:
             --display-name S2Arm \
             --host-abi 1 \
             --sign none \
-            --out "$FF_WORK/container/S2Arm.app"
-          "$PY" pack/app_bundle.py write_ipa "$FF_WORK/container/S2Arm.app" "$FF_WORK/container/S2Arm-container.ipa"
+            --out "$FF_WORK/container/S2Arm.app" 2>&1 | tee -a "$FF_WORK/container.log"
+          "$PY" pack/app_bundle.py write_ipa "$FF_WORK/container/S2Arm.app" "$FF_WORK/container/S2Arm-container.ipa" 2>&1 | tee -a "$FF_WORK/container.log"
           ls -la "$FF_WORK/container"
           "$PY" - "$FF_WORK/container/S2Arm-container.ipa" <<'PYEOF'
           import sys, zipfile, json
@@ -221,16 +229,27 @@ workflows:
           FF_WORK="$HOME/ff-work"
           D="$FF_WORK/deliver"
           mkdir -p "$D/logs"
-          # Diagnostic copies must NEVER kill the step (build #4 lesson):
-          # only the container IPA is fatal when missing.
-          [ -f "$FF_WORK/container/S2Arm-container.ipa" ] || { echo "FATAL: container IPA missing"; exit 1; }
-          cp "$FF_WORK/container/S2Arm-container.ipa" "$D/"
+          # Diagnostic copies must NEVER kill the step (build #4 lesson),
+          # and a failed container assembly must not waste the whole pack
+          # (container build #1 lesson): upload whatever exists — container
+          # IPA if present, else the standalone IPA + insurance img — and
+          # let RESULT.txt say plainly which case it is. Fatal only when
+          # no IPA at all was produced.
+          if [ -f "$FF_WORK/container/S2Arm-container.ipa" ]; then
+            cp "$FF_WORK/container/S2Arm-container.ipa" "$D/"
+            echo "container IPA: OK"
+          else
+            echo "WARNING: container IPA missing; uploading fallback products for diagnosis"
+          fi
+          find "$FF_WORK/out" -maxdepth 1 -name '*.ipa' -exec cp {} "$D/" \; 2>/dev/null || true
+          [ -n "$(ls "$D"/*.ipa 2>/dev/null)" ] || { echo "FATAL: no IPA at all produced"; exit 1; }
           cp "$FF_WORK/container/S2Arm.app/s2a_catalogue.json" "$D/" 2>/dev/null || true
           cp pack/app.entitlements "$D/" 2>/dev/null || true
           [ -f "$FF_WORK/ship/game.img" ] && cp "$FF_WORK/ship/game.img" "$D/" || echo "insurance img missing (non-fatal)"
           cp "$FF_WORK/img-convert.log" "$FF_WORK/img-export.log" "$FF_WORK/img-ls.txt" "$D/logs/" 2>/dev/null || true
           cp "$FF_WORK/events.jsonl" "$D/logs/" 2>/dev/null || true
           cp "$FF_WORK/pack-console.log" "$D/logs/" 2>/dev/null || true
+          cp "$FF_WORK/container.log" "$D/logs/" 2>/dev/null || true
           cp -R "$FF_WORK/out/logs" "$D/logs/out" 2>/dev/null || true
           for r in "$FF_WORK/out/roots"/*@*; do
             [ -d "$r" ] || continue
@@ -240,6 +259,7 @@ workflows:
           done
           {
             echo "# FF Resonance CONTAINER pack result (Codemagic, new S2Arm)"
+            if [ -f "$D/S2Arm-container.ipa" ]; then echo "CONTAINER IPA: PRESENT"; else echo "CONTAINER IPA: MISSING (assembly failed; see logs/container.log; fallback products uploaded)"; fi
             echo "- catalogue:"
             cat "$D/s2a_catalogue.json" 2>/dev/null || echo "catalogue not collected"
             echo "- widen verdict (shipped caps):"
