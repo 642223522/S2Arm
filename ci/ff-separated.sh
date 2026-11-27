@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 # FF Resonance SEPARATED pack on a GitHub-hosted xcode-27 runner
 # (public fork => Actions is free; user rule: never generate a charge).
-# Generated from codemagic.yaml (branch codemagic-container) so the two
-# pipelines stay in lockstep; steps run in subshells with the same
-# fatal/tolerant semantics as the Codemagic steps (ignore_failure).
+# Generated from codemagic.yaml (branch codemagic-container); steps run
+# in subshells with the same fatal/tolerant semantics as the Codemagic
+# steps (ignore_failure). Two GitHub-only divergences, hand-edited
+# 2026-11-27 after run 45961182144 died of runner ENOSPC: a leading
+# "Free disk space" step, and the insurance IMG convert skipped
+# (the verified game.img is already delivered; see the step itself).
 # Products: S2Arm-shell.ipa (shell-only) + 0100B8A026F14000.s2arm,
 # uploaded to the private relay release ff-resonance-container-out.
 if [ -z "${S2A_BASH5:-}" ] && [ -x /opt/homebrew/bin/bash ]; then
@@ -15,6 +18,44 @@ PACK_RC=0
 cd "$(dirname "$0")/.."
 echo "repo: $(pwd)  FF_WORK: $FF_WORK"
 df -h / || true
+
+echo "===== STEP: Free disk space (GitHub runner only) ====="
+(
+set -ux
+# Run 45961182144 died of ENOSPC: the xcode-27 runner's 180 Gi
+# volume starts with only ~37 Gi free and the pack's shader
+# direct-library cache filled it (38% into the sampling stage).
+# Reclaim the image bulk we never use: non-active Xcode versions,
+# old simulator runtimes, the Android SDK, Homebrew caches.
+# Tolerant: a cleanup hiccup must never fail the build.
+df -h /
+ACTIVE_APP=""
+DEVDIR="$(xcode-select -p 2>/dev/null || true)"
+[ -n "$DEVDIR" ] && ACTIVE_APP="$(dirname "$(dirname "$DEVDIR")")"
+echo "active Xcode (kept): ${ACTIVE_APP:-unknown}"
+for app in /Applications/Xcode_*.app; do
+  [ -e "$app" ] || continue
+  if [ "$app" != "$ACTIVE_APP" ]; then
+    echo "removing unused Xcode: $app"
+    sudo rm -rf "$app" || true
+  fi
+done
+for rt in /Library/Developer/CoreSimulator/Profiles/Runtimes/*.simruntime; do
+  [ -e "$rt" ] || continue
+  case "$(basename "$rt")" in
+    *iOS*26*|*iOS*27*) echo "keeping runtime: $rt" ;;
+    *) echo "removing runtime: $rt"; sudo rm -rf "$rt" || true ;;
+  esac
+done
+if [ -d "$HOME/Library/Android/sdk" ]; then
+  echo "removing Android SDK"
+  rm -rf "$HOME/Library/Android/sdk" || true
+fi
+brew cleanup -s >/dev/null 2>&1 || true
+df -h /
+)
+STEP_RC=$?
+[ "$STEP_RC" = 0 ] || echo "STEP TOLERATED-FAIL rc=$STEP_RC: Free disk space (GitHub runner only)"
 
 echo "===== STEP: Install tools (bash 5, zstd, spirv-cross) ====="
 (
@@ -334,28 +375,16 @@ STEP_RC=$?
 
 echo "===== STEP: Convert pack to IMG (insurance copy for the relay) ====="
 (
-set -eux
-FF_WORK="$FF_WORK"
-PY="$FF_WORK/venv/bin/python"
-# Insurance only: a failed convert must never block the upload
-# (container build #2 lesson). Find the root that actually holds
-# the RomFS: new code keeps it as the standard image romfs.std
-# (0.6.0, "RomFS 不落散文件"), older roots keep a loose romfs/
-# directory; img.py convert handles both. The seed root (@sd-)
-# has neither — don't let unpack.tsv discovery pick it.
-ROOT=$(dirname "$(find "$FF_WORK/out/roots" -maxdepth 2 -name 'romfs.std' 2>/dev/null | head -1)")
-[ -n "$ROOT" ] || ROOT=$(dirname "$(find "$FF_WORK/out/roots" -maxdepth 2 -type d -name romfs 2>/dev/null | head -1)")
-[ -n "$ROOT" ] && { [ -d "$ROOT/romfs" ] || [ -f "$ROOT/romfs.std" ]; } || { echo "product root with romfs not found:"; find "$FF_WORK/out/roots" -maxdepth 3 | head -40; exit 1; }
-PACK=$(find "$FF_WORK/out" -maxdepth 1 -type d -name '*资源包' | head -1)
-[ -n "$PACK" ] || { echo "resource pack folder not found in out/"; ls "$FF_WORK/out"; exit 1; }
-echo "root: $ROOT"; echo "pack: $PACK"; df -h /
-"$PY" pack/img.py convert "$ROOT" "$PACK" --gid 0100B8A026F14000 2>&1 | tee "$FF_WORK/img-convert.log"
-head -c 8 "$PACK/game.img"; echo " <- game.img magic (want S2AIMG01)"
-mkdir -p "$FF_WORK/ship"
-"$PY" pack/img.py export "$PACK" "$FF_WORK/ship/game.img" 2>&1 | tee "$FF_WORK/img-export.log"
-"$PY" pack/img.py ls "$FF_WORK/ship/game.img" > "$FF_WORK/img-ls.txt" 2>&1 || true
-echo "img entries: $(wc -l < "$FF_WORK/img-ls.txt")"
-du -sh "$FF_WORK/ship"/*; df -h /
+set -ux
+# SKIPPED on the GitHub route (2026-11-27): the verified FF game.img
+# (13,519,019,178 B, MD5 4ea9245c...) was already delivered to the
+# user's Drive on 2026-11-26 and the new pack/img.py reads it
+# cleanly, so the insurance copy buys nothing here — while its
+# convert+export costs ~27 Gi the GitHub runner does not have
+# (run 45961182144 died of ENOSPC in the Pack step itself).
+# The Codemagic pipeline keeps its insurance convert.
+echo "insurance IMG convert skipped on GitHub route (verified game.img already delivered 2026-11-26)"
+df -h /
 )
 STEP_RC=$?
 [ "$STEP_RC" = 0 ] || echo "STEP TOLERATED-FAIL rc=$STEP_RC: Convert pack to IMG (insurance copy for the relay)"
